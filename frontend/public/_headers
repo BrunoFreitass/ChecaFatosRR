@@ -1,0 +1,17 @@
+# Cabeçalhos do Cloudflare Pages. A CSP completa entra na etapa 9 (depende das URLs da API e do Supabase).
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+  Strict-Transport-Security: max-age=31536000
+  Cross-Origin-Opener-Policy: same-origin
+
+# HTML sempre revalidado: evita HTML antigo apontando para assets que já não existem.
+/
+  Cache-Control: no-cache
+/index.html
+  Cache-Control: no-cache
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

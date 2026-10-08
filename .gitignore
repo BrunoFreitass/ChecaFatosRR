@@ -1,0 +1,28 @@
+# Segredos
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+dist/
+playwright-report/
+test-results/
+*.tsbuildinfo
+
+# Supabase CLI
+supabase/.branches
+supabase/.temp
+
+# Editor / Claude
+.vscode/
+.claude/settings.local.json

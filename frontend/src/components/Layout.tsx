@@ -1,0 +1,40 @@
+import { Link, Outlet } from "react-router";
+
+import { RouteFocus } from "./RouteFocus.tsx";
+
+const MAIN_ID = "conteudo";
+
+export function Layout() {
+  return (
+    <div className="flex min-h-dvh flex-col bg-slate-50 text-slate-900">
+      <a
+        href={`#${MAIN_ID}`}
+        className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-10 focus:rounded focus:bg-white focus:p-3 focus:font-semibold"
+      >
+        Pular para o conteúdo
+      </a>
+      <RouteFocus targetId={MAIN_ID} />
+
+      <header className="border-b border-slate-200 bg-white">
+        <div className="mx-auto flex max-w-5xl items-center justify-between px-4">
+          <Link
+            to="/"
+            className="inline-flex min-h-12 items-center text-lg font-bold tracking-tight focus-visible:outline-2 focus-visible:outline-brand-700"
+          >
+            ChecaFatos<span className="text-brand-700">RR</span>
+          </Link>
+        </div>
+      </header>
+
+      <main id={MAIN_ID} tabIndex={-1} className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 outline-none">
+        <Outlet />
+      </main>
+
+      <footer className="border-t border-slate-200 bg-white">
+        <div className="mx-auto max-w-5xl px-4 py-4 text-sm text-slate-600">
+          Projeto apartidário de combate à desinformação nas eleições · Roraima
+        </div>
+      </footer>
+    </div>
+  );
+}

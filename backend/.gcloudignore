@@ -1,0 +1,13 @@
+# O `gcloud run deploy --source` usa ESTE arquivo (não o .dockerignore) para decidir o que
+# enviar ao Cloud Build. Nunca enviar segredos (.env) nem o .venv.
+.gcloudignore
+.git
+.venv
+.env
+.env.*
+!.env.example
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+tests
