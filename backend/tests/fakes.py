@@ -1,6 +1,7 @@
 """Dublês de teste: chaves/tokens JWT, repositório de perfis em memória e Admin API falsa."""
 
-from dataclasses import replace
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -9,7 +10,24 @@ from uuid import UUID
 import jwt
 from cryptography.hazmat.primitives.asymmetric import ec
 
+from app.repositories.checks import (
+    CacheHit,
+    CheckSummary,
+    LimitExceededError,
+    Limits,
+    LinkSubject,
+    NewCheck,
+    Started,
+    StoredCheck,
+    SubjectRef,
+    TextSubject,
+    new_public_id,
+)
 from app.repositories.profiles import NicknameTakenError, Profile, ProfileExistsError
+from app.services.factcheck import AgencyCheck
+from app.services.fetcher import FetchedPage
+from app.services.gemini import AnalysisInput, CheckResult, GeminiQuotaExhaustedError
+from app.services.url_guard import NormalizedUrl
 
 TEST_SUPABASE_URL = "https://test-ref.supabase.co"
 TEST_ISSUER = f"{TEST_SUPABASE_URL}/auth/v1"
@@ -110,3 +128,219 @@ class FakeSupabaseAdmin:
 
     async def delete_user(self, user_id: UUID) -> None:
         self.deleted.append(user_id)
+
+
+# ---------------------------------------------------------------------------------------
+# Checagem (etapa 2)
+# ---------------------------------------------------------------------------------------
+
+
+@dataclass
+class _FakeRow:
+    ref: SubjectRef
+    check: StoredCheck
+    listed: bool
+    created_by: UUID
+
+
+def _agency_count(result: dict[str, object]) -> int:
+    # Igual ao SQL de latest(): só lista conta; null ou objeto viram 0.
+    agencies = result.get("checagens_agencias")
+    return len(agencies) if isinstance(agencies, list) else 0
+
+
+class FakeCheckRepository:
+    """Repositório em memória com as mesmas regras do SQL (cache, limites, claim, cota)."""
+
+    def __init__(self) -> None:
+        self.link_ids: dict[bytes, int] = {}
+        self.text_ids: dict[bytes, int] = {}
+        self.link_data: dict[int, LinkSubject] = {}
+        self.text_data: dict[int, TextSubject] = {}
+        self.rows: list[_FakeRow] = []
+        self.requests: dict[int, tuple[UUID, bool]] = {}
+        # assunto -> token do claim (como o checking_until no banco)
+        self.claimed: dict[SubjectRef, datetime] = {}
+        self.busy = False  # simula outra instância checando o mesmo conteúdo
+        self.gemini_used = 0
+        self.saved: list[NewCheck] = []
+        self._next_id = 0
+        self._clock = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
+
+    def _id(self) -> int:
+        self._next_id += 1
+        return self._next_id
+
+    def _fresh(self, ref: SubjectRef) -> StoredCheck | None:
+        matches = [row.check for row in self.rows if row.ref == ref]
+        return matches[-1] if matches else None
+
+    def _used(self, user_id: UUID, cache_hit: bool) -> int:
+        return sum(1 for uid, hit in self.requests.values() if uid == user_id and hit == cache_hit)
+
+    async def begin_check(
+        self, user_id: UUID, subject: LinkSubject | TextSubject, limits: Limits
+    ) -> CacheHit | Started:
+        if isinstance(subject, LinkSubject):
+            subject_id = self.link_ids.setdefault(subject.url_hash, self._id())
+            self.link_data.setdefault(subject_id, subject)
+            ref = SubjectRef("link", subject_id)
+        else:
+            subject_id = self.text_ids.setdefault(subject.text_hash, self._id())
+            self.text_data.setdefault(subject_id, subject)
+            ref = SubjectRef("texto", subject_id)
+
+        fresh = self._fresh(ref)
+        if fresh is not None:
+            if self._used(user_id, True) >= limits.lookups_per_hour:
+                raise LimitExceededError("consultas", 1800)
+            self.requests[self._id()] = (user_id, True)
+            return CacheHit(fresh)
+        if self._used(user_id, False) >= limits.checks_per_day:  # o fake não tem relógio
+            raise LimitExceededError("diario", 43200)
+        if self._used(user_id, False) >= limits.checks_per_hour:
+            raise LimitExceededError("checagens", 1800)
+        request_id = self._id()
+        self.requests[request_id] = (user_id, False)
+        return Started(ref, request_id)
+
+    async def claim(self, subject: SubjectRef) -> datetime | None:
+        if self.busy or subject in self.claimed:
+            return None
+        self._clock += timedelta(seconds=1)
+        self.claimed[subject] = self._clock
+        return self._clock
+
+    async def release(self, subject: SubjectRef, token: datetime) -> None:
+        if self.claimed.get(subject) == token:  # só o dono solta
+            del self.claimed[subject]
+
+    async def find_fresh(self, subject: SubjectRef, cache_hours: int) -> StoredCheck | None:
+        return self._fresh(subject)
+
+    async def reserve_gemini(self, purpose: str, daily_limit: int) -> bool:
+        if self.gemini_used >= daily_limit:
+            return False
+        self.gemini_used += 1
+        return True
+
+    async def save_result(self, check: NewCheck) -> StoredCheck:
+        self.saved.append(check)
+        if check.claim_token is not None and self.claimed.get(check.subject) == check.claim_token:
+            del self.claimed[check.subject]
+        self._clock += timedelta(minutes=1)
+        link = self.link_data.get(check.subject.id) if check.subject.kind == "link" else None
+        text = self.text_data.get(check.subject.id) if check.subject.kind == "texto" else None
+        stored = StoredCheck(
+            public_id=new_public_id(),
+            kind=check.subject.kind,
+            url=link.url if link else None,
+            domain=link.domain if link else None,
+            title=check.title if link else None,
+            published_at=check.published_at if link else None,
+            texto=text.body if text else None,
+            veredito=check.veredito,
+            confianca=check.confianca,
+            result=check.result,
+            created_at=self._clock,
+        )
+        self.rows.append(_FakeRow(check.subject, stored, check.listed, check.user_id))
+        return stored
+
+    async def mark_cache_hit(self, request_id: int) -> None:
+        if request_id in self.requests:
+            self.requests[request_id] = (self.requests[request_id][0], True)
+
+    async def refund(self, request_id: int) -> None:
+        self.requests.pop(request_id, None)
+
+    async def get(self, public_id: str) -> StoredCheck | None:
+        return next((r.check for r in self.rows if r.check.public_id == public_id), None)
+
+    async def latest(self, cursor: tuple[datetime, str] | None, limit: int) -> list[CheckSummary]:
+        rows = sorted(
+            (r for r in self.rows if r.listed and r.ref.kind == "link"),
+            key=lambda r: (r.check.created_at, r.check.public_id),
+            reverse=True,
+        )
+        if cursor is not None:
+            rows = [r for r in rows if (r.check.created_at, r.check.public_id) < cursor]
+        return [
+            CheckSummary(
+                public_id=r.check.public_id,
+                domain=r.check.domain or "",
+                title=r.check.title,
+                veredito=r.check.veredito,
+                created_at=r.check.created_at,
+                agency_checks=_agency_count(r.check.result),
+            )
+            for r in rows[:limit]
+        ]
+
+
+ARTICLE_TEXT = (
+    "A Justiça Eleitoral confirmou nesta segunda-feira o calendário do segundo turno das "
+    "eleições em Roraima. Segundo o tribunal, a votação acontece normalmente no domingo, "
+    "das 8h às 17h, em todas as seções eleitorais do estado. "
+) * 3
+
+
+def article_html(title: str = "Calendário do 2º turno é mantido em Roraima") -> bytes:
+    return (
+        f"<html><head><title>{title}</title></head><body><article><h1>{title}</h1>"
+        f"<p>{ARTICLE_TEXT}</p></article></body></html>"
+    ).encode()
+
+
+class FakeFetcher:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.html = article_html()
+        self.error: Exception | None = None
+        self.final_url: str | None = None  # simula redirect para outro endereço
+
+    async def fetch(self, url: NormalizedUrl) -> FetchedPage:
+        self.calls.append(url.url)
+        if self.error is not None:
+            raise self.error
+        return FetchedPage(url=self.final_url or url.url, content=self.html, truncated=False)
+
+
+class FakeFactCheck:
+    def __init__(self) -> None:
+        self.queries: list[list[str]] = []
+        self.results: list[AgencyCheck] = []
+
+    async def search(self, queries: list[str]) -> list[AgencyCheck]:
+        self.queries.append(queries)
+        return self.results
+
+
+class FakeAnalyzer:
+    def __init__(self) -> None:
+        self.inputs: list[AnalysisInput] = []
+        self.error: Exception | None = None
+        self.veredito = "falso"
+        self.confianca = 85
+        self.model: str | None = None  # modelo que "respondeu" (None = não informado)
+
+    async def analyze(
+        self, data: AnalysisInput, reserve: Callable[[], Awaitable[bool]] | None = None
+    ) -> CheckResult:
+        if reserve is not None and not await reserve():
+            raise GeminiQuotaExhaustedError
+        self.inputs.append(data)
+        if self.error is not None:
+            raise self.error
+        return CheckResult(
+            veredito=self.veredito,  # type: ignore[arg-type]
+            veredito_ia=self.veredito,  # type: ignore[arg-type]
+            rebaixado_por_confianca=False,
+            confianca=self.confianca,
+            resumo="A votação não foi adiada.",
+            pontos_suspeitos=["Sem fonte oficial"],
+            contexto_faltante=None,
+            checagens_agencias=data.agency_checks,
+            fontes_sugeridas=["Site oficial do TSE"],
+            model=self.model,
+        )

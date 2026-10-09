@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { ApiError, apiFetch } from "../lib/api.ts";
+import { clearPendingCheck } from "../lib/pendingCheck.ts";
 import { saveReturnPath } from "../lib/returnPath.ts";
 import { supabase } from "../lib/supabase.ts";
 import type { Profile } from "../lib/types.ts";
@@ -102,6 +103,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
+    // Computador compartilhado: o texto digitado antes do login não fica para o próximo.
+    clearPendingCheck();
     try {
       await supabase.auth.signOut();
     } catch {

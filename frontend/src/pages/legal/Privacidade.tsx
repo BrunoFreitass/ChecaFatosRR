@@ -16,7 +16,22 @@ export function Privacidade() {
         </li>
         <li>
           <strong>Que você informa:</strong> o apelido, a data em que aceitou estes termos e o que
-          você publica (comentários, denúncias e links enviados para checagem).
+          você publica (comentários, denúncias, links e mensagens enviados para checagem).
+        </li>
+        <li>
+          <strong>Checagens:</strong> o resultado de cada checagem fica público, sem o seu apelido
+          nem qualquer ligação visível com você.
+          <ul>
+            <li>Links checados aparecem na página “Últimas checagens”.</li>
+            <li>
+              Mensagens coladas não são listadas nem aparecem em buscadores: só quem recebe o link
+              do resultado consegue ver.
+            </li>
+            <li>
+              Antes de guardar uma mensagem colada, escondemos automaticamente telefones, e-mails,
+              CPF e chaves Pix. Mesmo assim, não cole conversas pessoais.
+            </li>
+          </ul>
         </li>
         <li>
           <strong>De moderação:</strong>
@@ -54,8 +69,14 @@ export function Privacidade() {
         <li>Google Cloud: servidor da aplicação.</li>
         <li>Cloudflare: hospedagem do site.</li>
         <li>
-          Google Gemini (inteligência artificial): recebe o texto dos links checados e dos
-          comentários, para análise e moderação. Seus dados de conta não são enviados.
+          Google Gemini (inteligência artificial): recebe o texto dos links checados, das mensagens
+          coladas (já sem telefones, e-mails, CPF e chaves Pix) e dos comentários, para análise e
+          moderação. Seus dados de conta não são enviados. No plano gratuito, o Google pode usar
+          esse conteúdo para melhorar os próprios produtos.
+        </li>
+        <li>
+          Google Fact Check Tools: recebe um trecho curto do conteúdo (o título ou a primeira
+          frase) para buscar checagens já publicadas por agências.
         </li>
       </ul>
       <p>Não vendemos dados.</p>
@@ -67,6 +88,11 @@ export function Privacidade() {
         <li>
           Quando você exclui sua conta, apagamos o apelido, os comentários e o histórico. A única
           exceção é o código de banimento, no caso de contas banidas.
+        </li>
+        <li>
+          Os resultados das checagens continuam no site depois da exclusão da conta, sem nenhuma
+          ligação com você. Se uma mensagem checada tiver dados seus, peça a remoção pelo e-mail
+          do encarregado (item 6).
         </li>
       </ul>
 

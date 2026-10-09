@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./backend/.env)",
+      "Edit(./backend/.env)",
+      "Read(./frontend/.env.local)",
+      "Edit(./frontend/.env.local)",
+      "Read(**/.env)",
+      "Edit(**/.env)",
+      "Read(**/.env.local)",
+      "Edit(**/.env.local)",
+      "Read(**/.env.*.local)",
+      "Edit(**/.env.*.local)",
+      "Read(**/.env.development)",
+      "Edit(**/.env.development)",
+      "Read(**/.env.production)",
+      "Edit(**/.env.production)",
+      "Read(**/.env.test)",
+      "Edit(**/.env.test)",
+      "Bash(cat backend/.env*)",
+      "Bash(cat frontend/.env*)",
+      "Bash(cat .env*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob|Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-env.js\"",
+            "timeout": 10,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ]
+  }
+}

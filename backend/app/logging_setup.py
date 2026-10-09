@@ -45,3 +45,7 @@ def configure_logging(level: str) -> None:
         logging.getLogger(name).propagate = True
     # O middleware registra cada requisição; o access log do uvicorn seria duplicado.
     logging.getLogger("uvicorn.access").disabled = True
+    # Em INFO o httpx registra a URL completa de cada chamada: os links enviados pelos
+    # usuários (podem ter dados pessoais na query) iriam para os logs.
+    for name in ("httpx", "httpcore", "google_genai"):
+        logging.getLogger(name).setLevel(logging.WARNING)

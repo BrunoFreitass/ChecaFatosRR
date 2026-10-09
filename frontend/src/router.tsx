@@ -11,6 +11,8 @@ import { Termos } from "./pages/legal/Termos.tsx";
 import { MinhaConta } from "./pages/MinhaConta.tsx";
 import { NotFound } from "./pages/NotFound.tsx";
 import { Onboarding } from "./pages/Onboarding.tsx";
+import { Resultado } from "./pages/Resultado.tsx";
+import { Ultimas } from "./pages/Ultimas.tsx";
 
 export const router = createBrowserRouter([
   {
@@ -36,6 +38,8 @@ export const router = createBrowserRouter([
           </RequireProfile>
         ),
       },
+      { path: "checagem/:slug", element: <Resultado /> },
+      { path: "ultimas", element: <Ultimas /> },
       { path: "termos", element: <Termos /> },
       { path: "privacidade", element: <Privacidade /> },
       { path: "*", element: <NotFound /> },

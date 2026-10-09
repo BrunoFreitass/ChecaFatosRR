@@ -13,8 +13,10 @@ Os valores entre `<>` são seus; nunca faça commit de senhas ou chaves.
 
 1. Crie o projeto em <https://supabase.com/dashboard>. Use a região **South America (São Paulo)**.
    Guarde a senha do banco.
-2. Aplique a migração. Escolha **uma** das opções:
-   - **SQL Editor**: cole o conteúdo de `supabase/migrations/20261008000000_init.sql` e clique em *Run*.
+2. Aplique as migrações **na ordem do nome do arquivo**. Escolha **uma** das opções:
+   - **SQL Editor**: cole e rode, um de cada vez:
+     1. `supabase/migrations/20261008000000_init.sql` (etapas 0 e 1);
+     2. `supabase/migrations/20261009000000_checagem.sql` (etapa 2: checagem de links e textos).
    - **CLI**:
      ```bash
      npx supabase init          # só na primeira vez (cria supabase/config.toml)
@@ -67,6 +69,26 @@ Os valores entre `<>` são seus; nunca faça commit de senhas ou chaves.
 - Adicione a origem e o redirect do Pages nos dois painéis (Google e Supabase).
 - Preencha o e-mail de contato em `frontend/src/legal.ts`.
 
+## 1.2 Checagem: Gemini e Fact Check Tools (etapa 2)
+
+1. **Gemini** — <https://aistudio.google.com> → *Get API key* → *Create API key*.
+   - Copie para `GEMINI_API_KEY` (segredo).
+   - Em *Rate limits*, veja a **cota diária (RPD)** do modelo Flash e ajuste
+     `GEMINI_DAILY_CHECKS` e `GEMINI_DAILY_MODERATION` para caber nela (a soma das duas não
+     deve passar da cota). O padrão é 200 + 200.
+   - `GEMINI_MODEL_FALLBACKS=gemini-3.8-flash,gemini-3.7-flash`: cadeia de modelos com nome
+     fixo (nunca `latest`/`preview`). Se a cota diária do primeiro acabar, a checagem usa o
+     próximo; o log `gemini_model_responded` mostra qual respondeu. `GEMINI_MODEL` não é mais
+     usado: apague-o do `backend/.env` se ainda estiver lá.
+2. **Fact Check Tools API** — no mesmo projeto do GCP:
+   - *APIs e serviços → Biblioteca* → ative **Fact Check Tools API**;
+   - *Credenciais → Criar credenciais → Chave de API*;
+   - edite a chave: em *Restrições de API*, deixe **só** a Fact Check Tools API;
+   - copie para `GOOGLE_FACTCHECK_API_KEY` (segredo). Sem ela, a checagem funciona, mas sem as
+     checagens das agências.
+3. Teste local: com o backend rodando, entre no site, cole um link de notícia e um texto.
+   O primeiro resultado demora de 10 a 30 segundos; o mesmo conteúdo de novo vem do cache.
+
 ---
 
 ## 2. Backend local
@@ -107,17 +129,19 @@ gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
 
 ### 3.1 Segredos (Secret Manager)
 
-Três segredos: `DATABASE_URL`, `SUPABASE_SECRET_KEY` e `BAN_HASH_SALT`. As outras variáveis não
-são secretas e vão em `--set-env-vars`.
+Cinco segredos: `DATABASE_URL`, `SUPABASE_SECRET_KEY`, `BAN_HASH_SALT`, `GEMINI_API_KEY` e
+`GOOGLE_FACTCHECK_API_KEY`. As outras variáveis não são secretas e vão em `--set-env-vars`.
 
 ```bash
 printf '%s' '<DATABASE_URL do pooler>'   | gcloud secrets create DATABASE_URL --data-file=-
 printf '%s' '<sb_secret_...>'            | gcloud secrets create SUPABASE_SECRET_KEY --data-file=-
 printf '%s' '<o mesmo BAN_HASH_SALT do .env>' | gcloud secrets create BAN_HASH_SALT --data-file=-
+printf '%s' '<chave do AI Studio>'       | gcloud secrets create GEMINI_API_KEY --data-file=-
+printf '%s' '<chave da Fact Check API>'  | gcloud secrets create GOOGLE_FACTCHECK_API_KEY --data-file=-
 
 # Permite que o Cloud Run leia os segredos (conta de serviço padrão do Compute):
 PROJECT_NUMBER=$(gcloud projects describe <PROJECT_ID> --format='value(projectNumber)')
-for SECRET in DATABASE_URL SUPABASE_SECRET_KEY BAN_HASH_SALT; do
+for SECRET in DATABASE_URL SUPABASE_SECRET_KEY BAN_HASH_SALT GEMINI_API_KEY GOOGLE_FACTCHECK_API_KEY; do
   gcloud secrets add-iam-policy-binding "$SECRET" \
     --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
     --role="roles/secretmanager.secretAccessor"
@@ -147,10 +171,18 @@ gcloud run deploy checafatosrr-api \
   --region southamerica-east1 \
   --allow-unauthenticated \
   --min-instances 0 --max-instances 3 \
-  --cpu 1 --memory 512Mi --concurrency 40 --timeout 60 \
-  --set-env-vars "APP_ENV=production,LOG_LEVEL=INFO,CORS_ORIGINS=https://<seu-projeto>.pages.dev,SUPABASE_URL=https://<project_ref>.supabase.co,ADMIN_EMAIL=<seu-email>" \
-  --set-secrets "DATABASE_URL=DATABASE_URL:latest,SUPABASE_SECRET_KEY=SUPABASE_SECRET_KEY:latest,BAN_HASH_SALT=BAN_HASH_SALT:latest"
+  --cpu 1 --memory 512Mi --concurrency 40 --timeout 180 \
+  --set-env-vars "^@^APP_ENV=production@LOG_LEVEL=INFO@CORS_ORIGINS=https://<seu-projeto>.pages.dev@SUPABASE_URL=https://<project_ref>.supabase.co@ADMIN_EMAIL=<seu-email>@GEMINI_MODEL_FALLBACKS=gemini-3.8-flash,gemini-3.7-flash@GEMINI_DAILY_CHECKS=200@GEMINI_DAILY_MODERATION=200" \
+  --set-secrets "DATABASE_URL=DATABASE_URL:latest,SUPABASE_SECRET_KEY=SUPABASE_SECRET_KEY:latest,BAN_HASH_SALT=BAN_HASH_SALT:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest,GOOGLE_FACTCHECK_API_KEY=GOOGLE_FACTCHECK_API_KEY:latest"
 ```
+
+> `--set-env-vars "^@^..."`: o `^@^` troca o separador das variáveis para `@`, porque
+> `GEMINI_MODEL_FALLBACKS` tem vírgula no valor.
+>
+> `--timeout 180`: uma checagem nova leva até ~92 s no pior caso (download 20 s + agências
+> 12 s + Gemini 60 s, já contando novas tentativas e a troca de modelo). Se outra pessoa
+> estiver checando o mesmo conteúdo, a requisição espera pelo resultado dela e, se a outra
+> falhar, assume a checagem em até 80 s (no máximo ~172 s).
 
 > **Projeto com "Legacy JWT Secret" (passo 5 da seção 1.1)?** Crie também o segredo
 > `SUPABASE_JWT_SECRET` (como na seção 3.1) e acrescente
