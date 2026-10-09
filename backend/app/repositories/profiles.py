@@ -77,10 +77,12 @@ class SqlProfileRepository:
 
     async def nickname_taken(self, apelido: str) -> bool:
         async with self._session.begin():
+            # Operador qualificado: sem `extensions` no search_path, `=` cairia em text = text
+            # (sensível a maiúsculas). O índice único usa o operador do citext de qualquer jeito.
             taken = await self._session.scalar(
                 text(
                     "select exists(select 1 from public.profiles "
-                    "where apelido = cast(:apelido as extensions.citext))"
+                    "where apelido operator(extensions.=) cast(:apelido as extensions.citext))"
                 ),
                 {"apelido": apelido},
             )
