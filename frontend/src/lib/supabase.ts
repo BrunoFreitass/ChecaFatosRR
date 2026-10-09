@@ -8,6 +8,8 @@ export const supabase = createClient(env.supabaseUrl, env.supabasePublishableKey
     flowType: "pkce",
     persistSession: true,
     autoRefreshToken: true,
-    detectSessionInUrl: true,
+    // A troca do ?code= é feita só em /auth/callback (auth/oauthCallback.ts), uma única vez
+    // e com o motivo real da falha. No modo automático o erro era engolido.
+    detectSessionInUrl: false,
   },
 });

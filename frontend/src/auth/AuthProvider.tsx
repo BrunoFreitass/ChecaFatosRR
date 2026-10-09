@@ -32,6 +32,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Incrementar dispara uma nova busca do perfil (o estado anterior continua visível).
   const [round, setRound] = useState(0);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
+  // Mensagem quando a API recusa o token (401): o signOut zera a sessão, mas a tela de
+  // /auth/callback precisa explicar o motivo em vez de "o login expirou".
+  const [rejection, setRejection] = useState<string | null>(null);
 
   useEffect(() => {
     // Só guarda o id: chamar outras funções do supabase dentro do callback pode travar.
@@ -64,6 +67,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
         if (error instanceof ApiError && error.status === 401) {
           // Sessão recusada pelo servidor: trata como anônimo mesmo se o signOut falhar.
+          if (!controller.signal.aborted) {
+            setRejection(
+              "O servidor não aceitou o seu login. Tente de novo; se continuar, avise o suporte.",
+            );
+          }
           settle(ANONYMOUS);
           void supabase.auth.signOut({ scope: "local" }).catch(() => undefined);
           return;
@@ -80,10 +88,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [userId, round]);
 
   let state: State = LOADING;
-  if (userId === null) state = ANONYMOUS;
+  if (userId === null) state = rejection ? { ...ANONYMOUS, errorMessage: rejection } : ANONYMOUS;
   else if (userId && loaded?.userId === userId) state = loaded.state;
 
   const signInWithGoogle = useCallback(async (returnPath: string) => {
+    setRejection(null);
     saveReturnPath(returnPath);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
