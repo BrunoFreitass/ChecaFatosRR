@@ -352,3 +352,13 @@ Campos: `pst` (% seções totalizadas), `dg`/`hg` (data/hora), `cand[]` (`nm`, `
 - **Etapa 4 (definido pelo usuário):** ao excluir a conta de um usuário **suspenso**, guardar o hash do `sub` do Google junto com a **data de fim da suspensão**. Se ele recriar a conta com o mesmo Google, a suspensão continua valendo até essa data; a punição não zera. Implementação prevista: coluna `suspended_until` em `banned_identities` (nula = banimento permanente), checada no `POST /me` e na criação do perfil.
 - **Contato e encarregado de dados (LGPD):** checafatosrr@gmail.com.
 - **Pendente:** o teste manual da etapa 1 foi aprovado sem os resultados registrados. A exclusão de conta via Admin API com a chave `sb_secret_` não está verificada.
+
+## 11. Etapa 2 (09/10/2026)
+Plano: `.claude/plans/etapa-2-checagem.plan.md`. Mudanças em relação a este plano:
+- **Texto colado** entra junto com os links: nova tabela `texts`; `checks` passa a ter `link_id` **ou** `text_id`.
+- **Limites**: 60/h de consultas ao cache, além das 10/h de checagens novas.
+- **Cotas diárias do Gemini** separadas (`GEMINI_DAILY_CHECKS` / `GEMINI_DAILY_MODERATION`), na tabela `gemini_usage`.
+- **Confiança < 40** vira `nao_verificavel`, mantendo a explicação.
+- **Checagens de texto não aparecem em "Últimas"**: o acesso é só pelo link compartilhado (`noindex`).
+- **Identificador público aleatório** (`checks.public_id`, 12 caracteres base32, 60 bits) para links e textos. O `bigint` é só interno, nunca aparece em rota, resposta ou cursor. **Vale também para as próximas etapas**: comentários, anúncios e admin não expõem ids sequenciais em URL pública.
+- **Etapa 3 (decidido pelo usuário):** **sem comentários em checagens de texto no MVP**. Comentários só em links e no feed geral.
