@@ -6,7 +6,10 @@ requires-python = ">=3.12,<3.13"
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q --strict-markers"
+markers = [
+  "integration: precisa de Postgres real (TEST_DATABASE_URL); roda na CI",
+]
 
 [tool.ruff]
 line-length = 100
@@ -16,4 +19,5 @@ target-version = "py312"
 select = ["E", "F", "W", "I", "B", "UP", "S", "ASYNC", "RUF"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]
+# S101: assert é o idioma do pytest. S105/S106: segredos fictícios usados só nos testes.
+"tests/**" = ["S101", "S105", "S106"]

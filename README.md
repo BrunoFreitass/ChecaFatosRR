@@ -42,7 +42,7 @@ cd frontend && npm run lint && npm run build
 | Etapa | Status |
 |---|---|
 | 0. Esqueleto, banco, Dockerfile, CI | ✅ |
-| 1. Login Google + apelido | ⏳ |
+| 1. Login Google + apelido | ✅ (aguardando teste manual com o Supabase real) |
 | 2. Checagem de links | ⏳ |
 | Deploy público | ⏳ |
 | 5. Apuração TSE | ⏳ |

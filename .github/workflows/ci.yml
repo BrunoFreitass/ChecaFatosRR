@@ -14,6 +14,21 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    # Postgres descartável para os testes de integração (tests/integration).
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,7 +39,8 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
       - run: ruff format --check .
-      - run: pytest -W error
+      # Inclui os testes de integração; sem TEST_DATABASE_URL eles falham na CI (não pulam).
+      - run: pytest -W error -rs
 
   frontend:
     runs-on: ubuntu-latest

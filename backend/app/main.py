@@ -9,7 +9,7 @@ from app.db import dispose_engine
 from app.errors import register_error_handlers
 from app.logging_setup import configure_logging
 from app.middleware import RequestContextMiddleware
-from app.routers import health
+from app.routers import health, profiles
 
 
 @asynccontextmanager
@@ -49,4 +49,5 @@ def create_app() -> FastAPI:
     )
     register_error_handlers(app)
     app.include_router(health.router)
+    app.include_router(profiles.router)
     return app

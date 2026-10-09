@@ -49,7 +49,11 @@ def get_engine() -> AsyncEngine:
             # Criptografa sem validar o certificado. Aceitável até a etapa 9 (ver DEPLOY.md).
             connect_args["ssl"] = "require"
         _engine = create_async_engine(
-            settings.database_url, poolclass=NullPool, connect_args=connect_args
+            settings.database_url,
+            poolclass=NullPool,
+            connect_args=connect_args,
+            # Erros de SQL não levam os parâmetros (apelidos, ids) para os logs.
+            hide_parameters=True,
         )
         _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False)
     return _engine

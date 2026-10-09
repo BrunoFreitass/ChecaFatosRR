@@ -347,3 +347,8 @@ Campos: `pst` (% seções totalizadas), `dg`/`hg` (data/hora), `cand[]` (`nm`, `
 **Respostas**: 1 fail-open + fila `nao_moderado_ia` · 2 apelido `[A-Za-z0-9_]` · 3 *pendente (contas Supabase/GCP/Cloudflare)* · 4 sim · 5 sim.
 
 **DEPLOY.md**: incluir os comandos para min-instances=1 em 25/10 e para voltar a 0 depois.
+
+## 10. Decisões após a etapa 1 (08/10/2026)
+- **Etapa 4 (definido pelo usuário):** ao excluir a conta de um usuário **suspenso**, guardar o hash do `sub` do Google junto com a **data de fim da suspensão**. Se ele recriar a conta com o mesmo Google, a suspensão continua valendo até essa data; a punição não zera. Implementação prevista: coluna `suspended_until` em `banned_identities` (nula = banimento permanente), checada no `POST /me` e na criação do perfil.
+- **Contato e encarregado de dados (LGPD):** checafatosrr@gmail.com.
+- **Pendente:** o teste manual da etapa 1 foi aprovado sem os resultados registrados. A exclusão de conta via Admin API com a chave `sb_secret_` não está verificada.

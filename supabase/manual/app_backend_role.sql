@@ -32,6 +32,12 @@ begin
 end
 $$;
 
+-- O backend lê o `sub` do Google em auth.identities (banimento). Se este grant for recusado
+-- (auth.* pertence ao supabase_auth_admin), use uma função security definer em public ou
+-- a Admin API (GET /auth/v1/admin/users/{id} → identities[].identity_data.sub).
+grant usage on schema auth to app_backend;
+grant select (user_id, provider, provider_id) on auth.identities to app_backend;
+
 -- moderation_log é append-only para o backend (o expurgo LGPD usa função security definer).
 revoke update, delete on public.moderation_log from app_backend;
 grant execute on function public.purge_moderation_snapshots(interval) to app_backend;

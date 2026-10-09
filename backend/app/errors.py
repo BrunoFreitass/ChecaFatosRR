@@ -11,6 +11,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.db import DatabaseNotConfiguredError
+
 _HTTP_MESSAGES: dict[int, tuple[str, str]] = {
     400: ("bad_request", "Requisição inválida."),
     401: ("unauthorized", "Você precisa entrar com sua conta Google."),
@@ -65,6 +67,10 @@ def register_error_handlers(app: FastAPI) -> None:
         code, message = _HTTP_MESSAGES.get(exc.status_code, _DEFAULT_HTTP_MESSAGE)
         # Preserva WWW-Authenticate, Retry-After, Allow etc.
         return error_response(exc.status_code, code, message, headers=exc.headers)
+
+    @app.exception_handler(DatabaseNotConfiguredError)
+    async def _db_not_configured(_: Request, __: DatabaseNotConfiguredError) -> JSONResponse:
+        return error_response(503, "db_not_configured", "Serviço indisponível no momento.")
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:

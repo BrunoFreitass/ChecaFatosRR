@@ -34,6 +34,41 @@ Os valores entre `<>` são seus; nunca faça commit de senhas ou chaves.
 
 ---
 
+## 1.1 Login com Google (OAuth)
+
+**No Google Cloud Console** (<https://console.cloud.google.com>):
+
+1. **Tela de consentimento**: *APIs e serviços → Tela de consentimento OAuth* (ou *Google Auth
+   Platform → Branding*).
+   - Nome do app: ChecaFatosRR; e-mail de suporte: o seu.
+   - Público: **Externo**.
+   - Escopos: só `openid`, `email` e `profile`.
+   - Domínio autorizado: `supabase.co`.
+   - Enquanto testa, cadastre o seu e-mail em **Usuários de teste**.
+2. **Cliente**: *Credenciais → Criar credenciais → ID do cliente OAuth → Aplicativo da Web*.
+   - Origens JavaScript autorizadas: `http://localhost:5173`. O domínio do Pages entra no deploy.
+   - URI de redirecionamento autorizado: `https://<project_ref>.supabase.co/auth/v1/callback`
+   - Copie o **Client ID** e o **Client secret**.
+
+**No Supabase:**
+
+3. *Authentication → Sign In / Providers → Google*: ative e cole o Client ID e o Client secret.
+   **Desative o provedor Email**, para que o login seja só com Google.
+4. *Authentication → URL Configuration*:
+   - **Site URL**: `http://localhost:5173` (depois, a URL do Pages).
+   - **Redirect URLs**: `http://localhost:5173/auth/callback` (depois, `https://<seu-projeto>.pages.dev/auth/callback`).
+5. *Project Settings → JWT Keys*:
+   - Se houver **JWT Signing Keys (ECC/RSA)**, deixe `SUPABASE_JWT_SECRET` vazio.
+   - Se só houver o **Legacy JWT Secret**, copie o valor para `SUPABASE_JWT_SECRET`.
+
+**Antes do deploy público:**
+- No Google, mude o app para **Em produção**. Sem isso, só os usuários de teste conseguem entrar.
+  Isso exige a URL da Política de Privacidade (`https://<seu-projeto>.pages.dev/privacidade`).
+- Adicione a origem e o redirect do Pages nos dois painéis (Google e Supabase).
+- Preencha o e-mail de contato em `frontend/src/legal.ts`.
+
+---
+
 ## 2. Backend local
 
 ```bash
@@ -72,14 +107,21 @@ gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
 
 ### 3.1 Segredos (Secret Manager)
 
-```bash
-printf '%s' '<DATABASE_URL do pooler>' | gcloud secrets create DATABASE_URL --data-file=-
+Três segredos: `DATABASE_URL`, `SUPABASE_SECRET_KEY` e `BAN_HASH_SALT`. As outras variáveis não
+são secretas e vão em `--set-env-vars`.
 
-# Permite que o Cloud Run leia o segredo (conta de serviço padrão do Compute):
+```bash
+printf '%s' '<DATABASE_URL do pooler>'   | gcloud secrets create DATABASE_URL --data-file=-
+printf '%s' '<sb_secret_...>'            | gcloud secrets create SUPABASE_SECRET_KEY --data-file=-
+printf '%s' '<o mesmo BAN_HASH_SALT do .env>' | gcloud secrets create BAN_HASH_SALT --data-file=-
+
+# Permite que o Cloud Run leia os segredos (conta de serviço padrão do Compute):
 PROJECT_NUMBER=$(gcloud projects describe <PROJECT_ID> --format='value(projectNumber)')
-gcloud secrets add-iam-policy-binding DATABASE_URL \
-  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
-  --role="roles/secretmanager.secretAccessor"
+for SECRET in DATABASE_URL SUPABASE_SECRET_KEY BAN_HASH_SALT; do
+  gcloud secrets add-iam-policy-binding "$SECRET" \
+    --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+    --role="roles/secretmanager.secretAccessor"
+done
 ```
 
 Para trocar o valor depois: `printf '%s' '<novo>' | gcloud secrets versions add DATABASE_URL --data-file=-`
@@ -106,9 +148,14 @@ gcloud run deploy checafatosrr-api \
   --allow-unauthenticated \
   --min-instances 0 --max-instances 3 \
   --cpu 1 --memory 512Mi --concurrency 40 --timeout 60 \
-  --set-env-vars "APP_ENV=production,LOG_LEVEL=INFO,CORS_ORIGINS=https://<seu-projeto>.pages.dev" \
-  --set-secrets "DATABASE_URL=DATABASE_URL:latest"
+  --set-env-vars "APP_ENV=production,LOG_LEVEL=INFO,CORS_ORIGINS=https://<seu-projeto>.pages.dev,SUPABASE_URL=https://<project_ref>.supabase.co,ADMIN_EMAIL=<seu-email>" \
+  --set-secrets "DATABASE_URL=DATABASE_URL:latest,SUPABASE_SECRET_KEY=SUPABASE_SECRET_KEY:latest,BAN_HASH_SALT=BAN_HASH_SALT:latest"
 ```
+
+> **Projeto com "Legacy JWT Secret" (passo 5 da seção 1.1)?** Crie também o segredo
+> `SUPABASE_JWT_SECRET` (como na seção 3.1) e acrescente
+> `,SUPABASE_JWT_SECRET=SUPABASE_JWT_SECRET:latest` ao `--set-secrets`. Sem isso, todo login
+> dá 401 em produção.
 
 Teste: `curl https://<url-do-servico>/health` e `curl https://<url-do-servico>/health/ready`.
 
@@ -189,7 +236,8 @@ Deploy pela integração com o Git (recomendado):
 
 1. Cloudflare → *Workers & Pages → Create → Pages → Connect to Git*.
 2. **Root directory**: `frontend` · **Build command**: `npm run build` · **Output**: `dist`.
-3. **Variáveis de ambiente** (Production): `VITE_API_URL=https://<url-do-cloud-run>` e
+3. **Variáveis de ambiente** (Production): `VITE_API_URL=https://<url-do-cloud-run>`,
+   `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY` e
    `NODE_VERSION=24` (o Vite 8 exige Node recente; o arquivo `frontend/.node-version` também fixa a versão).
 4. Cada push na `main` publica sozinho.
 

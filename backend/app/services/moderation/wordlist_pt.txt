@@ -1,0 +1,52 @@
+# Filtro local (camada 1 da moderação): palavrões e termos sexuais em pt-BR.
+# Uma entrada por linha, já normalizada (minúsculas, sem acento). Seções = categoria.
+#
+#   palavra   → bloqueia também DENTRO de outras palavras ("caralhooo", "p0rr4da")
+#   =palavra  → bloqueia só como palavra INTEIRA (evita "cuca", "computador", "enviado")
+#   ~palavra  → palavra inteira, mas SÓ em apelidos (ambíguas no texto: "não rola", "pica-pau")
+#
+# De propósito, a lista é curta e sem ambiguidade. Termos que dependem de contexto
+# (ex.: "estupro", "nazista", "macaco" em notícias) e a maior parte do discurso de ódio
+# ficam para a camada de IA, que entende o contexto. Falso positivo aqui bloqueia
+# comentário legítimo e gera strike indevido.
+
+[palavrao]
+porra
+caralho
+cuzao
+merda
+bosta
+fdp
+vsf
+pqp
+filhodaputa
+arrombad
+fodase
+foder
+fodido
+=foda
+=cu
+=puta
+=putas
+=cacete
+=krl
+=crl
+~corno
+
+[sexual]
+buceta
+xoxota
+xereca
+punheta
+siririca
+boquete
+piroca
+=putaria
+=xota
+~pica
+~rola
+
+[discurso_de_odio]
+=viado
+=viadinho
+=viadao

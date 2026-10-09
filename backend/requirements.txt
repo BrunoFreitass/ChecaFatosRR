@@ -1,20 +1,28 @@
-# Dependências diretas: fastapi, uvicorn[standard], pydantic-settings, SQLAlchemy[asyncio], asyncpg.
+# Dependências diretas: fastapi, uvicorn[standard], pydantic-settings, SQLAlchemy[asyncio],
+# asyncpg, PyJWT[crypto], httpx.
 # Transitivas fixadas para builds reproduzíveis (pip freeze num venv limpo). Só uvloop
 # (Linux, via uvicorn[standard]) fica sem versão fixa, porque não existe no Windows.
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.15.1
 asyncpg==0.32.0
+certifi==2026.7.22
+cffi==2.1.1
 click==8.5.0
+cryptography==50.0.2
 fastapi==0.143.0
 greenlet==3.5.6
 h11==0.16.0
+httpcore==1.0.9
 httptools==0.8.0
+httpx==0.28.1
 idna==3.20
 opentelemetry-api==1.45.1
+pycparser==3.1
 pydantic==2.14.0
 pydantic-settings==2.15.0
 pydantic_core==2.50.0
+PyJWT[crypto]==2.15.1
 python-dotenv==1.2.4
 PyYAML==6.0.3
 SQLAlchemy[asyncio]==2.1.4
