@@ -74,7 +74,8 @@ def test_relative_root_cert_is_resolved_from_the_backend_folder(tmp_path: Path) 
     from app.config import resolve_backend_path
 
     (tmp_path / "certs").mkdir()
-    cert = tmp_path / "certs" / "supabase-ca.crt"
+    # Nome que não existe no repositório: o teste não depende da pasta de onde o pytest roda.
+    cert = tmp_path / "certs" / "so-no-teste-ca.crt"
     cert.write_text(PEM, encoding="utf-8")
-    assert resolve_backend_path("certs/supabase-ca.crt", base=tmp_path) == cert
+    assert resolve_backend_path("certs/so-no-teste-ca.crt", base=tmp_path) == cert
     assert resolve_backend_path(str(cert), base=Path("/outro")) == cert  # absoluto fica igual
