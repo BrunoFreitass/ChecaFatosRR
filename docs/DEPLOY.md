@@ -156,6 +156,7 @@ keep-alive da seção 3.4) e pode ser reiniciado pelo Render a qualquer momento.
 | `CORS_ORIGINS` | Não | `https://<seu-projeto>.pages.dev` (provisório: `http://localhost:5173`; tire o localhost depois) |
 | `GEMINI_DAILY_CHECKS` / `GEMINI_DAILY_MODERATION` | Não | pelo RPD do modelo (a soma não passa da cota) |
 | `APP_ENV`, `LOG_LEVEL`, `DATABASE_SSL_ROOT_CERT`, `GEMINI_MODEL_FALLBACKS`, `DB_POOL_SIZE`, `DB_POOL_MAX_OVERFLOW`, `EXTRACT_CONCURRENCY`, `UVICORN_LIMIT_CONCURRENCY` | Não | já definidas no `render.yaml` |
+| `GEMINI_THINKING_LEVEL` | Não | **não defina** (padrão: thinking desligado por `thinking_budget=0`). Emergência sem deploy: `low` se o log `gemini_usage` mostrar `thoughts_tokens` > 0 (o 3.8-flash recusa `minimal`) |
 | `PORT` | — | **não defina**: o Render injeta |
 
 As demais variáveis do `backend/app/config.py` usam o valor padrão. Copie cada valor do `backend/.env`
@@ -312,10 +313,10 @@ gcloud run deploy checafatosrr-api \
 > `--set-env-vars "^@^..."`: o `^@^` troca o separador das variáveis para `@`, porque
 > `GEMINI_MODEL_FALLBACKS` tem vírgula no valor.
 >
-> `--timeout 180`: uma checagem nova leva até ~92 s no pior caso (download 20 s + agências
-> 12 s + Gemini 60 s, já contando novas tentativas e a troca de modelo). Se outra pessoa
+> `--timeout 180`: uma checagem nova leva até ~107 s no pior caso (download 20 s + agências
+> 12 s + Gemini 75 s, já contando novas tentativas e a troca de modelo). Se outra pessoa
 > estiver checando o mesmo conteúdo, a requisição espera pelo resultado dela e, se a outra
-> falhar, assume a checagem em até 80 s (no máximo ~172 s).
+> falhar, assume a checagem em até 70 s (no máximo ~177 s).
 
 > **Projeto com "Legacy JWT Secret" (passo 5 da seção 1.1)?** Crie também o segredo
 > `SUPABASE_JWT_SECRET` (como na seção 3.1) e acrescente

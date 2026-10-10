@@ -5,6 +5,7 @@ Complementa test_gemini_retry.py (que testa a política de novas tentativas isol
 
 import asyncio
 import json
+import logging
 from types import SimpleNamespace
 from typing import Any
 
@@ -72,11 +73,12 @@ def install_fake_client(monkeypatch: pytest.MonkeyPatch, script: list[Any]) -> F
     return models
 
 
-def text_response(text: str | None, finish: str = "STOP") -> Any:
+def text_response(text: str | None, finish: str = "STOP", usage: Any = None) -> Any:
     return SimpleNamespace(
         text=text,
         candidates=[SimpleNamespace(finish_reason=finish)],
         prompt_feedback=None,
+        usage_metadata=usage,
     )
 
 
@@ -227,3 +229,51 @@ def test_settings_repr_hides_secrets() -> None:
     for secret in secrets:
         assert secret not in shown
     assert settings.gemini_api_key == FAKE_KEY  # continua acessível no código
+
+
+# ---------- uso (tamanho do texto e tokens) no log ----------
+
+
+async def test_usage_is_logged_with_prompt_size_and_tokens(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Mostra se o thinking está mesmo desligado (thoughts_tokens) e o peso de cada checagem.
+    usage = SimpleNamespace(
+        prompt_token_count=2100, candidates_token_count=380, thoughts_token_count=0
+    )
+    install_fake_client(monkeypatch, [text_response(ANSWER, usage=usage)])
+    caplog.set_level(logging.INFO, logger=gemini.logger.name)
+
+    await google_generate(FAKE_KEY, [MODEL])("p" * 6509)
+
+    [record] = [r for r in caplog.records if r.getMessage() == "gemini_usage"]
+    assert record.model == MODEL
+    assert record.prompt_chars == 6509
+    assert (record.input_tokens, record.output_tokens, record.thoughts_tokens) == (2100, 380, 0)
+    assert isinstance(record.elapsed_ms, int)
+    assert FAKE_KEY not in caplog.text
+
+
+async def test_usage_log_tolerates_missing_metadata(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    install_fake_client(monkeypatch, [text_response(ANSWER)])
+    caplog.set_level(logging.INFO, logger=gemini.logger.name)
+
+    await google_generate(FAKE_KEY, [MODEL])("prompt")
+
+    [record] = [r for r in caplog.records if r.getMessage() == "gemini_usage"]
+    assert record.thoughts_tokens is None
+
+
+async def test_error_log_has_the_prompt_size(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    install_fake_client(monkeypatch, [api_error(400, "invalid")])
+    caplog.set_level(logging.WARNING, logger=gemini.logger.name)
+
+    with pytest.raises(GeminiUnavailableError):
+        await google_generate(FAKE_KEY, [MODEL])("p" * 1234)
+
+    [record] = [r for r in caplog.records if r.getMessage() == "gemini_api_error"]
+    assert record.prompt_chars == 1234

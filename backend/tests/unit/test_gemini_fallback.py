@@ -4,6 +4,7 @@ Em 429 de cota DIÁRIA do modelo atual, tenta o próximo da lista; o log diz qua
 Só mocks: o SDK é simulado e nenhum teste chama o Google.
 """
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -16,13 +17,16 @@ from app.config import Settings
 from app.routers import checks as checks_router
 from app.services import gemini
 from app.services.gemini import (
+    SLOW_MODEL_COOLDOWN_SECONDS,
     GeminiAnalyzer,
+    GeminiModelSlowError,
     GeminiQuotaExhaustedError,
     GeminiUnavailableError,
     Generated,
     google_generate,
     seconds_until_quota_reset,
     with_model_fallback,
+    with_retries,
 )
 from tests.unit.test_gemini_client import ANSWER, FAKE_KEY, api_error, data, text_response
 
@@ -367,3 +371,150 @@ async def test_daily_quota_named_only_in_the_message_also_falls_back(
     )
     assert await google_generate(FAKE_KEY, [PRIMARY, BACKUP])("prompt") == Generated(ANSWER, BACKUP)
     assert models.calls == [PRIMARY, BACKUP]
+
+
+# ---------- modelo lento (504 de prazo repetido): troca em vez de insistir ----------
+# Teste em produção de 10/10/2026: o 3.8-flash deu 504 "Deadline expired" em 24 s e de novo
+# em 24 s; medido depois sem o nosso teto, não respondeu nem em 60 s. Uma 3ª tentativa no
+# mesmo modelo só gastaria o orçamento; o próximo da cadeia ainda pode responder.
+
+
+def deadline_504() -> Exception:
+    return api_error(504, "Deadline expired before operation could complete.")
+
+
+async def test_repeated_504_switches_to_the_next_model(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    models, _ = install(
+        monkeypatch,
+        {PRIMARY: [deadline_504(), deadline_504()], BACKUP: [text_response(ANSWER)]},
+    )
+    caplog.set_level(logging.INFO, logger=gemini.logger.name)
+
+    result = await google_generate(FAKE_KEY, [PRIMARY, BACKUP])("prompt")
+
+    assert result == Generated(ANSWER, BACKUP)
+    assert models.calls == [PRIMARY, PRIMARY, BACKUP]  # sem 3ª tentativa no lento
+    assert models_logged(caplog, "gemini_model_slow") == [PRIMARY]
+
+
+async def test_a_single_504_retries_the_same_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    models, _ = install(monkeypatch, {PRIMARY: [deadline_504(), text_response(ANSWER)], BACKUP: []})
+
+    result = await google_generate(FAKE_KEY, [PRIMARY, BACKUP])("prompt")
+
+    assert result == Generated(ANSWER, PRIMARY)
+    assert models.calls == [PRIMARY, PRIMARY]
+
+
+async def test_attempts_cut_by_our_timeout_twice_also_switch() -> None:
+    calls: list[str] = []
+
+    async def hangs(_: str) -> str:
+        calls.append("p")
+        await asyncio.sleep(10)
+        return "nunca"
+
+    async def answers(_: str) -> str:
+        calls.append("b")
+        return "do reserva"
+
+    chain = with_model_fallback(
+        [
+            ("p", with_retries(hangs, attempt_timeout=0.02, base_delay=0, model="p")),
+            ("b", answers),
+        ]
+    )
+    assert await chain("x") == Generated("do reserva", "b")
+    assert calls == ["p", "p", "b"]
+
+
+async def test_slow_model_is_skipped_for_a_while_then_tried_again() -> None:
+    now = [0.0]
+    calls: list[str] = []
+    primary_slow = [True]
+
+    async def primary(_: str) -> str:
+        calls.append("p")
+        if primary_slow[0]:
+            raise GeminiModelSlowError("p")
+        return "do primário"
+
+    async def backup(_: str) -> str:
+        calls.append("b")
+        return "do reserva"
+
+    chain = with_model_fallback([("p", primary), ("b", backup)], clock=lambda: now[0])
+
+    assert await chain("x") == Generated("do reserva", "b")
+    # As próximas checagens não pagam de novo ~50 s no modelo lento.
+    assert await chain("x") == Generated("do reserva", "b")
+    assert calls == ["p", "b", "b"]
+
+    now[0] = SLOW_MODEL_COOLDOWN_SECONDS
+    primary_slow[0] = False
+    assert await chain("x") == Generated("do primário", "p")
+
+
+async def test_every_model_slow_is_unavailable_not_out_of_quota() -> None:
+    now = [0.0]
+    calls: list[str] = []
+
+    async def slow(_: str) -> str:
+        calls.append("x")
+        raise GeminiModelSlowError("x")
+
+    chain = with_model_fallback([("p", slow), ("b", slow)], clock=lambda: now[0])
+    with pytest.raises(GeminiUnavailableError):
+        await chain("x")
+    # Todos em espera: tenta mesmo assim (lento ainda é melhor que nenhum), sem "sem cota".
+    assert not chain.all_exhausted()
+    with pytest.raises(GeminiUnavailableError):
+        await chain("x")
+    assert calls == ["x", "x", "x", "x"]
+
+
+async def test_without_retries_a_single_504_already_switches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # GEMINI_MAX_RETRIES=0: não há "2ª vez" no mesmo modelo; o prazo estourado já troca.
+    models, _ = install(monkeypatch, {PRIMARY: [deadline_504()], BACKUP: [text_response(ANSWER)]})
+
+    result = await google_generate(FAKE_KEY, [PRIMARY, BACKUP], max_retries=0)("prompt")
+
+    assert result == Generated(ANSWER, BACKUP)
+    assert models.calls == [PRIMARY, BACKUP]
+
+
+async def test_other_error_between_504s_restarts_the_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    # "Seguidas": 504, 503, 504 não são dois prazos seguidos; segue as regras de retry.
+    models, _ = install(
+        monkeypatch,
+        {
+            PRIMARY: [deadline_504(), api_error(503, "high demand"), deadline_504()],
+            BACKUP: [text_response(ANSWER)],
+        },
+    )
+
+    with pytest.raises(GeminiUnavailableError) as caught:
+        await google_generate(FAKE_KEY, [PRIMARY, BACKUP])("prompt")
+    assert not isinstance(caught.value, GeminiModelSlowError)
+    assert models.calls == [PRIMARY, PRIMARY, PRIMARY]
+
+
+async def test_sdk_read_timeouts_also_count_as_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    models, _ = install(
+        monkeypatch,
+        {
+            PRIMARY: [httpx.ReadTimeout("lento"), httpx.ReadTimeout("lento")],
+            BACKUP: [text_response(ANSWER)],
+        },
+    )
+
+    result = await google_generate(FAKE_KEY, [PRIMARY, BACKUP])("prompt")
+
+    assert result == Generated(ANSWER, BACKUP)
+    assert models.calls == [PRIMARY, PRIMARY, BACKUP]
