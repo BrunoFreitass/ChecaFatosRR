@@ -393,7 +393,9 @@ Deploy pela integração com o Git (recomendado):
    *Settings → Builds → Branch deployments*, porque o build falha sem as variáveis):
    `VITE_API_URL=https://<servico>.onrender.com`,
    `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY` e
-   `NODE_VERSION=24` (o Vite 8 exige Node recente; o arquivo `frontend/.node-version` também fixa a versão).
+   **sem** `NODE_VERSION`: a versão vem do `frontend/.node-version` (a mesma da CI). Se a variável
+   existir, ela vence o arquivo; apague-a. O `frontend/.npmrc` (`engine-strict`) faz o build falhar
+   se o Node não atender aos pacotes, em vez de só avisar (EBADENGINE).
 4. Cada push na `main` publica sozinho.
 
 Faça o deploy **sempre pela integração com o Git**. Um `wrangler pages deploy` de um `dist`
