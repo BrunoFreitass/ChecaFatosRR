@@ -35,12 +35,32 @@ from app.services.gemini import (
     is_false_future_claim,
     parse_verdict,
 )
+from app.services.url_guard import BlockedAddressError, InvalidUrlError, normalize_url
 
 MAX_REAL_CALLS = 3
 REAL_RUN_FLAG = "CHECAFATOS_EVAL_REAL"
 CATEGORIES = frozenset({"noticia_real", "boato_checado", "whatsapp"})
 VEREDITOS = frozenset(get_args(Veredito))
 HERE = Path(__file__).parent
+# Dúvida sobre QUEM publicou, num link que o servidor baixou daquele domínio (regra 10).
+# Alarme heurístico: dúvida sobre FATO ("não é possível confirmar se o TSE...") e "suposto"
+# marcando alegação ("suposto autor do crime") não contam.
+_OUTLET = (
+    r"(?:uma?\s+)?(?:mat[ée]ria|reportagem|not[íi]cia|p[áa]gina|publica[çc][ãa]o|texto|"
+    r"conte[úu]do|portal|ve[íi]culo|site)"
+)
+_AUTHORSHIP_DOUBT = re.compile(
+    r"\bformatad[ao]s?\s+como\b"
+    rf"|\bsupost[ao]s?\s+{_OUTLET}\b"
+    rf"|\bse\s+(?:apresentam?|passa)\s+(?:como|por)\s+{_OUTLET}\b"
+    rf"|\bapresentando-se\s+como\s+{_OUTLET}\b"
+    rf"|\bautenticidade\s+d[ao]\s+{_OUTLET}"
+    r"|\bpode\s+ser\s+(?:uma\s+)?montagem\b"
+    rf"|\b(?:confirmar|garantir)\s+(?:que\s+)?(?:a|o)\s+{_OUTLET}\s+(?:seja|[ée]|foi)\b"
+    r"|\b(?:confirmar|garantir)\s+a\s+(?:autoria|origem)\b",
+    re.IGNORECASE,
+)
+_SUPOSTO = re.compile(r"\bsupost[ao]s?\b", re.IGNORECASE)
 _FUTURE_WORDS = re.compile(r"futur|ainda n[ãa]o (?:ocorr|acontec)", re.IGNORECASE)
 
 
@@ -60,6 +80,8 @@ class Case:
     publicado_em: date | None
     checagens: list[AgencyCheck]
     aceitos: list[str]  # vereditos aceitos como acerto
+    # Link do próprio veículo (False = domínio que imita: a IA DEVE desconfiar da autoria).
+    autoria_confirmada: bool = True
 
     def to_input(self) -> AnalysisInput:
         return AnalysisInput(
@@ -70,6 +92,10 @@ class Case:
             agency_checks=self.checagens,
             content_urls=[],
             published_at=self.publicado_em,
+            # Link do eval = página obtida daquele domínio (como no serviço, depois do fetch).
+            source_domain=normalize_url(self.url).domain
+            if self.kind == "link" and self.url
+            else None,
         )
 
 
@@ -80,6 +106,8 @@ class CaseResult:
     veredito_ia: str
     pontos: list[str]  # depois da pós-validação (o que o usuário vê)
     pontos_ia: list[str] = field(default_factory=list)  # resposta crua do modelo
+    resumo: str = ""
+    contexto: str = ""  # contexto_faltante (o usuário também vê)
 
 
 @dataclass(frozen=True)
@@ -94,6 +122,10 @@ class Report:
     erro_de_data_ia: list[str] = field(default_factory=list)
     # Pontos com "futuro"/"ainda não ocorreu" que o filtro MANTEVE: revisão humana.
     revisar_futuro: list[str] = field(default_factory=list)
+    # Link com origem confirmada em que a IA questionou a AUTORIA ("formatada como", "suposta").
+    autoria_questionada: list[str] = field(default_factory=list)
+    # Link confirmado com "suposto/suposta": revisão humana (pode ser alegação legítima).
+    revisar_suposto: list[str] = field(default_factory=list)
 
 
 def load_cases(path: Path) -> list[Case]:
@@ -108,6 +140,11 @@ def load_cases(path: Path) -> list[Case]:
         if item["kind"] not in get_args(InputKind):
             raise ValueError(f"caso {item['id']}: kind inválido {item['kind']}")
         published = item.get("publicado_em")
+        if item.get("url"):
+            try:
+                normalize_url(item["url"])
+            except (InvalidUrlError, BlockedAddressError) as exc:
+                raise ValueError(f"caso {item['id']}: url inválida ({exc})") from exc
         cases.append(
             Case(
                 id=item["id"],
@@ -120,12 +157,18 @@ def load_cases(path: Path) -> list[Case]:
                 publicado_em=date.fromisoformat(published) if published else None,
                 checagens=[AgencyCheck(**c) for c in item.get("checagens", [])],
                 aceitos=accepted,
+                autoria_confirmada=bool(item.get("autoria_confirmada", True)),
             )
         )
     ids = [c.id for c in cases]
     if len(set(ids)) != len(ids):
         raise ValueError("ids de caso repetidos")
     return cases
+
+
+def _matches(pattern: re.Pattern[str], r: CaseResult) -> bool:
+    texts = [r.resumo, r.contexto, *r.pontos, *r.pontos_ia]
+    return any(pattern.search(t) for t in texts if t)
 
 
 def grade(results: list[CaseResult], today: date | None = None) -> Report:
@@ -146,6 +189,8 @@ def grade(results: list[CaseResult], today: date | None = None) -> Report:
     # Detector largo e independente do filtro: o que sobrou com cara de "futuro" é revisado
     # por uma pessoa (pode ser aviso legítimo ou um erro que o filtro deixou passar).
     review = [r.case.id for r in results if any(_FUTURE_WORDS.search(p) for p in r.pontos)]
+    # Links do próprio veículo: ali a IA não deve duvidar de quem publicou (regra 10).
+    confirmed = [r for r in results if r.case.kind == "link" and r.case.autoria_confirmada]
     return Report(
         total=len(results),
         acertos=sum(r.veredito in r.case.aceitos for r in results),
@@ -153,6 +198,8 @@ def grade(results: list[CaseResult], today: date | None = None) -> Report:
         falso_falso=false_false,
         erro_de_data_ia=date_mistake,
         revisar_futuro=review,
+        autoria_questionada=[r.case.id for r in confirmed if _matches(_AUTHORSHIP_DOUBT, r)],
+        revisar_suposto=[r.case.id for r in confirmed if _matches(_SUPOSTO, r)],
     )
 
 
@@ -174,6 +221,8 @@ async def replay(cases: list[Case], recorded: dict[str, str], *, today: date) ->
                 checked.veredito_ia,
                 checked.pontos_suspeitos,
                 list(verdict.pontos_suspeitos),
+                checked.resumo,
+                checked.contexto_faltante or "",
             )
         )
     return results
@@ -254,6 +303,8 @@ async def run_real(cases: list[Case]) -> tuple[list[CaseResult], dict[str, str],
                 checked.veredito_ia,
                 checked.pontos_suspeitos,
                 list(raw.pontos_suspeitos) if raw else [],
+                checked.resumo,
+                checked.contexto_faltante or "",
             )
         )
     return results, answers, used()
@@ -271,6 +322,8 @@ def _print_report(results: list[CaseResult], report: Report) -> None:
     print(f"falso 'Falso': {report.falso_falso}")
     print(f"IA ainda errou a data (antes do filtro): {report.erro_de_data_ia}")
     print(f"revisar à mão (sobrou 'futuro'): {report.revisar_futuro}")
+    print(f"link com autoria questionada: {report.autoria_questionada}")
+    print(f"revisar à mão ('suposto' em link confirmado): {report.revisar_suposto}")
 
 
 def main() -> None:

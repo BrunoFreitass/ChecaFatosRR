@@ -306,6 +306,8 @@ async def _read_link(parsed: LinkInput, tools: CheckTools) -> _LinkRead:
         async with asyncio.timeout(READ_LINK_TIMEOUT_SECONDS):
             page = await tools.fetcher.fetch(parsed.url)
             extracted = await extract_page(page)
+        # Endereço final (depois de redirects) que o guard recusa: ilegível, nunca 500.
+        final_domain = normalize_url(page.url).domain
     except PageUnreadableError as exc:
         # Conta no limite: protege contra quem manda links quebrados em massa.
         logger.info("page_unreadable", extra={"reason": exc.reason})
@@ -328,8 +330,9 @@ async def _read_link(parsed: LinkInput, tools: CheckTools) -> _LinkRead:
         content_urls=extracted.urls,
         # Vai ao prompt: o modelo precisa saber que a notícia é de hoje, não "do futuro".
         published_at=extracted.published_at,
+        # Origem confirmada: o domínio de onde a página veio de fato (depois de redirects).
+        source_domain=final_domain,
     )
-    final_domain = normalize_url(page.url).domain
     return _LinkRead(data=data, final_domain=final_domain)
 
 

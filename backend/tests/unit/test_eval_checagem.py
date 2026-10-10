@@ -1,6 +1,7 @@
 """Eval de vereditos (backend/evals/checagem.py): só a parte determinística, sem rede."""
 
 import json
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -41,7 +42,11 @@ def case(case_id: str, accepted: list[str], categoria: str = "noticia_real") -> 
 
 
 def result(
-    c: Case, veredito: str, pontos: list[str] | None = None, pontos_ia: list[str] | None = None
+    c: Case,
+    veredito: str,
+    pontos: list[str] | None = None,
+    pontos_ia: list[str] | None = None,
+    resumo: str = "",
 ) -> CaseResult:
     return CaseResult(
         case=c,
@@ -49,6 +54,7 @@ def result(
         veredito_ia=veredito,
         pontos=pontos or [],
         pontos_ia=pontos_ia if pontos_ia is not None else (pontos or []),
+        resumo=resumo,
     )
 
 
@@ -198,3 +204,149 @@ async def test_budget_reserve_allows_at_most_three_model_calls() -> None:
     allowed = [await reserve() for _ in range(5)]
     assert allowed == [True, True, True, False, False]
     assert used() == 3
+
+
+# ---------- origem confirmada (link) ----------
+
+
+def g1_case() -> Case:
+    return Case(
+        id="g1",
+        categoria="noticia_real",
+        origem="real",
+        kind="link",
+        url="https://g1.globo.com/rj/noticia/2026/10/10/x.ghtml",
+        titulo="TRE-RJ retotaliza votos",
+        conteudo="O TRE-RJ retotaliza os votos neste sábado.",
+        publicado_em=date(2026, 10, 10),
+        checagens=[],
+        aceitos=["nao_verificavel"],
+    )
+
+
+def test_link_case_input_has_confirmed_origin() -> None:
+    assert g1_case().to_input().source_domain == "g1.globo.com"
+    assert case("t", ["verdadeiro"]).to_input().source_domain is None
+
+
+@pytest.mark.parametrize(
+    "texto",
+    [
+        "O conteúdo traz uma reportagem formatada como notícia do portal G1",
+        "Detalha uma suposta reportagem do G1 sobre a retotalização",
+        "A página se apresenta como matéria do G1",
+        "Falta confirmar a autenticidade da matéria",
+        "A página se passa por matéria do G1",
+        "Pode ser uma montagem com o layout do G1",
+        "Não é possível confirmar que a reportagem seja do G1",
+    ],
+)
+def test_grade_flags_authorship_questioned_on_confirmed_links(texto: str) -> None:
+    report = grade([result(g1_case(), "nao_verificavel", resumo=texto)], date(2026, 10, 10))
+    assert report.autoria_questionada == ["g1"]
+
+
+@pytest.mark.parametrize(
+    "texto",
+    [
+        # Dúvida sobre FATO (permitida pela regra 10), não sobre quem publicou.
+        "Não é possível confirmar se o TSE já publicou o resultado",
+        "O candidato se apresenta como renovação",
+        "A reportagem cita o suposto autor do crime",
+        "Relata supostas fraudes investigadas pela PF",
+        "O candidato teria agido supostamente sem autorização",
+        "Parte do pressuposto de que a lei mudou",
+    ],
+)
+def test_grade_does_not_flag_reported_allegations(texto: str) -> None:
+    # "Suposto" para marcar uma alegação relatada é correto; o alarme é só dúvida de autoria.
+    report = grade([result(g1_case(), "nao_verificavel", resumo=texto)], date(2026, 10, 10))
+    assert report.autoria_questionada == []
+
+
+def test_suposto_on_links_goes_to_human_review() -> None:
+    # "Suposta retotalização" (o caso do teste manual): revisão humana, não falha automática.
+    report = grade(
+        [result(g1_case(), "nao_verificavel", resumo="Detalha uma suposta retotalização")],
+        date(2026, 10, 10),
+    )
+    assert report.revisar_suposto == ["g1"]
+    assert report.autoria_questionada == []
+
+
+def test_authorship_doubt_in_missing_context_or_raw_points_counts() -> None:
+    doubt = "Confirmar a autenticidade da matéria do G1"
+    by_context = CaseResult(
+        case=g1_case(),
+        veredito="nao_verificavel",
+        veredito_ia="nao_verificavel",
+        pontos=[],
+        contexto=doubt,
+    )
+    by_raw_point = result(g1_case(), "nao_verificavel", [], [doubt])
+    report = grade([by_context, by_raw_point], date(2026, 10, 10))
+    assert report.autoria_questionada == ["g1", "g1"]
+
+
+def test_lookalike_link_case_may_question_authorship() -> None:
+    # Caso de domínio que imita o veículo: a IA DEVE desconfiar; não é regressão.
+    fake = replace(g1_case(), id="imita-g1", autoria_confirmada=False)
+    report = grade(
+        [result(fake, "falso", resumo="A página se passa por notícia do G1")], date(2026, 10, 10)
+    )
+    assert report.autoria_questionada == []
+
+
+def test_invalid_case_url_is_reported_with_its_id(tmp_path: Path) -> None:
+    raw = json.loads(CASES_FILE.read_text(encoding="utf-8"))
+    raw["casos"][0]["url"] = "http://localhost/x"
+    bad = tmp_path / "casos.json"
+    bad.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match=raw["casos"][0]["id"]):
+        load_cases(bad)
+
+
+def test_grade_does_not_flag_unchecked_facts_or_pasted_text() -> None:
+    ok = "Publicado pelo G1; os fatos ainda não foram checados por agências."
+    pasted = "Mensagem formatada como notícia do G1, sem link para a matéria"
+    report = grade(
+        [
+            result(g1_case(), "nao_verificavel", resumo=ok),
+            result(case("zap", ["falso"], "whatsapp"), "falso", resumo=pasted),
+        ],
+        date(2026, 10, 10),
+    )
+    assert report.autoria_questionada == []
+
+
+def test_real_g1_case_is_in_the_case_file() -> None:
+    real = {c.id: c for c in load_cases(CASES_FILE)}["g1-tre-rj-retotalizacao"]
+    assert real.kind == "link"
+    assert real.url and real.url.startswith("https://g1.globo.com/")
+    assert real.publicado_em == date(2026, 10, 10)
+    assert real.aceitos == ["nao_verificavel"]
+    assert "sintético" not in real.origem
+
+
+async def test_manual_test_recording_is_clean_utf8_and_flags_the_reported_problem() -> None:
+    path = CASES_FILE.parent / "gravacoes" / "20261010-teste-manual-g1.json"
+    raw = path.read_text(encoding="utf-8")
+    assert "retotaliza" + "ção" in raw and "Ã" not in raw  # sem dupla codificação
+    recorded = json.loads(raw)["respostas"]
+    cases = [c for c in load_cases(CASES_FILE) if c.id in recorded]
+    results = await replay(cases, recorded, today=date(2026, 10, 10))
+    report = grade(results, date(2026, 10, 10))
+    # A resposta antiga (antes da regra 10) é exatamente o problema relatado.
+    assert report.acertos == 1
+    assert report.autoria_questionada == ["g1-tre-rj-retotalizacao"]
+    assert report.erro_de_data_ia == []
+
+
+def test_real_news_cases_keep_only_an_excerpt() -> None:
+    # Direito autoral: casos reais guardam título + 2-3 parágrafos, nunca a matéria inteira.
+    for c in load_cases(CASES_FILE):
+        if c.categoria == "noticia_real" and "sintético" not in c.origem:
+            paragraphs = [p for p in c.conteudo.split("\n") if p.strip()]
+            assert len(paragraphs) <= 3, c.id
+            assert len(c.conteudo) <= 1500, c.id
+            assert "trecho" in c.origem, c.id

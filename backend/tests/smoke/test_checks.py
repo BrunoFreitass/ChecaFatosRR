@@ -203,6 +203,32 @@ def test_link_check(api: TestClient, env: Env) -> None:
     assert [item["id"] for item in latest["items"]] == [body["id"]]
 
 
+def test_link_origin_is_the_downloaded_domain(api: TestClient, env: Env) -> None:
+    # Link baixado pelo servidor: a origem é confirmada; texto colado não tem origem.
+    _, headers = env.login()
+    assert api.post("/checks", json={"url": LINK}, headers=headers).status_code == 200
+    assert api.post("/checks", json={"texto": MSG}, headers=headers).status_code == 200
+    assert [i.source_domain for i in env.analyzer.inputs] == ["folhabv.com.br", None]
+
+
+def test_redirect_to_a_url_the_guard_rejects_is_unreadable_not_500(
+    api: TestClient, env: Env
+) -> None:
+    env.fetcher.final_url = "https://exemplo.com.br:9999/x"  # porta fora do permitido
+    _, headers = env.login()
+    response = api.post("/checks", json={"url": LINK}, headers=headers)
+    assert response.status_code == 422
+    assert error_code(response) == "pagina_ilegivel"
+
+
+def test_link_origin_follows_redirects(api: TestClient, env: Env) -> None:
+    # O que vale é de onde a página veio de fato, não o link colado.
+    env.fetcher.final_url = "https://g1.globo.com/rr/noticia/x.ghtml"
+    _, headers = env.login()
+    assert api.post("/checks", json={"url": LINK}, headers=headers).status_code == 200
+    assert env.analyzer.inputs[0].source_domain == "g1.globo.com"
+
+
 def test_publication_date_reaches_the_analyzer(api: TestClient, env: Env) -> None:
     # Sem a data, o modelo tratou notícia do dia como "fato futuro" (teste manual 09/10/2026).
     meta = b"<meta property='article:published_time' content='2026-10-09T10:00:00Z'>"

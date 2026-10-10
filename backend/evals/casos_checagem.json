@@ -2,6 +2,20 @@
   "_leia": "Casos do eval de vereditos (evals/checagem.py). Os marcados 'sintético' foram escritos para o eval e só usam fatos estáveis ou boatos recorrentes; troque-os por notícias reais (cole o texto e a data) e por boatos já checados pela Lupa/Aos Fatos (com a URL REAL da checagem em 'checagens'). Nunca invente URL.",
   "casos": [
     {
+      "id": "g1-tre-rj-retotalizacao",
+      "categoria": "noticia_real",
+      "origem": "real — g1, 10/10/2026; trecho (título + 3 primeiros parágrafos) extraído pelo leitor do app; o texto completo não é guardado (direito autoral). Teste manual: virou 'reportagem formatada como notícia do G1' e 'suposta retotalização'",
+      "kind": "link",
+      "url": "https://g1.globo.com/rj/rio-de-janeiro/eleicoes/2026/noticia/2026/10/10/tre-rj-retotaliza-votos-neste-sabado-e-deve-confirmar-vitoria-de-ruas-no-1o-turno-entenda.ghtml",
+      "titulo": "TRE-RJ retotaliza votos neste sábado e deve confirmar vitória de Ruas | G1",
+      "conteudo": "O Tribunal Regional Eleitoral do Rio de Janeiro (TRE-RJ) realiza neste sábado (10), às 15h, a retotalização dos votos para governador do estado. O procedimento deve confirmar a eleição de Douglas Ruas (PL) no primeiro turno, depois que o Tribunal Superior Eleitoral (TSE) anulou os votos recebidos por Anthony Garotinho (Republicanos) e o ex-prefeito Eduardo Paes (PSD) desistiu de recorrer para tentar garantir a realização do segundo turno.\nA retotalização foi determinada após o TSE manter o indeferimento do registro de candidatura de Garotinho e decidir, por cinco votos a dois, pela anulação dos 274.411 votos recebidos por ele na eleição de domingo (4).\nSem esses votos no cálculo dos votos válidos, Ruas passa de 49,27% para cerca de 50,88% e supera a maioria absoluta exigida para vencer no primeiro turno.",
+      "publicado_em": "2026-10-10",
+      "checagens": [],
+      "aceitos": [
+        "nao_verificavel"
+      ]
+    },
+    {
       "id": "noticia-hoje-2turno",
       "categoria": "noticia_real",
       "origem": "sintético — reproduz o bug de 09/10/2026 (notícia do dia virou 'fatos futuros'); trocar pela matéria real do g1",
@@ -11,7 +25,9 @@
       "conteudo": "Os eleitores de Roraima voltam às urnas no domingo, 25 de outubro de 2026, para o segundo turno das eleições. Pela Constituição, o segundo turno acontece no último domingo de outubro. O Tribunal Regional Eleitoral de Roraima (TRE-RR) orienta o eleitor a levar um documento oficial com foto e a conferir o local de votação no aplicativo e-Título.",
       "publicado_em": "2026-10-09",
       "checagens": [],
-      "aceitos": ["verdadeiro"]
+      "aceitos": [
+        "verdadeiro"
+      ]
     },
     {
       "id": "noticia-documentos",
@@ -23,7 +39,9 @@
       "conteudo": "Para votar no segundo turno, o eleitor deve apresentar um documento oficial com foto, como carteira de identidade, carteira de motorista ou passaporte. O e-Título também pode ser usado quando tiver a foto do eleitor. O título de eleitor em papel não é obrigatório.",
       "publicado_em": "2026-10-08",
       "checagens": [],
-      "aceitos": ["verdadeiro"]
+      "aceitos": [
+        "verdadeiro"
+      ]
     },
     {
       "id": "noticia-voto-obrigatorio",
@@ -35,7 +53,9 @@
       "conteudo": "Matéria publicada hoje lembra que o voto é obrigatório para quem tem entre 18 e 70 anos e facultativo para quem tem 16 ou 17 anos, mais de 70 anos ou é analfabeto. Quem não votar e não justificar a ausência pode pagar multa.",
       "publicado_em": null,
       "checagens": [],
-      "aceitos": ["verdadeiro"]
+      "aceitos": [
+        "verdadeiro"
+      ]
     },
     {
       "id": "boato-urna-com-votos",
@@ -47,7 +67,11 @@
       "conteudo": "ATENÇÃO!!! As urnas já chegam nas seções com votos registrados para um dos candidatos. Um mesário filmou tudo, mas o vídeo foi apagado. Não deixem de compartilhar antes que tirem do ar!!!",
       "publicado_em": null,
       "checagens": [],
-      "aceitos": ["falso", "enganoso", "nao_verificavel"]
+      "aceitos": [
+        "falso",
+        "enganoso",
+        "nao_verificavel"
+      ]
     },
     {
       "id": "boato-eleicao-adiada",
@@ -59,7 +83,10 @@
       "conteudo": "URGENTE: o TSE adiou o segundo turno em Roraima para 8 de novembro por falta de urnas. Avise todo mundo para não ir votar no dia 25!",
       "publicado_em": null,
       "checagens": [],
-      "aceitos": ["falso", "nao_verificavel"]
+      "aceitos": [
+        "falso",
+        "nao_verificavel"
+      ]
     },
     {
       "id": "boato-votar-pela-internet",
@@ -71,7 +98,9 @@
       "conteudo": "Novidade: este ano dá para votar pelo celular no aplicativo e-Título, sem ir à seção. É só entrar no app no dia da eleição e escolher o candidato.",
       "publicado_em": null,
       "checagens": [],
-      "aceitos": ["falso"]
+      "aceitos": [
+        "falso"
+      ]
     },
     {
       "id": "zap-corrente-sem-fonte",
@@ -83,7 +112,11 @@
       "conteudo": "Encaminhada com frequência. Meu primo que trabalha no tribunal disse que vão trocar o local de votação de metade dos eleitores de Boa Vista sem avisar. Confiram antes de sair de casa e repassem!",
       "publicado_em": null,
       "checagens": [],
-      "aceitos": ["nao_verificavel", "enganoso", "falso"]
+      "aceitos": [
+        "nao_verificavel",
+        "enganoso",
+        "falso"
+      ]
     },
     {
       "id": "zap-informacao-correta",
@@ -95,7 +128,9 @@
       "conteudo": "Pessoal, lembrete: no dia da eleição é proibido levar o celular para a cabine de votação. Deixem com o mesário antes de votar.",
       "publicado_em": null,
       "checagens": [],
-      "aceitos": ["verdadeiro"]
+      "aceitos": [
+        "verdadeiro"
+      ]
     },
     {
       "id": "zap-data-recente",
@@ -107,7 +142,10 @@
       "conteudo": "Hoje, 9 de outubro de 2026, o TRE de Roraima publicou a lista de locais de votação do segundo turno. A consulta pode ser feita no site do tribunal ou no aplicativo e-Título.",
       "publicado_em": null,
       "checagens": [],
-      "aceitos": ["verdadeiro", "nao_verificavel"]
+      "aceitos": [
+        "verdadeiro",
+        "nao_verificavel"
+      ]
     }
   ]
 }
