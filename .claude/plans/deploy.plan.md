@@ -50,8 +50,8 @@ Antes de publicar: `/security-scan`, revisão de segurança da configuração de
 
 ## Fase 1: Google Cloud (usuário, com os comandos prontos de `docs/DEPLOY.md` §3)
 **Dois projetos (decisão de 10/10/2026):**
-- `gen-lang-client-0619604576` (criado pelo AI Studio): OAuth do Google, chave do Gemini e Fact Check. **Sem faturamento, NUNCA vincular**: com faturamento, a chave do Gemini sai do nível gratuito e passa a ser cobrada por uso.
-- `checafatosrr-prod` (ID a confirmar): Cloud Run, Cloud Build, Artifact Registry e Secret Manager, **com** faturamento e alerta de R$ 10/mês (50/90/100%). As chaves do Gemini e da Fact Check entram aqui só como segredos.
+- `gen-lang-client-0619604576` (criado pelo AI Studio): **só a chave do Gemini**. **Sem faturamento, NUNCA vincular**: com faturamento, a chave sai do nível gratuito e passa a ser cobrada por uso.
+- `checafatosrr` (nº 427414058666): OAuth do Google, Fact Check, Cloud Run, Cloud Build, Artifact Registry e Secret Manager, **com** faturamento e alerta de R$ 10/mês (50/90/100%). A chave do Gemini entra aqui só como segredo.
 
 1. **Alerta de orçamento** (R$ 10/mês) **antes** de tudo.
 2. Ativar as APIs: run, cloudbuild, artifactregistry, secretmanager.
