@@ -1,0 +1,63 @@
+# Blueprint do Render: backend do ChecaFatosRR (ver docs/DEPLOY.md, seção 3).
+# NUNCA coloque segredos aqui: os marcados com `sync: false` são preenchidos no painel do
+# Render (pedidos só na criação do Blueprint; sincronizações seguintes não os tocam).
+# A troca de plano (contingência de 24 a 26/10) é feita no PAINEL, não por commit.
+
+previews:
+  generation: "off" # previews gastariam as 750 h grátis e herdariam as variáveis
+
+services:
+  - type: web
+    name: checafatosrr-api
+    runtime: docker
+    plan: free
+    region: virginia # a mais próxima do Supabase (São Paulo)
+    branch: main
+    # Caminhos a partir da raiz do repositório (sem rootDir, que mudaria a base deles).
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    buildFilter:
+      paths:
+        - backend/** # mudança só no frontend não redeploya o backend
+    healthCheckPath: /health
+    autoDeployTrigger: checksPass # só depois da CI verde
+    envVars:
+      # ---- segredos (painel) ----
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: BAN_HASH_SALT
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GOOGLE_FACTCHECK_API_KEY
+        sync: false
+      # ---- não secretos, mas pessoais ou que mudam (painel) ----
+      - key: SUPABASE_URL
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: CORS_ORIGINS # URL do Cloudflare Pages (provisório: http://localhost:5173)
+        sync: false
+      - key: GEMINI_DAILY_CHECKS # pelo RPD do Gemini
+        sync: false
+      - key: GEMINI_DAILY_MODERATION
+        sync: false
+      # ---- configuração ----
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DATABASE_SSL_ROOT_CERT
+        value: /srv/certs/supabase-ca.crt
+      - key: GEMINI_MODEL_FALLBACKS
+        value: gemini-3.8-flash,gemini-3.7-flash
+      - key: DB_POOL_SIZE
+        value: "3"
+      - key: DB_POOL_MAX_OVERFLOW
+        value: "2"
+      - key: EXTRACT_CONCURRENCY
+        value: "1" # 0,1 CPU: um parser de HTML por vez
+      - key: UVICORN_LIMIT_CONCURRENCY # conta conexões abertas, inclusive keep-alive
+        value: "100"

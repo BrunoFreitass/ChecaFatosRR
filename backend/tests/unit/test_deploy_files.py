@@ -79,3 +79,57 @@ def test_relative_root_cert_is_resolved_from_the_backend_folder(tmp_path: Path) 
     cert.write_text(PEM, encoding="utf-8")
     assert resolve_backend_path("certs/so-no-teste-ca.crt", base=tmp_path) == cert
     assert resolve_backend_path(str(cert), base=Path("/outro")) == cert  # absoluto fica igual
+
+
+def test_uvicorn_limits_concurrency_from_the_environment() -> None:
+    # Acima do limite o uvicorn responde 503 (inclusive ao /health) em vez de afogar 512 MB. Ele
+    # conta CONEXÕES abertas, inclusive keep-alive ociosas, e cada checagem segura uma por até
+    # ~90 s esperando o Gemini: 100 deixa folga para o health check do Render não cair.
+    dockerfile = (BACKEND / "Dockerfile").read_text(encoding="utf-8")
+    assert "--limit-concurrency ${UVICORN_LIMIT_CONCURRENCY:-100}" in dockerfile
+
+
+SECRETS = {
+    "DATABASE_URL",
+    "SUPABASE_SECRET_KEY",
+    "BAN_HASH_SALT",
+    "GEMINI_API_KEY",
+    "GOOGLE_FACTCHECK_API_KEY",
+}
+
+
+def render_service() -> dict[str, object]:
+    import yaml
+
+    blueprint = yaml.safe_load((BACKEND.parent / "render.yaml").read_text(encoding="utf-8"))
+    services = blueprint["services"]
+    assert len(services) == 1  # um segundo serviço Free estouraria as 750 h do workspace
+    assert blueprint["previews"]["generation"] == "off"  # previews gastam horas e herdam env
+    return services[0]
+
+
+def test_render_blueprint_is_the_free_docker_service_in_virginia() -> None:
+    service = render_service()
+    assert service["type"] == "web"
+    assert service["runtime"] == "docker"
+    assert service["plan"] == "free"  # a troca para Starter é pelo painel, não por commit
+    assert service["region"] == "virginia"
+    assert service["branch"] == "main"
+    # Sem rootDir: com ele, o Render poderia resolver os caminhos abaixo a partir de backend/.
+    assert "rootDir" not in service
+    assert service["dockerfilePath"] == "./backend/Dockerfile"
+    assert service["dockerContext"] == "./backend"
+    assert service["buildFilter"]["paths"] == ["backend/**"]  # só o backend redeploya
+    env = {item["key"]: item for item in service["envVars"]}
+    assert env["UVICORN_LIMIT_CONCURRENCY"]["value"] == "100"
+    assert service["healthCheckPath"] == "/health"
+    assert service["autoDeployTrigger"] == "checksPass"  # só depois da CI verde
+
+
+def test_render_blueprint_never_holds_secret_values() -> None:
+    env = {item["key"]: item for item in render_service()["envVars"]}  # type: ignore[union-attr]
+    for key in SECRETS | {"ADMIN_EMAIL", "SUPABASE_URL"}:
+        assert env[key] == {"key": key, "sync": False}, key
+    assert "PORT" not in env  # o Render injeta
+    assert env["DATABASE_SSL_ROOT_CERT"]["value"] == "/srv/certs/supabase-ca.crt"
+    assert env["EXTRACT_CONCURRENCY"]["value"] == "1"

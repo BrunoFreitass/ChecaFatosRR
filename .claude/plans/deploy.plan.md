@@ -2,7 +2,10 @@
 
 **Data:** 10/10/2026 · **Base:** `main` @ `1bf1444` (etapa 2 encerrada) · **Prazo:** 2º turno em 25/10/2026
 **Complexidade:** Média. Pouco código; o grosso é configuração nos painéis e a ordem certa.
-**Status:** AGUARDANDO APROVAÇÃO. Nada será publicado antes do "ok".
+**Status:** APROVADO; Fase 0 mergeada (PRs #2 a #4). **Em 10/10/2026 o backend mudou para o Render**
+(o Google Cloud exigiu pré-pagamento): as Fases 1 e 2 abaixo valem só como **plano B**; o caminho
+principal está em `.claude/plans/deploy-render.plan.md`. As Fases 3 a 5 continuam valendo, com a URL
+do Render no lugar da do Cloud Run.
 
 ## Objetivo
 Publicar o ChecaFatosRR em produção:
@@ -48,7 +51,7 @@ Antes de publicar: `/security-scan`, revisão de segurança da configuração de
 6. **verification-loop**: suíte completa com integração no Postgres local, frontend completo, `/quality-gate`, `/code-review` e detect-secrets.
 7. Commit, PR `deploy` → CI verde → merge na `main`. Os achados de segurança são corrigidos ou levados ao usuário antes do merge.
 
-## Fase 1: Google Cloud (usuário, com os comandos prontos de `docs/DEPLOY.md` §3)
+## Fase 1 (plano B): Google Cloud (usuário, com os comandos prontos de `docs/DEPLOY.md` §4)
 **Dois projetos (decisão de 10/10/2026):**
 - `gen-lang-client-0619604576` (criado pelo AI Studio): **só a chave do Gemini**. **Sem faturamento, NUNCA vincular**: com faturamento, a chave sai do nível gratuito e passa a ser cobrada por uso.
 - `checafatosrr` (nº 427414058666): OAuth do Google, Fact Check, Cloud Run, Cloud Build, Artifact Registry e Secret Manager, **com** faturamento e alerta de R$ 10/mês (50/90/100%). A chave do Gemini entra aqui só como segredo.
@@ -58,8 +61,8 @@ Antes de publicar: `/security-scan`, revisão de segurança da configuração de
 3. Criar os 5 segredos: `DATABASE_URL`, `SUPABASE_SECRET_KEY`, `BAN_HASH_SALT`, `GEMINI_API_KEY`, `GOOGLE_FACTCHECK_API_KEY`. Se o projeto usar o "Legacy JWT Secret", também `SUPABASE_JWT_SECRET`. **Usar as chaves rotacionadas.**
 4. Permissão `secretAccessor` para a conta de serviço do Cloud Run.
 
-## Fase 2: backend no Cloud Run
-1. `gcloud run deploy checafatosrr-api --source backend ...` (§3.2), com `CORS_ORIGINS=http://localhost:5173` provisório.
+## Fase 2 (plano B): backend no Cloud Run
+1. `gcloud run deploy checafatosrr-api --source backend ...` (§4.2), com `CORS_ORIGINS=http://localhost:5173` provisório.
    - `GEMINI_DAILY_CHECKS` = valor do RPD real informado pelo usuário (pendência aberta).
    - `--max-instances 3 --timeout 180 --concurrency 40 --memory 512Mi`.
 2. Verificar:

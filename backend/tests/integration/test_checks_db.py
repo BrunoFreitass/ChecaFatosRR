@@ -1,9 +1,12 @@
 import asyncio
+import contextlib
 import hashlib
+import os
 import re
 from datetime import date, datetime
 from uuid import UUID, uuid4
 
+import asyncpg
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
@@ -504,3 +507,43 @@ async def test_latest_has_one_item_per_link(session: AsyncSession) -> None:
     ids = [item.public_id for item in await repo.latest(None, 1000)]
     assert newer.public_id in ids
     assert older.public_id not in ids
+
+
+async def test_pool_reuses_the_connection_and_recovers_from_a_dropped_one(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.config import get_settings
+    from app.db import dispose_engine
+
+    monkeypatch.setenv("DB_POOL_SIZE", "2")
+    get_settings.cache_clear()
+    await dispose_engine()
+    engine = get_engine()
+
+    async def backend_pid() -> int:
+        async with engine.connect() as conn:
+            return int((await conn.execute(text("select pg_backend_pid()"))).scalar_one())
+
+    first = await backend_pid()
+    assert await backend_pid() == first  # reaproveitou a conexão (pool, LIFO)
+
+    # O servidor derruba a conexão ociosa (como o Supavisor faz): o pre-ping refaz.
+    killer = await asyncpg.connect(os.environ["TEST_DATABASE_URL"])
+    try:
+        await killer.execute("select pg_terminate_backend($1)", first)
+    finally:
+        await killer.close()
+    assert await backend_pid() != first
+
+    # Query cancelada no meio não deixa a próxima conexão quebrada.
+    async def slow() -> None:
+        async with engine.connect() as conn:
+            await conn.execute(text("select pg_sleep(5)"))
+
+    task = asyncio.create_task(slow())
+    await asyncio.sleep(0.3)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    assert await backend_pid() > 0
+    await dispose_engine()

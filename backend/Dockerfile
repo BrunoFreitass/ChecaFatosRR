@@ -27,4 +27,5 @@ EXPOSE 8080
 # request.client.host vem do X-Forwarded-For e pode ser falsificado — nunca use para
 # segurança/rate limit (os limites são por usuário autenticado).
 # --timeout-graceful-shutdown 8: o Cloud Run dá 10s após o SIGTERM.
-CMD ["sh", "-c", "exec uvicorn --factory app.main:create_app --host 0.0.0.0 --port ${PORT} --proxy-headers --forwarded-allow-ips='*' --no-access-log --timeout-graceful-shutdown 8"]
+# --limit-concurrency: acima disso, 503 em vez de afogar a instância (Render Free: 0,1 CPU).
+CMD ["sh", "-c", "exec uvicorn --factory app.main:create_app --host 0.0.0.0 --port ${PORT} --proxy-headers --forwarded-allow-ips='*' --no-access-log --timeout-graceful-shutdown 8 --limit-concurrency ${UVICORN_LIMIT_CONCURRENCY:-100}"]

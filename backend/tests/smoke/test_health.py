@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.conftest import ALLOWED_ORIGIN
@@ -102,3 +103,20 @@ def test_docs_in_development_are_not_blocked_by_the_api_csp(client: TestClient) 
     assert response.status_code == 200
     assert "content-security-policy" not in response.headers
     assert client.get("/health").headers["content-security-policy"]
+
+
+def test_ready_hits_the_database_once_per_minute(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Público e sem login: chamadas em massa recebem o cache e não ocupam o pool.
+    from app.routers import health
+
+    calls: list[int] = []
+
+    async def probe() -> None:
+        calls.append(1)
+
+    monkeypatch.setattr(health, "probe_database", probe)
+    for _ in range(5):
+        assert client.get("/health/ready").json() == {"status": "ok", "database": "ok"}
+    assert calls == [1]
