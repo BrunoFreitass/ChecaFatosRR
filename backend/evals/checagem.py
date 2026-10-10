@@ -272,6 +272,7 @@ async def run_real(cases: list[Case]) -> tuple[list[CaseResult], dict[str, str],
         settings.gemini_api_key,
         [settings.gemini_models[0]],  # um modelo só: o fallback faria outra chamada
         thinking_budget=settings.gemini_thinking_budget,
+        thinking_level=settings.gemini_thinking_level,
         attempt_timeout=settings.gemini_attempt_timeout_seconds,
         max_retries=0,  # cada reserva = exatamente uma chamada
         budget_seconds=settings.gemini_budget_seconds,

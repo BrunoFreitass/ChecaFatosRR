@@ -554,11 +554,25 @@ EXHAUSTED_RECHECK_SECONDS = 3600.0
 RETRYABLE_STATUS = frozenset({429, 500, 503, 504})
 # Não começa uma tentativa com menos tempo que isso (ela seria cortada antes de responder).
 MIN_ATTEMPT_SECONDS = 5.0
+# Prazo estourado (504 do Google ou o nosso teto) tantas vezes seguidas no MESMO modelo: ele
+# está lento (teste de 10/10/2026: 504 em 24 s duas vezes; sem teto, nada em 60 s). Repetir o
+# mesmo prompt só gasta o orçamento; a cadeia passa ao próximo modelo.
+DEADLINE_FAILURES_TO_SWITCH = 2
+# Modelo lento fica no fim da fila por esse tempo: as checagens seguintes não pagam ~50 s nele.
+SLOW_MODEL_COOLDOWN_SECONDS = 300.0
 _GOOGLE_KEY = re.compile(r"AIza[0-9A-Za-z_\-]{10,}")
 _MAX_ERROR_MESSAGE = 300
 # Prazo absoluto (time.monotonic) da checagem em andamento, definido pelo GeminiAnalyzer:
 # as novas tentativas de transporte respeitam o mesmo orçamento total.
 _DEADLINE: ContextVar[float | None] = ContextVar("gemini_deadline", default=None)
+
+
+class GeminiModelSlowError(GeminiUnavailableError):
+    """Um modelo estourou o prazo seguidas vezes: a cadeia tenta o próximo."""
+
+    def __init__(self, model: str | None) -> None:
+        super().__init__(f"modelo lento: {model}")
+        self.model = model
 
 
 class GeminiCallError(Exception):
@@ -571,10 +585,13 @@ class GeminiCallError(Exception):
         *,
         retryable: bool | None = None,
         quota_exhausted: bool = False,
+        deadline: bool = False,
     ) -> None:
         super().__init__(f"{status}: {message}")
         self.status = status
         self.message = message
+        # Prazo estourado (504 do Google ou timeout de leitura do SDK): conta para "modelo lento".
+        self.deadline = deadline or status == 504
         # Cota diária do Google acabou: não adianta repetir, e o usuário deve ver "volte amanhã".
         self.quota_exhausted = quota_exhausted
         if quota_exhausted:
@@ -597,7 +614,7 @@ def with_retries(
     *,
     max_retries: int = 2,
     attempt_timeout: float = 25.0,
-    budget_seconds: float = 60.0,
+    budget_seconds: float = 75.0,
     base_delay: float = 1.0,
     sleep: Callable[[float], Awaitable[None]] | None = None,  # None = asyncio.sleep na hora
     jitter: Callable[[], float] = random.random,
@@ -613,6 +630,7 @@ def with_retries(
         shared = _DEADLINE.get()
         if shared is not None:
             deadline = min(deadline, shared)
+        deadline_failures = 0
         for attempt in range(1, max_retries + 2):
             timeout = min(attempt_timeout, deadline - clock())
             # Tentativa curta demais seria cortada antes de responder (ex.: o 2º modelo da
@@ -626,10 +644,10 @@ def with_retries(
                     return await call(prompt)
             except GeminiCallError as exc:
                 status, message, retryable = exc.status, exc.message, exc.retryable
-                quota_exhausted = exc.quota_exhausted
+                quota_exhausted, deadline_hit = exc.quota_exhausted, exc.deadline
             except TimeoutError:
                 status, message, retryable = None, "sem resposta dentro do teto da tentativa", True
-                quota_exhausted = False
+                quota_exhausted, deadline_hit = False, True
             logger.warning(
                 "gemini_api_error",
                 extra={
@@ -639,10 +657,16 @@ def with_retries(
                     "attempt": attempt,
                     "elapsed_ms": int((clock() - attempt_started) * 1000),
                     "retryable": retryable,
+                    "prompt_chars": len(prompt),
                 },
             )
             if quota_exhausted:
                 raise GeminiQuotaExhaustedError
+            # Só prazos SEGUIDOS contam (outro erro no meio zera); sem novas tentativas
+            # (max_retries=0), o primeiro já basta para tentar o próximo modelo.
+            deadline_failures = deadline_failures + 1 if deadline_hit else 0
+            if deadline_failures >= min(DEADLINE_FAILURES_TO_SWITCH, max_retries + 1):
+                raise GeminiModelSlowError(model)
             if not retryable or attempt > max_retries:
                 raise GeminiUnavailableError(f"api {status}")
             delay = base_delay * 2 ** (attempt - 1) + jitter() * base_delay
@@ -665,12 +689,15 @@ def seconds_until_quota_reset(now: datetime | None = None) -> float:
 
 
 class ModelChain:
-    """Tenta os modelos em ordem; passa ao próximo SÓ em cota diária esgotada.
+    """Tenta os modelos em ordem; passa ao próximo em cota diária esgotada ou em modelo lento
+    (prazo estourado seguidas vezes: GeminiModelSlowError).
 
     Outros erros (503, 400, rede) sobem na hora: trocar de modelo não resolve instabilidade e
-    gastaria o orçamento de tempo. Um modelo sem cota fica de fora até a cota zerar (no máximo
-    EXHAUSTED_RECHECK_SECONDS), para não gastar uma chamada (e segundos) por checagem com quem
-    já disse "acabou por hoje". Estado por processo, num event loop só: sem corrida.
+    gastaria o orçamento de tempo. Um modelo lento vai para o fim da fila por
+    SLOW_MODEL_COOLDOWN_SECONDS (e ainda é tentado se todos estiverem lentos). Um modelo sem
+    cota fica de fora até a cota zerar (no máximo EXHAUSTED_RECHECK_SECONDS), para não gastar
+    uma chamada (e segundos) por checagem com quem já disse "acabou por hoje".
+    Estado por processo, num event loop só: sem corrida.
     """
 
     def __init__(
@@ -684,6 +711,10 @@ class ModelChain:
         self._clock = clock
         self._seconds_until_reset = seconds_until_reset
         self._exhausted_until: dict[str, float] = {}
+        self._slow_until: dict[str, float] = {}
+
+    def _slow(self, model: str) -> bool:
+        return self._clock() < self._slow_until.get(model, float("-inf"))
 
     def _available(self, model: str) -> bool:
         return self._clock() >= self._exhausted_until.get(model, float("-inf"))
@@ -693,9 +724,11 @@ class ModelChain:
         return not any(self._available(model) for model, _ in self._chain)
 
     async def __call__(self, prompt: str) -> Generated:
-        for model, call in self._chain:
-            if not self._available(model):
-                continue
+        usable = [(model, call) for model, call in self._chain if self._available(model)]
+        # Os lentos por último (sort estável: entre iguais, a ordem da cadeia).
+        usable.sort(key=lambda item: self._slow(item[0]))
+        slow_seen = False
+        for model, call in usable:
             try:
                 text = await call(prompt)
             except GeminiQuotaExhaustedError:
@@ -703,8 +736,15 @@ class ModelChain:
                 self._exhausted_until[model] = self._clock() + wait
                 logger.warning("gemini_model_quota_exhausted", extra={"model": model})
                 continue
+            except GeminiModelSlowError:
+                self._slow_until[model] = self._clock() + SLOW_MODEL_COOLDOWN_SECONDS
+                logger.warning("gemini_model_slow", extra={"model": model})
+                slow_seen = True
+                continue
             logger.info("gemini_model_responded", extra={"model": model})
             return Generated(text, model)
+        if slow_seen:  # instabilidade, não falta de cota: o usuário vê "tente de novo"
+            raise GeminiUnavailableError("modelos lentos")
         raise GeminiQuotaExhaustedError
 
 
@@ -724,7 +764,7 @@ class GeminiAnalyzer:
         self,
         generate: Generate,
         *,
-        budget_seconds: float = 60.0,
+        budget_seconds: float = 75.0,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._generate = generate
@@ -777,13 +817,37 @@ def _empty_reason(response: Any) -> str:
     return f"resposta sem texto (finish_reason={finish}, block_reason={blocked})"
 
 
-def build_generate_config(*, thinking_budget: int = 0) -> Any:
+def _log_usage(model: str, prompt: str, response: Any, started: float) -> None:
+    """Tamanho do que foi enviado e tokens gastos (thoughts > 0 = o thinking não desligou)."""
+    usage = getattr(response, "usage_metadata", None)
+    logger.info(
+        "gemini_usage",
+        extra={
+            "model": model,
+            "prompt_chars": len(prompt),
+            "input_tokens": getattr(usage, "prompt_token_count", None),
+            "output_tokens": getattr(usage, "candidates_token_count", None),
+            "thoughts_tokens": getattr(usage, "thoughts_token_count", None),
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+        },
+    )
+
+
+def build_generate_config(*, thinking_budget: int = 0, thinking_level: str = "") -> Any:
     """Config da chamada: JSON no schema `GeminiVerdict` e thinking reduzido.
 
     Com o thinking padrão o Flash 3.x passou de 60 s nesta tarefa (teste de 09/10/2026);
-    com thinking_budget=0 respondeu em 7 a 13 s com o JSON válido.
+    com thinking_budget=0 respondeu em 7 a 13 s com o JSON válido. `thinking_level` (nativo
+    dos 3.x) substitui o budget quando definido: mandar os dois dá 400. O 3.8-flash recusa
+    "minimal" (400, 10/10/2026). O log gemini_usage mostra os thoughts_tokens de cada resposta.
     """
     from google.genai import types
+
+    if thinking_level:
+        level = types.ThinkingLevel(thinking_level.upper())
+        thinking = types.ThinkingConfig(thinking_level=level)
+    else:
+        thinking = types.ThinkingConfig(thinking_budget=thinking_budget)
 
     return types.GenerateContentConfig(
         system_instruction=SYSTEM_INSTRUCTION,
@@ -791,7 +855,7 @@ def build_generate_config(*, thinking_budget: int = 0) -> Any:
         response_schema=GeminiVerdict,
         temperature=0.2,
         max_output_tokens=4096,
-        thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget),
+        thinking_config=thinking,
     )
 
 
@@ -800,9 +864,10 @@ def google_generate(
     models: Sequence[str],
     *,
     thinking_budget: int = 0,
+    thinking_level: str = "",
     attempt_timeout: float = 25.0,
     max_retries: int = 2,
-    budget_seconds: float = 60.0,
+    budget_seconds: float = 75.0,
 ) -> ModelChain:
     """`generate` real: SDK google-genai (chave no cabeçalho x-goog-api-key, sem os retries
     do próprio SDK) + `with_retries` por modelo + `with_model_fallback` na cadeia `models`."""
@@ -815,10 +880,11 @@ def google_generate(
     client = genai.Client(
         api_key=api_key, http_options=types.HttpOptions(timeout=int(attempt_timeout * 1000))
     )
-    config = build_generate_config(thinking_budget=thinking_budget)
+    config = build_generate_config(thinking_budget=thinking_budget, thinking_level=thinking_level)
 
     def raw_call(model: str) -> RawCall:
         async def call(prompt: str) -> str | None:
+            started = time.monotonic()
             try:
                 response = await client.aio.models.generate_content(
                     model=model, contents=prompt, config=config
@@ -831,13 +897,16 @@ def google_generate(
                 # (with_model_fallback passa ao próximo modelo da cadeia).
                 daily = exc.code == 429 and "PerDay" in f"{exc.details} {exc.message}"
                 raise GeminiCallError(exc.code, message, quota_exhausted=daily) from None
-            except (httpx.TransportError, OSError, TimeoutError) as exc:  # sem resposta (rede)
+            except (httpx.TimeoutException, TimeoutError) as exc:  # sem resposta no prazo
+                raise GeminiCallError(None, type(exc).__name__, deadline=True) from None
+            except (httpx.TransportError, OSError) as exc:  # sem resposta (rede)
                 raise GeminiCallError(None, type(exc).__name__) from None
             except Exception as exc:  # erro inesperado do SDK: não repetir
                 raise GeminiCallError(None, type(exc).__name__, retryable=False) from None
             if not response.text:
                 # Bloqueio de segurança, MAX_TOKENS etc.: o mesmo prompt teria o mesmo fim.
                 raise GeminiCallError(None, _empty_reason(response), retryable=False)
+            _log_usage(model, prompt, response, started)
             return response.text
 
         return call

@@ -46,17 +46,17 @@ from app.services.url_guard import (
 
 logger = logging.getLogger(__name__)
 
-# Tetos das etapas externas. O Gemini tem o próprio orçamento (GEMINI_BUDGET_SECONDS, 60 s:
-# até 3 tentativas de 25 s com backoff). Pior caso de quem checa: 20 + 12 + 60 = 92 s.
+# Tetos das etapas externas. O Gemini tem o próprio orçamento (GEMINI_BUDGET_SECONDS, 75 s:
+# tentativas de 25 s, backoff e troca de modelo lento). Pior caso: 20 + 12 + 75 = 107 s.
 READ_LINK_TIMEOUT_SECONDS = 20  # download (10 s) + extração (fila do semáforo)
 AGENCIES_TIMEOUT_SECONDS = 12  # até 2 buscas de 5 s
-WORST_CHECK_SECONDS = 92
+WORST_CHECK_SECONDS = 107
 # Quem perdeu o claim espera a checagem de quem ganhou quase todo o pior caso dela...
 WAIT_POLL_SECONDS = 1.5
-WAIT_MAX_SECONDS = 90
+WAIT_MAX_SECONDS = 105
 # ...mas só assume o claim (se o outro falhou) enquanto ainda couber a checagem inteira
-# no --timeout 180 do Cloud Run: 80 + 92 = 172 s.
-TAKEOVER_LIMIT_SECONDS = 80
+# no --timeout 180 do Cloud Run (plano B; o Render não corta antes): 70 + 107 = 177 s.
+TAKEOVER_LIMIT_SECONDS = 70
 
 
 @dataclass(frozen=True)
