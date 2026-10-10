@@ -31,7 +31,17 @@
       "Bash(cat frontend/.env.local)",
       "Bash(cat frontend/.env.development)",
       "Bash(cat frontend/.env.production)",
-      "Bash(cat frontend/.env.test)"
+      "Bash(cat frontend/.env.test)",
+      "Bash(rm -rf *)",
+      "Bash(rm -fr *)",
+      "Bash(sudo *)",
+      "Bash(su *)",
+      "Bash(ssh *)",
+      "Bash(scp *)",
+      "Bash(chmod 777 *)",
+      "Bash(chmod -R 777 *)",
+      "Bash(dd *)",
+      "Bash(mkfs *)"
     ]
   },
   "hooks": {
