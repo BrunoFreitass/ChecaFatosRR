@@ -45,6 +45,8 @@ export interface Check {
   fontes_sugeridas: string[];
   created_at: string;
   cache: boolean;
+  /** Feita com uma versão anterior do verificador (prompt). API antiga: ausente. */
+  analise_anterior?: boolean;
 }
 
 export interface CheckSummary {

@@ -26,7 +26,8 @@ from tests.integration.conftest import create_auth_user
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 PUBLIC_ID = re.compile(r"^[0-9a-hjkmnp-tv-z]{12}$")
-LIMITS = Limits(cache_hours=24, checks_per_hour=10, lookups_per_hour=60)
+VERSION = "v-teste"
+LIMITS = Limits(cache_hours=24, checks_per_hour=10, lookups_per_hour=60, prompt_version=VERSION)
 
 
 def other_session() -> AsyncSession:
@@ -69,6 +70,7 @@ async def finish(
 ) -> StoredCheck:
     return await repo.save_result(
         NewCheck(
+            prompt_version=VERSION,
             subject=started.subject,
             user_id=user_id,
             veredito="falso",
@@ -204,7 +206,9 @@ async def test_hourly_limit_is_enforced_even_with_parallel_requests(
     session: AsyncSession,
 ) -> None:
     user_id = await new_user(session)
-    one_per_hour = Limits(cache_hours=24, checks_per_hour=1, lookups_per_hour=60)
+    one_per_hour = Limits(
+        cache_hours=24, checks_per_hour=1, lookups_per_hour=60, prompt_version=VERSION
+    )
 
     async def attempt() -> object:
         async with other_session() as s:
@@ -230,7 +234,9 @@ async def test_cache_lookups_have_their_own_limit(session: AsyncSession) -> None
     repo = SqlCheckRepository(session)
     user_id = await new_user(session)
     subject = link()
-    two_lookups = Limits(cache_hours=24, checks_per_hour=10, lookups_per_hour=2)
+    two_lookups = Limits(
+        cache_hours=24, checks_per_hour=10, lookups_per_hour=2, prompt_version=VERSION
+    )
     started = await repo.begin_check(user_id, subject, two_lookups)
     assert isinstance(started, Started)
     await finish(repo, started, user_id)
@@ -310,7 +316,13 @@ async def test_latest_lists_only_listed_links_in_order(session: AsyncSession) ->
 async def test_daily_limit_counts_only_new_checks(session: AsyncSession) -> None:
     repo = SqlCheckRepository(session)
     user_id = await new_user(session)
-    two_per_day = Limits(cache_hours=24, checks_per_hour=10, lookups_per_hour=60, checks_per_day=2)
+    two_per_day = Limits(
+        cache_hours=24,
+        checks_per_hour=10,
+        lookups_per_hour=60,
+        checks_per_day=2,
+        prompt_version=VERSION,
+    )
     subject = link()
     started = await repo.begin_check(user_id, subject, two_per_day)
     assert isinstance(started, Started)
@@ -360,6 +372,7 @@ async def test_unlisted_check_does_not_change_the_title_in_latest(session: Async
 
     def new_check(title: str, *, listed: bool) -> NewCheck:
         return NewCheck(
+            prompt_version=VERSION,
             subject=first.subject,
             user_id=user_id,
             veredito="falso",
@@ -412,6 +425,7 @@ async def test_latest_reports_how_many_agency_checks_each_item_has(session: Asyn
                 model="m",
                 listed=True,
                 title="Título",
+                prompt_version=VERSION,
             )
         )
     latest = {item.public_id: item for item in await repo.latest(None, 1000)}
@@ -419,3 +433,74 @@ async def test_latest_reports_how_many_agency_checks_each_item_has(session: Asyn
     assert latest[stored["com"].public_id].agency_checks == 2
     assert latest[stored["nulo"].public_id].agency_checks == 0
     assert latest[stored["objeto"].public_id].agency_checks == 0
+
+
+async def test_cache_is_keyed_by_prompt_version(session: AsyncSession) -> None:
+    repo = SqlCheckRepository(session)
+    user_id = await new_user(session)
+    v1 = Limits(cache_hours=24, checks_per_hour=10, lookups_per_hour=60, prompt_version="v1")
+    v2 = Limits(cache_hours=24, checks_per_hour=10, lookups_per_hour=60, prompt_version="v2")
+    subject = link()
+    started = await repo.begin_check(user_id, subject, v1)
+    assert isinstance(started, Started)
+    stored = await repo.save_result(
+        NewCheck(
+            subject=started.subject,
+            user_id=user_id,
+            veredito="falso",
+            confianca=80,
+            result={"resumo": "r"},
+            model="m",
+            listed=True,
+            title="Título",
+            prompt_version="v1",
+        )
+    )
+
+    assert isinstance(await repo.begin_check(user_id, subject, v1), CacheHit)
+    assert (await repo.find_fresh(started.subject, 24, "v1")) is not None
+    # Outra versão do prompt: não é cache, mas a checagem antiga continua pelo id.
+    assert isinstance(await repo.begin_check(user_id, subject, v2), Started)
+    assert (await repo.find_fresh(started.subject, 24, "v2")) is None
+    assert (await repo.get(stored.public_id)) is not None
+
+
+async def test_rows_from_before_prompt_versions_are_not_cache(session: AsyncSession) -> None:
+    repo = SqlCheckRepository(session)
+    user_id = await new_user(session)
+    started = await repo.begin_check(user_id, link(), LIMITS)
+    assert isinstance(started, Started)
+    stored = await finish(repo, started, user_id)
+    async with session.begin():
+        await session.execute(
+            text("update public.checks set prompt_version = null where public_id = :p"),
+            {"p": stored.public_id},
+        )
+    assert (await repo.find_fresh(started.subject, 24, LIMITS.prompt_version)) is None
+
+
+async def test_previous_analysis_of_any_prompt_version(session: AsyncSession) -> None:
+    repo = SqlCheckRepository(session)
+    user_id = await new_user(session)
+    started = await repo.begin_check(user_id, link(), LIMITS)
+    assert isinstance(started, Started)
+    stored = await finish(repo, started, user_id)
+
+    previous = await repo.find_previous(started.subject, 24)
+    assert previous is not None and previous.public_id == stored.public_id
+    assert previous.prompt_version == VERSION
+    assert (await repo.find_fresh(started.subject, 24, "outra-versao")) is None
+
+
+async def test_latest_has_one_item_per_link(session: AsyncSession) -> None:
+    repo = SqlCheckRepository(session)
+    user_id = await new_user(session)
+    subject = link()
+    first = await repo.begin_check(user_id, subject, LIMITS)
+    assert isinstance(first, Started)
+    older = await finish(repo, first, user_id)
+    newer = await finish(repo, first, user_id)  # mesmo link, análise nova (versão nova)
+
+    ids = [item.public_id for item in await repo.latest(None, 1000)]
+    assert newer.public_id in ids
+    assert older.public_id not in ids

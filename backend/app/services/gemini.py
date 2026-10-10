@@ -6,6 +6,7 @@ ou da lista institucional fixa.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import random
@@ -442,6 +443,22 @@ Vereditos: verdadeiro, enganoso (mistura fatos com distorções), falso, fora_de
 """
 
 
+# Versão do prompt: entra na chave do cache de checagens. Resultado de outra versão não é
+# servido como cache (continua no link público, com a análise da época). O hash cobre as
+# instruções e o schema; SUBA A REVISÃO quando mudar build_prompt ou finalize de um jeito que
+# mude as respostas (isso não aparece no texto das instruções).
+PROMPT_REVISION = 2  # 2 = data de hoje (Boa Vista) + origem confirmada do link (10/10/2026)
+
+
+def prompt_version(revision: int, instruction: str) -> str:
+    schema = json.dumps(GeminiVerdict.model_json_schema(), sort_keys=True, ensure_ascii=False)
+    digest = hashlib.sha256(f"{instruction}\n{schema}".encode()).hexdigest()[:12]
+    return f"{revision}-{digest}"
+
+
+PROMPT_VERSION = prompt_version(PROMPT_REVISION, SYSTEM_INSTRUCTION)
+
+
 def build_prompt(data: AnalysisInput, now: datetime | None = None) -> str:
     # Delimitador com nonce: o conteúdo não consegue "fechar" o bloco e escrever instruções.
     tag = f"conteudo-{secrets.token_hex(6)}"
@@ -729,10 +746,11 @@ class GeminiAnalyzer:
                 raise GeminiQuotaExhaustedError
             # Uma unidade da cota por resposta pedida (resposta fora do schema pede outra).
             # Fora do timeout abaixo: é chamada ao banco.
+            # Sem cota (1ª ou 2ª tentativa): "sem cota", para o serviço servir a análise anterior.
             if not await reserve():
-                if attempt == 1:
-                    raise GeminiQuotaExhaustedError
-                raise GeminiUnavailableError("cota acabou antes da nova tentativa")
+                if attempt > 1:  # a 1ª resposta veio fora do schema e a cota acabou depois
+                    logger.warning("gemini_quota_ended_before_retry", extra={"attempt": attempt})
+                raise GeminiQuotaExhaustedError
             token = _DEADLINE.set(deadline)
             try:
                 async with asyncio.timeout(deadline - time.monotonic()):

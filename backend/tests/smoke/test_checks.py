@@ -2,6 +2,7 @@ import base64
 import json
 import re
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -45,7 +46,11 @@ MSG = (
 def settings(**limits: int) -> CheckSettings:
     daily = limits.pop("daily", 200)
     values = {"cache_hours": 24, "checks_per_hour": 10, "lookups_per_hour": 60} | limits
-    return CheckSettings(limits=Limits(**values), daily_gemini_checks=daily, model="gemini-teste")
+    return CheckSettings(
+        limits=Limits(**values, prompt_version="v-teste"),
+        daily_gemini_checks=daily,
+        model="gemini-teste",
+    )
 
 
 class Env:
@@ -374,7 +379,9 @@ def test_waits_for_another_check_of_the_same_content(api: TestClient, env: Env) 
             result={"resumo": "A votação não foi adiada."},
             created_at=datetime.now(UTC),
         )
-        env.checks.rows.append(_FakeRow(ref, stored, True, uuid4()))
+        env.checks.rows.append(
+            _FakeRow(ref, stored, True, uuid4(), env.settings.limits.prompt_version)
+        )
 
     env.on_sleep.append(other_instance_finishes)
     _, headers = env.login()
@@ -464,7 +471,9 @@ def test_result_finished_between_cache_miss_and_claim_is_reused(api: TestClient,
             result={"resumo": "Já checado."},
             created_at=datetime.now(UTC),
         )
-        env.checks.rows.append(_FakeRow(subject, stored, True, uuid4()))
+        env.checks.rows.append(
+            _FakeRow(subject, stored, True, uuid4(), env.settings.limits.prompt_version)
+        )
         return claimed
 
     env.checks.claim = claim_after_other_finished  # type: ignore[method-assign]
@@ -542,3 +551,106 @@ def test_google_daily_quota_shows_come_back_tomorrow(api: TestClient, env: Env) 
     assert response.status_code == 503
     assert error_code(response) == "checagem_esgotada_hoje"
     assert env.checks.requests == {}  # não gastou o limite do usuário
+
+
+def test_new_prompt_version_does_not_serve_old_results_as_cache(api: TestClient, env: Env) -> None:
+    _, headers = env.login()
+    old = api.post("/checks", json={"url": LINK}, headers=headers).json()
+    assert env.checks.saved[0].prompt_version == "v-teste"
+
+    # Mesma versão: cache.
+    again = api.post("/checks", json={"url": LINK}, headers=headers).json()
+    assert again["cache"] is True and again["id"] == old["id"]
+
+    # Prompt mudou: análise nova, e a antiga continua no link público.
+    env.settings = replace(
+        env.settings, limits=replace(env.settings.limits, prompt_version="v-nova")
+    )
+    fresh = api.post("/checks", json={"url": LINK}, headers=headers).json()
+    assert fresh["cache"] is False and fresh["id"] != old["id"]
+    assert len(env.analyzer.inputs) == 2
+    assert env.checks.saved[1].prompt_version == "v-nova"
+    assert api.get(f"/checks/{old['id']}").json()["id"] == old["id"]
+
+
+def test_router_uses_the_current_prompt_version() -> None:
+    from app.config import Settings
+    from app.routers.checks import get_check_settings
+    from app.services.gemini import PROMPT_VERSION
+
+    assert get_check_settings(Settings()).limits.prompt_version == PROMPT_VERSION
+
+
+def new_prompt_version(env: Env) -> None:
+    env.settings = replace(
+        env.settings, limits=replace(env.settings.limits, prompt_version="v-nova")
+    )
+
+
+def test_without_quota_serves_the_previous_prompt_version_analysis(
+    api: TestClient, env: Env
+) -> None:
+    _, headers = env.login()
+    old = api.post("/checks", json={"url": LINK}, headers=headers).json()
+    assert old["analise_anterior"] is False
+
+    new_prompt_version(env)
+    env.checks.gemini_used = env.settings.daily_gemini_checks  # cota do dia acabou
+    response = api.post("/checks", json={"url": LINK}, headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == old["id"]
+    assert body["cache"] is True
+    assert body["analise_anterior"] is True  # aviso discreto na tela
+    assert len(env.analyzer.inputs) == 1  # o Gemini não foi chamado de novo
+    # Conta como checagem nova (limites de 10/h e 20/dia): sem isso o fallback viraria
+    # consulta ilimitada, já que não passa pelo limite de consultas do begin_check.
+    assert [hit for _, hit in env.checks.requests.values()] == [False, False]
+
+
+def test_without_quota_and_without_previous_analysis_is_still_503(
+    api: TestClient, env: Env
+) -> None:
+    env.settings = settings(daily=0)
+    _, headers = env.login()
+    response = api.post("/checks", json={"url": LINK}, headers=headers)
+    assert response.status_code == 503
+    assert error_code(response) == "checagem_esgotada_hoje"
+    assert env.checks.requests == {}
+
+
+def test_public_link_flags_an_analysis_from_a_previous_prompt(api: TestClient, env: Env) -> None:
+    _, headers = env.login()
+    old = api.post("/checks", json={"url": LINK}, headers=headers).json()
+    assert api.get(f"/checks/{old['id']}").json()["analise_anterior"] is False
+    new_prompt_version(env)
+    assert api.get(f"/checks/{old['id']}").json()["analise_anterior"] is True
+
+
+def test_latest_shows_only_the_newest_check_of_each_link(api: TestClient, env: Env) -> None:
+    _, headers = env.login()
+    old = api.post("/checks", json={"url": LINK}, headers=headers).json()
+    new_prompt_version(env)
+    new = api.post("/checks", json={"url": LINK}, headers=headers).json()
+    assert new["id"] != old["id"]
+    items = api.get("/checks/latest").json()["items"]
+    assert [item["id"] for item in items] == [new["id"]]
+
+
+def test_null_prompt_version_is_flagged_as_previous_analysis(api: TestClient, env: Env) -> None:
+    # Checagem de antes da coluna (versão desconhecida): mostra o aviso, por segurança.
+    _, headers = env.login()
+    old = api.post("/checks", json={"url": LINK}, headers=headers).json()
+    row = env.checks.rows[0]
+    row.check = replace(row.check, prompt_version=None)
+    assert api.get(f"/checks/{old['id']}").json()["analise_anterior"] is True
+
+
+def test_quota_fallback_with_pasted_text(api: TestClient, env: Env) -> None:
+    _, headers = env.login()
+    old = api.post("/checks", json={"texto": MSG}, headers=headers).json()
+    new_prompt_version(env)
+    env.checks.gemini_used = env.settings.daily_gemini_checks
+    body = api.post("/checks", json={"texto": MSG}, headers=headers).json()
+    assert body["id"] == old["id"] and body["analise_anterior"] is True

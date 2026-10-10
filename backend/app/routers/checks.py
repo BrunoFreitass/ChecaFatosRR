@@ -28,7 +28,7 @@ from app.schemas.checks import (
 from app.services.check_service import CheckSettings, CheckTools, run_check
 from app.services.factcheck import AgencyCheck, HttpFactCheckClient
 from app.services.fetcher import HttpPageFetcher
-from app.services.gemini import GeminiAnalyzer, google_generate
+from app.services.gemini import PROMPT_VERSION, GeminiAnalyzer, google_generate
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["checagem"])
@@ -105,6 +105,7 @@ def get_check_settings(settings: Annotated[Settings, Depends(get_settings)]) -> 
             checks_per_hour=settings.check_rate_limit_per_hour,
             checks_per_day=settings.check_daily_limit_per_user,
             lookups_per_hour=settings.cache_lookup_limit_per_hour,
+            prompt_version=PROMPT_VERSION,
         ),
         daily_gemini_checks=settings.gemini_daily_checks,
         # Rótulo de reserva: a checagem grava o modelo que respondeu (result.model).
@@ -130,7 +131,7 @@ async def current_profile(
 Repo = Annotated[CheckRepository, Depends(get_check_repository)]
 
 
-def to_out(check: StoredCheck, *, cached: bool = False) -> CheckOut:
+def to_out(check: StoredCheck, prompt_version: str, *, cached: bool = False) -> CheckOut:
     result = check.result
     return CheckOut(
         id=check.public_id,
@@ -152,6 +153,8 @@ def to_out(check: StoredCheck, *, cached: bool = False) -> CheckOut:
         fontes_sugeridas=list(result.get("fontes_sugeridas") or []),
         created_at=check.created_at,
         cache=cached,
+        # Versão diferente OU desconhecida (checagem de antes da coluna, None): avisa.
+        analise_anterior=check.prompt_version != prompt_version,
     )
 
 
@@ -176,7 +179,7 @@ async def create_check(
         tools=tools,
         settings=settings,
     )
-    return to_out(outcome.check, cached=outcome.cached)
+    return to_out(outcome.check, settings.limits.prompt_version, cached=outcome.cached)
 
 
 @router.get("/checks/latest", response_model=LatestChecksOut)
@@ -206,14 +209,18 @@ async def latest_checks(
 
 
 @router.get("/checks/{public_id}", response_model=CheckOut)
-async def read_check(public_id: str, repo: Repo) -> CheckOut:
+async def read_check(
+    public_id: str,
+    repo: Repo,
+    settings: Annotated[CheckSettings, Depends(get_check_settings)],
+) -> CheckOut:
     # Formato inválido (ex.: /checks/1) nem chega ao banco.
     if not _PUBLIC_ID.match(public_id):
         raise _not_found()
     check = await repo.get(public_id)
     if check is None:
         raise _not_found()
-    return to_out(check)
+    return to_out(check, settings.limits.prompt_version)
 
 
 def _not_found() -> AppError:

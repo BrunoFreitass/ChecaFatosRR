@@ -156,6 +156,11 @@ function ResultadoDaChecagem({ slug }: { slug: string }) {
           </p>
         )}
         <h1 className="break-words text-2xl font-bold leading-tight sm:text-3xl">{subject}</h1>
+        {check.analise_anterior && (
+          <p className="text-sm text-slate-600">
+            Análise anterior: feita com uma versão anterior do nosso verificador.
+          </p>
+        )}
         {check.tipo === "link" && originalHref && (
           <p className="break-words text-slate-700">
             {check.domain}

@@ -192,3 +192,20 @@ async def test_analyzer_sends_today_and_cleans_the_answer() -> None:
 
     assert "08/10/2026" in sent[0]
     assert result.pontos_suspeitos == ["Sem fonte"]
+
+
+async def test_quota_ending_on_the_second_attempt_is_quota_exhausted() -> None:
+    # Resposta fora do schema e a cota acaba antes da 2ª tentativa: é "sem cota" (o serviço
+    # então serve a análise anterior, se houver), não "indisponível".
+    from app.services.gemini import GeminiQuotaExhaustedError
+
+    async def generate(_: str) -> str:
+        return "isto não é JSON"
+
+    allowed = iter([True, False])
+
+    async def reserve() -> bool:
+        return next(allowed)
+
+    with pytest.raises(GeminiQuotaExhaustedError):
+        await GeminiAnalyzer(generate, now=lambda: NOW).analyze(data(), reserve)

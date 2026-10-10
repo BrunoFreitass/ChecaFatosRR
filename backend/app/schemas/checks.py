@@ -48,6 +48,8 @@ class CheckOut(BaseModel):
     fontes_sugeridas: list[str]
     created_at: datetime
     cache: bool = False
+    # Feita com uma versão anterior do prompt (a tela mostra um aviso discreto).
+    analise_anterior: bool = False
 
 
 class CheckSummaryOut(BaseModel):

@@ -141,6 +141,7 @@ class _FakeRow:
     check: StoredCheck
     listed: bool
     created_by: UUID
+    prompt_version: str = ""
 
 
 def _agency_count(result: dict[str, object]) -> int:
@@ -171,8 +172,12 @@ class FakeCheckRepository:
         self._next_id += 1
         return self._next_id
 
-    def _fresh(self, ref: SubjectRef) -> StoredCheck | None:
-        matches = [row.check for row in self.rows if row.ref == ref]
+    def _fresh(self, ref: SubjectRef, prompt_version: str) -> StoredCheck | None:
+        matches = [
+            row.check
+            for row in self.rows
+            if row.ref == ref and row.prompt_version == prompt_version
+        ]
         return matches[-1] if matches else None
 
     def _used(self, user_id: UUID, cache_hit: bool) -> int:
@@ -190,7 +195,7 @@ class FakeCheckRepository:
             self.text_data.setdefault(subject_id, subject)
             ref = SubjectRef("texto", subject_id)
 
-        fresh = self._fresh(ref)
+        fresh = self._fresh(ref, limits.prompt_version)
         if fresh is not None:
             if self._used(user_id, True) >= limits.lookups_per_hour:
                 raise LimitExceededError("consultas", 1800)
@@ -215,8 +220,14 @@ class FakeCheckRepository:
         if self.claimed.get(subject) == token:  # só o dono solta
             del self.claimed[subject]
 
-    async def find_fresh(self, subject: SubjectRef, cache_hours: int) -> StoredCheck | None:
-        return self._fresh(subject)
+    async def find_fresh(
+        self, subject: SubjectRef, cache_hours: int, prompt_version: str
+    ) -> StoredCheck | None:
+        return self._fresh(subject, prompt_version)
+
+    async def find_previous(self, subject: SubjectRef, cache_hours: int) -> StoredCheck | None:
+        matches = [row.check for row in self.rows if row.ref == subject]
+        return matches[-1] if matches else None
 
     async def reserve_gemini(self, purpose: str, daily_limit: int) -> bool:
         if self.gemini_used >= daily_limit:
@@ -243,8 +254,11 @@ class FakeCheckRepository:
             confianca=check.confianca,
             result=check.result,
             created_at=self._clock,
+            prompt_version=check.prompt_version,
         )
-        self.rows.append(_FakeRow(check.subject, stored, check.listed, check.user_id))
+        self.rows.append(
+            _FakeRow(check.subject, stored, check.listed, check.user_id, check.prompt_version)
+        )
         return stored
 
     async def mark_cache_hit(self, request_id: int) -> None:
@@ -263,6 +277,10 @@ class FakeCheckRepository:
             key=lambda r: (r.check.created_at, r.check.public_id),
             reverse=True,
         )
+        newest: dict[SubjectRef, _FakeRow] = {}
+        for r in rows:  # já em ordem decrescente: o primeiro de cada link é o mais novo
+            newest.setdefault(r.ref, r)
+        rows = list(newest.values())
         if cursor is not None:
             rows = [r for r in rows if (r.check.created_at, r.check.public_id) < cursor]
         return [

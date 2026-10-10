@@ -2,7 +2,7 @@
 
 import json
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Literal, Protocol
 from uuid import UUID
@@ -59,6 +59,8 @@ class StoredCheck:
     confianca: int
     result: dict[str, Any]
     created_at: datetime
+    # Versão do prompt que gerou a análise (None = antes de existir a coluna).
+    prompt_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +99,9 @@ class Limits:
     lookups_per_hour: int
     # Checagens novas em 24 h (janela móvel). Consultas ao cache não contam.
     checks_per_day: int = 20
+    # Cache só vale para resultados desta versão do prompt (gemini.PROMPT_VERSION). Sem
+    # padrão de propósito: esquecer a versão quebraria o cache em silêncio.
+    prompt_version: str = field(kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -112,6 +117,8 @@ class NewCheck:
     published_at: date | None = None
     # Token do claim (o checking_until gravado por ESTA requisição): só ela o solta.
     claim_token: datetime | None = None
+    # Versão do prompt que produziu o resultado (chave do cache). Obrigatória.
+    prompt_version: str = field(kw_only=True)
 
 
 class CheckRepository(Protocol):
@@ -120,7 +127,10 @@ class CheckRepository(Protocol):
     ) -> CacheHit | Started: ...
     async def claim(self, subject: SubjectRef) -> datetime | None: ...
     async def release(self, subject: SubjectRef, token: datetime) -> None: ...
-    async def find_fresh(self, subject: SubjectRef, cache_hours: int) -> StoredCheck | None: ...
+    async def find_fresh(
+        self, subject: SubjectRef, cache_hours: int, prompt_version: str
+    ) -> StoredCheck | None: ...
+    async def find_previous(self, subject: SubjectRef, cache_hours: int) -> StoredCheck | None: ...
     async def reserve_gemini(self, purpose: GeminiPurpose, daily_limit: int) -> bool: ...
     async def save_result(self, check: NewCheck) -> StoredCheck: ...
     async def mark_cache_hit(self, request_id: int) -> None: ...
@@ -140,7 +150,7 @@ select c.public_id,
        case when c.link_id is not null then 'link' else 'texto' end as kind,
        l.url_normalized as url, l.domain, l.title, l.published_at,
        t.body as texto,
-       c.veredito, c.confianca, c.result, c.created_at
+       c.veredito, c.confianca, c.result, c.created_at, c.prompt_version
 from public.checks c
 left join public.links l on l.id = c.link_id
 left join public.texts t on t.id = c.text_id
@@ -205,6 +215,7 @@ def _row_to_check(row: Any) -> StoredCheck:
         confianca=row["confianca"],
         result=result,
         created_at=row["created_at"],
+        prompt_version=row["prompt_version"],
     )
 
 
@@ -226,7 +237,7 @@ class SqlCheckRepository:
             )
             ref = await self._subject_ref(subject)
 
-            fresh = await self._find_fresh(ref, limits.cache_hours)
+            fresh = await self._find_fresh(ref, limits.cache_hours, limits.prompt_version)
             if fresh is not None:
                 await self._check_usage(user_id, True, limits.lookups_per_hour, "consultas", 1)
                 await self._insert_request(user_id, ref, cache_hit=True)
@@ -280,7 +291,9 @@ class SqlCheckRepository:
         )
         return int(request_id)
 
-    async def _find_fresh(self, ref: SubjectRef, cache_hours: int) -> StoredCheck | None:
+    async def _find_fresh(
+        self, ref: SubjectRef, cache_hours: int, prompt_version: str
+    ) -> StoredCheck | None:
         column = _SUBJECT_COLUMN[ref.kind]
         row = (
             (
@@ -288,9 +301,11 @@ class SqlCheckRepository:
                     text(
                         _SELECT_CHECK + f"where c.{column} = :sid "
                         "and c.created_at > now() - make_interval(hours => :hours) "
+                        # Prompt mudou = resultado antigo não é cache (null também não).
+                        "and c.prompt_version = :prompt_version "
                         "order by c.created_at desc limit 1"
                     ),
-                    {"sid": ref.id, "hours": cache_hours},
+                    {"sid": ref.id, "hours": cache_hours, "prompt_version": prompt_version},
                 )
             )
             .mappings()
@@ -298,9 +313,32 @@ class SqlCheckRepository:
         )
         return _row_to_check(row) if row else None
 
-    async def find_fresh(self, subject: SubjectRef, cache_hours: int) -> StoredCheck | None:
+    async def find_fresh(
+        self, subject: SubjectRef, cache_hours: int, prompt_version: str
+    ) -> StoredCheck | None:
         async with self._session.begin():
-            return await self._find_fresh(subject, cache_hours)
+            return await self._find_fresh(subject, cache_hours, prompt_version)
+
+    async def find_previous(self, subject: SubjectRef, cache_hours: int) -> StoredCheck | None:
+        """A análise mais recente do assunto, de QUALQUER versão do prompt (sem cota do
+        Gemini, ela é servida com o aviso "análise anterior")."""
+        column = _SUBJECT_COLUMN[subject.kind]
+        async with self._session.begin():
+            row = (
+                (
+                    await self._session.execute(
+                        text(
+                            _SELECT_CHECK + f"where c.{column} = :sid "
+                            "and c.created_at > now() - make_interval(hours => :hours) "
+                            "order by c.created_at desc limit 1"
+                        ),
+                        {"sid": subject.id, "hours": cache_hours},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return _row_to_check(row) if row else None
 
     async def claim(self, subject: SubjectRef) -> datetime | None:
         """Toma o claim e devolve o token (o checking_until gravado), ou None se ocupado."""
@@ -377,8 +415,9 @@ class SqlCheckRepository:
             await self._session.execute(
                 text(
                     f"insert into public.checks ({column}, veredito, confianca, result, "  # noqa: S608
-                    "model, created_by, public_id, listed) values (:sid, :veredito, "
-                    ":confianca, cast(:result as jsonb), :model, :uid, :public_id, :listed)"
+                    "model, created_by, public_id, listed, prompt_version) values (:sid, "
+                    ":veredito, :confianca, cast(:result as jsonb), :model, :uid, :public_id, "
+                    ":listed, :prompt_version)"
                 ),
                 {
                     "sid": check.subject.id,
@@ -389,6 +428,7 @@ class SqlCheckRepository:
                     "uid": check.user_id,
                     "public_id": public_id,
                     "listed": check.listed,
+                    "prompt_version": check.prompt_version,
                 },
             )
             row = (
@@ -437,6 +477,11 @@ class SqlCheckRepository:
             "then jsonb_array_length(c.result -> 'checagens_agencias') else 0 end as agency_checks "
             "from public.checks c join public.links l on l.id = c.link_id "
             "where c.listed "
+            # Um item por link: só a checagem listada mais recente (nova versão do prompt não
+            # duplica o link). Anti-join em vez de distinct on: percorre checks_listed_idx em
+            # ordem e para no limit; o índice checks_listed_link_idx atende o not exists.
+            "and not exists (select 1 from public.checks n where n.link_id = c.link_id "
+            "and n.listed and (n.created_at, n.public_id) > (c.created_at, c.public_id)) "
         )
         params: dict[str, Any] = {"limit": limit}
         if cursor is not None:

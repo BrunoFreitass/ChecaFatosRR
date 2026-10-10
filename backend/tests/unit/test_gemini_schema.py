@@ -302,20 +302,6 @@ async def test_no_quota_means_no_call() -> None:
     assert calls == []
 
 
-@pytest.mark.anyio
-async def test_quota_ending_before_retry_is_unavailable() -> None:
-    allowed = iter([True, False])
-
-    async def generate(_: str) -> str | None:
-        return "{quebrado"
-
-    async def reserve() -> bool:
-        return next(allowed)
-
-    with pytest.raises(GeminiUnavailableError):
-        await GeminiAnalyzer(generate).analyze(data(), reserve)
-
-
 # ---------- confiança mínima sem checagem de agência (decisão de 09/10/2026) ----------
 
 

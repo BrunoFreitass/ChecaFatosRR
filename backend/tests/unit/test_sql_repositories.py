@@ -28,7 +28,9 @@ from tests.fake_session import FakeAsyncSession
 pytestmark = pytest.mark.anyio
 
 USER = uuid4()
-LIMITS = Limits(cache_hours=24, checks_per_hour=10, lookups_per_hour=60, checks_per_day=20)
+LIMITS = Limits(
+    cache_hours=24, checks_per_hour=10, lookups_per_hour=60, checks_per_day=20, prompt_version="v1"
+)
 LINK = LinkSubject(url="https://site.com.br/a", url_hash=b"h" * 32, domain="site.com.br")
 NOW = datetime(2026, 10, 9, 15, 0, tzinfo=UTC)
 
@@ -44,6 +46,7 @@ CHECK_ROW = {
     "confianca": 80,
     "result": '{"resumo": "r"}',  # asyncpg devolve jsonb como texto
     "created_at": NOW,
+    "prompt_version": "v1",
 }
 
 
@@ -183,7 +186,10 @@ async def test_find_fresh_get_and_latest() -> None:
     session.on("from public.checks c", rows=[CHECK_ROW])
     repo = SqlCheckRepository(session)
 
-    assert (await repo.find_fresh(SubjectRef("link", 7), 24)) is not None
+    assert (await repo.find_fresh(SubjectRef("link", 7), 24, "v1")) is not None
+    fresh_query = next(s for s in session.statements if "make_interval(hours" in s.sql)
+    assert "c.prompt_version = :prompt_version" in fresh_query.sql
+    assert fresh_query.params["prompt_version"] == "v1"
     stored = await repo.get("0123456789ab")
     assert stored is not None and stored.published_at == date(2026, 9, 28)
     first = await repo.latest(None, 20)
@@ -192,6 +198,14 @@ async def test_find_fresh_get_and_latest() -> None:
     assert "jsonb_typeof" in session.sql_log()[-1]
     await repo.latest((NOW, "0123456789ab"), 20)
     assert "(c.created_at, c.public_id) <" in session.sql_log()[-1]
+    # Um item por link sem varrer tudo: anti-join que o índice parcial atende.
+    assert "not exists" in session.sql_log()[-1]
+    assert "distinct on" not in session.sql_log()[-1]
+
+    previous = await repo.find_previous(SubjectRef("link", 7), 24)
+    assert previous is not None
+    query = next(s for s in reversed(session.statements) if "make_interval(hours" in s.sql)
+    assert "prompt_version = :" not in query.sql  # qualquer versão do prompt
 
 
 async def test_save_result() -> None:
@@ -200,6 +214,7 @@ async def test_save_result() -> None:
 
     stored = await SqlCheckRepository(session).save_result(
         NewCheck(
+            prompt_version="v1",
             subject=SubjectRef("link", 7),
             user_id=USER,
             veredito="falso",

@@ -191,13 +191,15 @@ async def run_check(
     saved = False
     try:
         # Outra checagem do mesmo conteúdo pode ter terminado entre o begin_check e o claim.
-        fresh = await repo.find_fresh(started.subject, settings.limits.cache_hours)
+        fresh = await repo.find_fresh(
+            started.subject, settings.limits.cache_hours, settings.limits.prompt_version
+        )
         if fresh is not None:
             await repo.mark_cache_hit(started.request_id)
             return CheckOutcome(check=fresh, cached=True)
-        check = await _analyze(parsed, started, user_id, repo, tools, settings, token)
-        saved = True
-        return CheckOutcome(check=check, cached=False)
+        result = await _analyze(parsed, started, user_id, repo, tools, settings, token)
+        saved = not result.cached  # análise anterior servida: nada salvo, solta o claim
+        return result
     finally:
         if not saved:
             await _release_safely(repo, started.subject, token)
@@ -212,7 +214,9 @@ async def _wait_for_other(
     while waited < WAIT_MAX_SECONDS:
         await tools.sleep(WAIT_POLL_SECONDS)
         waited += WAIT_POLL_SECONDS
-        fresh = await repo.find_fresh(started.subject, settings.limits.cache_hours)
+        fresh = await repo.find_fresh(
+            started.subject, settings.limits.cache_hours, settings.limits.prompt_version
+        )
         if fresh is not None:
             # O resultado de outra pessoa: conta como consulta ao cache, não como checagem.
             await repo.mark_cache_hit(started.request_id)
@@ -247,7 +251,7 @@ async def _analyze(
     tools: CheckTools,
     settings: CheckSettings,
     claim_token: datetime,
-) -> StoredCheck:
+) -> CheckOutcome:
     published_at: date | None = None
     listed = False
     if isinstance(parsed, LinkInput):
@@ -277,6 +281,16 @@ async def _analyze(
     try:
         result = await tools.analyzer.analyze(data, reserve)
     except GeminiQuotaExhaustedError as exc:
+        # Sem cota: a análise de uma versão anterior do prompt é melhor que nada (a tela
+        # avisa "análise anterior"). Continua contando como checagem nova: virar consulta
+        # escaparia do limite de consultas (que só o begin_check verifica).
+        try:
+            previous = await repo.find_previous(started.subject, settings.limits.cache_hours)
+            if previous is not None:
+                logger.info("quota_exhausted_served_previous_analysis")
+                return CheckOutcome(check=previous, cached=True)
+        except Exception:  # o fallback é um extra: se falhar, segue o caminho "sem cota"
+            logger.exception("previous_analysis_lookup_failed")
         await repo.refund(started.request_id)
         raise _quota_exhausted() from exc
     except GeminiUnavailableError as exc:
@@ -284,7 +298,7 @@ async def _analyze(
         await repo.refund(started.request_id)
         raise _unavailable() from exc
 
-    return await repo.save_result(
+    saved = await repo.save_result(
         NewCheck(
             subject=started.subject,
             user_id=user_id,
@@ -297,8 +311,10 @@ async def _analyze(
             title=data.title,
             published_at=published_at,
             claim_token=claim_token,
+            prompt_version=settings.limits.prompt_version,
         )
     )
+    return CheckOutcome(check=saved, cached=False)
 
 
 async def _read_link(parsed: LinkInput, tools: CheckTools) -> _LinkRead:

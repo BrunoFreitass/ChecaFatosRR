@@ -362,3 +362,9 @@ Plano: `.claude/plans/etapa-2-checagem.plan.md`. Mudanças em relação a este p
 - **Checagens de texto não aparecem em "Últimas"**: o acesso é só pelo link compartilhado (`noindex`).
 - **Identificador público aleatório** (`checks.public_id`, 12 caracteres base32, 60 bits) para links e textos. O `bigint` é só interno, nunca aparece em rota, resposta ou cursor. **Vale também para as próximas etapas**: comentários, anúncios e admin não expõem ids sequenciais em URL pública.
 - **Etapa 3 (decidido pelo usuário):** **sem comentários em checagens de texto no MVP**. Comentários só em links e no feed geral.
+
+## 12. Prompt e cache da checagem (10/10/2026)
+- **Versão do prompt na chave do cache:** `gemini.PROMPT_VERSION` (revisão manual + hash das instruções e do schema; o teste de "retrato" obriga a subir `PROMPT_REVISION` quando o pedido montado muda). Resultado de outra versão não é servido como cache; continua no link público, com o aviso "Análise anterior".
+- **Sem cota do Gemini:** serve a análise mais recente do mesmo conteúdo (qualquer versão, dentro da janela do cache), com o aviso "Análise anterior". Continua contando como checagem nova (limites de 10/h e 20/dia), para não virar consulta ilimitada. Sem análise anterior: 503 "esgotada hoje".
+- **"Últimas":** um item por link (a checagem listada mais recente).
+- **PROMPT CONGELADO a partir de 22/10/2026** (decisão do usuário). De 22/10 até o fim do 2º turno (25/10), nada de mudar `SYSTEM_INSTRUCTION`, `build_prompt`, `finalize`, o schema, `PROMPT_REVISION` ou `GEMINI_MODEL_FALLBACKS`. Motivo: mudar a versão invalida o cache inteiro de uma vez e, na reta final, a demanda por checagens novas gastaria a cota diária. Exceção só com decisão explícita do usuário.

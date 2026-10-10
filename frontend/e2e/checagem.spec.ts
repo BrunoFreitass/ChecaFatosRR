@@ -260,3 +260,29 @@ test("sem login, guarda o que foi digitado e manda para o login", async ({ page 
   const draft = await page.evaluate(() => window.sessionStorage.getItem("checafatosrr:rascunho"));
   expect(JSON.parse(draft ?? "null")).toEqual({ modo: "link", valor: "https://g1.globo.com/rr/noticia.html" });
 });
+
+test("análise de versão anterior do verificador mostra aviso discreto", async ({ page }) => {
+  await signIn(page);
+  await mockApi(page, {
+    [`GET /checks/${LINK_CHECK.id}`]: (route) =>
+      json(route, 200, { ...LINK_CHECK, cache: true, analise_anterior: true }),
+  });
+
+  await page.goto(`/checagem/${LINK_CHECK.id}`);
+
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(LINK_CHECK.title);
+  const note = page.getByText("Análise anterior", { exact: false });
+  await expect(note).toBeVisible();
+  await expect(note).toContainText("versão anterior do nosso verificador");
+});
+
+test("análise atual não mostra o aviso de análise anterior", async ({ page }) => {
+  await signIn(page);
+  await mockApi(page, {
+    [`GET /checks/${LINK_CHECK.id}`]: (route) =>
+      json(route, 200, { ...LINK_CHECK, analise_anterior: false }),
+  });
+  await page.goto(`/checagem/${LINK_CHECK.id}`);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(LINK_CHECK.title);
+  await expect(page.getByText("Análise anterior", { exact: false })).toHaveCount(0);
+});
