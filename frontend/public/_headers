@@ -1,4 +1,5 @@
-# Cabeçalhos do Cloudflare Pages. A CSP completa entra na etapa 9 (depende das URLs da API e do Supabase).
+# Cabeçalhos do Cloudflare Pages. A Content-Security-Policy é acrescentada no build
+# (frontend/csp.ts), a partir de VITE_API_URL e VITE_SUPABASE_URL.
 /*
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY

@@ -1,9 +1,23 @@
 import re
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Pasta backend/: caminhos relativos (ex.: certs/supabase-ca.crt) valem a partir dela.
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+
+
+def resolve_backend_path(value: str, base: Path = BACKEND_DIR) -> Path:
+    """Absoluto fica igual; relativo vale a partir da pasta atual ou, se não existir lá, de
+    backend/ (rodar da raiz do repositório ou da IDE dá no mesmo arquivo)."""
+    path = Path(value)
+    if path.is_absolute() or path.exists():
+        return path
+    return base / path
+
 
 # Nome de modelo do Gemini como vai na URL da API (ex.: gemini-3.8-flash).
 _MODEL_NAME = re.compile(r"[a-z0-9][a-z0-9.\-]*")
@@ -104,6 +118,33 @@ class Settings(BaseSettings):
     def gemini_models(self) -> tuple[str, ...]:
         """A cadeia de GEMINI_MODEL_FALLBACKS, em ordem e sem repetição."""
         return tuple(self.gemini_model_fallbacks.split(","))
+
+    @field_validator("database_ssl_root_cert")
+    @classmethod
+    def _root_cert_must_exist(cls, value: str | None) -> str | None:
+        # Falha na INICIALIZAÇÃO (revisão do Cloud Run não sobe, erro claro no log) em vez de
+        # na primeira conexão ao banco com um erro de SSL difícil de entender.
+        if value is None:
+            return None
+        path = resolve_backend_path(value)
+        if not path.is_file():
+            raise ValueError(
+                f"DATABASE_SSL_ROOT_CERT aponta para um arquivo que não existe: {value}"
+            )
+        if "BEGIN CERTIFICATE" not in path.read_text(encoding="utf-8", errors="replace"):
+            raise ValueError(f"DATABASE_SSL_ROOT_CERT não é um certificado PEM: {value}")
+        return str(path)
+
+    @model_validator(mode="after")
+    def _production_verifies_the_database_certificate(self) -> "Settings":
+        # Sem o CA, o asyncpg usa ssl="require": criptografa, mas não valida o certificado
+        # (um intermediário leria a senha do banco). Em produção, o certificado é obrigatório.
+        if self.app_env == "production" and self.database_url and not self.database_ssl_root_cert:
+            raise ValueError(
+                "Em produção, defina DATABASE_SSL_ROOT_CERT (certificado do Supabase em "
+                "backend/certs/supabase-ca.crt; ver docs/DEPLOY.md)"
+            )
+        return self
 
     @field_validator("supabase_url")
     @classmethod

@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const PORT = 4173;
+// Porta própria (não a 4173 padrão do vite preview): nunca reaproveita um preview real.
+const PORT = 4317;
 
 // E2E sem backend nem Google: a API é simulada com page.route e a sessão do Supabase é
 // injetada no localStorage (o login do Google não é automatizável).
@@ -18,9 +19,13 @@ export default defineConfig({
   },
   projects: [{ name: "celular", use: { ...devices["Pixel 7"] } }],
   webServer: {
-    command: `npm run dev -- --port ${PORT} --strictPort`,
+    // Build de PRODUÇÃO servido pelo vite preview, com a mesma CSP do Cloudflare Pages
+    // (plugin em csp.ts): o servidor de dev injeta script inline e não serve para testar CSP.
+    // Saída em dist-e2e: não sobrescreve o dist/ de um build real.
+    command: `npx tsc -b && npx vite build --outDir dist-e2e --emptyOutDir && npx vite preview --outDir dist-e2e --port ${PORT} --strictPort`,
+    timeout: 180_000,
     url: `http://localhost:${PORT}`,
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: false, // sempre o build de teste, com as URLs falsas abaixo
     // Variáveis de ambiente valem mais que o .env.local: nunca usa as chaves reais.
     env: {
       VITE_API_URL: "http://127.0.0.1:9999",
