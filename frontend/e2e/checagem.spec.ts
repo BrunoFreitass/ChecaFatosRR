@@ -58,6 +58,27 @@ const TEXT_CHECK = {
   pontos_suspeitos: ["Não cita nenhuma fonte oficial", "Pede para repassar a todos os grupos"],
 };
 
+// Toda violação de CSP derruba o teste: o e2e roda no build de produção, com o mesmo
+// cabeçalho que vai para o Cloudflare Pages (plugin em csp.ts).
+const cspViolations = new WeakMap<Page, string[]>();
+
+test.beforeEach(async ({ page }) => {
+  const found: string[] = [];
+  cspViolations.set(page, found);
+  await page.exposeFunction("__reportCspViolation", (detail: string) => found.push(detail));
+  await page.addInitScript(() => {
+    document.addEventListener("securitypolicyviolation", (event) => {
+      const report = (window as unknown as { __reportCspViolation: (d: string) => void })
+        .__reportCspViolation;
+      void report(`${event.violatedDirective} ${event.blockedURI}`);
+    });
+  });
+});
+
+test.afterEach(async ({ page }) => {
+  expect(cspViolations.get(page) ?? [], "violações de CSP").toEqual([]);
+});
+
 type Handler = (route: Route) => Promise<void> | void;
 
 const CORS = {
@@ -285,4 +306,61 @@ test("análise atual não mostra o aviso de análise anterior", async ({ page })
   await page.goto(`/checagem/${LINK_CHECK.id}`);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(LINK_CHECK.title);
   await expect(page.getByText("Análise anterior", { exact: false })).toHaveCount(0);
+});
+
+test("o site é servido com a CSP de produção", async ({ page }) => {
+  await mockApi(page, {});
+  const response = await page.goto("/");
+  const csp = response?.headers()["content-security-policy"] ?? "";
+  expect(csp).toContain("script-src 'self'");
+  expect(csp).toContain(`connect-src 'self' ${API} ${SUPABASE}`);
+  expect(csp).toContain("frame-ancestors 'none'");
+  expect(csp).not.toContain("unsafe-");
+});
+
+test("login com Google vai para o Supabase sem violar a CSP", async ({ page }) => {
+  let authorize: URL | null = null;
+  await mockApi(page, {});
+  await page.route(`${SUPABASE}/auth/v1/authorize**`, (route) => {
+    authorize = new URL(route.request().url());
+    return route.fulfill({ status: 200, contentType: "text/html", body: "<p>Google</p>" });
+  });
+
+  await page.goto("/entrar");
+  await page.getByRole("button", { name: "Entrar com Google" }).click();
+
+  await expect.poll(() => authorize?.searchParams.get("provider")).toBe("google");
+  expect(authorize!.searchParams.get("redirect_to")).toMatch(/\/auth\/callback$/);
+});
+
+test("compartilhar: copiar link e WhatsApp funcionam com a CSP", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await signIn(page);
+  await mockApi(page, {
+    [`GET /checks/${LINK_CHECK.id}`]: (route) => json(route, 200, LINK_CHECK),
+  });
+
+  await page.goto(`/checagem/${LINK_CHECK.id}`);
+  await page.getByRole("button", { name: "Copiar link" }).click();
+  await expect(page.getByText("Link copiado!")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Enviar no WhatsApp" })).toHaveAttribute(
+    "href",
+    /^https:\/\/wa\.me\/\?text=/,
+  );
+});
+
+test("a CSP bloqueia script inline e o detector de violações registra", async ({ page }) => {
+  await mockApi(page, {});
+  await page.goto("/");
+  const ran = await page.evaluate(() => {
+    const script = document.createElement("script");
+    script.textContent = "window.__inlineRan = true";
+    document.head.appendChild(script);
+    return (window as unknown as { __inlineRan?: boolean }).__inlineRan === true;
+  });
+  expect(ran).toBe(false); // bloqueado pela script-src 'self'
+  const found = cspViolations.get(page)!;
+  await expect.poll(() => found.length).toBeGreaterThan(0);
+  expect(found[0]).toContain("script-src");
+  found.length = 0; // a violação era esperada: não derruba o afterEach
 });

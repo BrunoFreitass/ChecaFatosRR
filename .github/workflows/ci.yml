@@ -59,6 +59,11 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+        # O build exige as variáveis (CSP e site). Valores falsos: nenhum segredo na CI.
+        env:
+          VITE_API_URL: http://127.0.0.1:9999
+          VITE_SUPABASE_URL: https://e2e-ref.supabase.co
+          VITE_SUPABASE_PUBLISHABLE_KEY: sb_publishable_e2e
       # E2E com a API simulada (sem backend nem Google). Só o Chromium.
       - run: npx playwright install --with-deps chromium
       - run: npm run e2e

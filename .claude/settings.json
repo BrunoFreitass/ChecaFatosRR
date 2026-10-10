@@ -17,9 +17,21 @@
       "Edit(**/.env.production)",
       "Read(**/.env.test)",
       "Edit(**/.env.test)",
-      "Bash(cat backend/.env*)",
-      "Bash(cat frontend/.env*)",
-      "Bash(cat .env*)"
+      "Bash(cat .env)",
+      "Bash(cat .env.local)",
+      "Bash(cat .env.development)",
+      "Bash(cat .env.production)",
+      "Bash(cat .env.test)",
+      "Bash(cat backend/.env)",
+      "Bash(cat backend/.env.local)",
+      "Bash(cat backend/.env.development)",
+      "Bash(cat backend/.env.production)",
+      "Bash(cat backend/.env.test)",
+      "Bash(cat frontend/.env)",
+      "Bash(cat frontend/.env.local)",
+      "Bash(cat frontend/.env.development)",
+      "Bash(cat frontend/.env.production)",
+      "Bash(cat frontend/.env.test)"
     ]
   },
   "hooks": {

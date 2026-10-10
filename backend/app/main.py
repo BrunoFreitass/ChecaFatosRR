@@ -8,7 +8,7 @@ from app.config import get_settings
 from app.db import dispose_engine
 from app.errors import register_error_handlers
 from app.logging_setup import configure_logging
-from app.middleware import RequestContextMiddleware
+from app.middleware import BodySizeLimitMiddleware, RequestContextMiddleware
 from app.routers import checks, health, profiles
 from app.services.rate_limit import RateLimiters
 
@@ -37,6 +37,9 @@ def create_app() -> FastAPI:
     )
     # A última adicionada é a mais externa: CORS envolve o RequestContext, então até a
     # resposta 500 gerada pelo RequestContext recebe os cabeçalhos de CORS.
+    # Mais interno: o 413 do limite de corpo passa pelo RequestContext (request_id e
+    # cabeçalhos de segurança) e pelo CORS.
+    app.add_middleware(BodySizeLimitMiddleware)
     app.add_middleware(RequestContextMiddleware)
     # Autenticação via header Authorization (Bearer), sem cookies: allow_credentials=False.
     app.add_middleware(

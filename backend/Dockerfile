@@ -14,6 +14,8 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 COPY app ./app
+# CA público do Supabase para validar o certificado do banco (DATABASE_SSL_ROOT_CERT).
+COPY certs ./certs
 
 RUN useradd --create-home --uid 10001 appuser
 USER appuser

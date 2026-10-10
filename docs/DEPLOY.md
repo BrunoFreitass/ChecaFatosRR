@@ -16,7 +16,9 @@ Os valores entre `<>` são seus; nunca faça commit de senhas ou chaves.
 2. Aplique as migrações **na ordem do nome do arquivo**. Escolha **uma** das opções:
    - **SQL Editor**: cole e rode, um de cada vez:
      1. `supabase/migrations/20261008000000_init.sql` (etapas 0 e 1);
-     2. `supabase/migrations/20261009000000_checagem.sql` (etapa 2: checagem de links e textos).
+     2. `supabase/migrations/20261009000000_checagem.sql` (etapa 2: checagem de links e textos);
+     3. `supabase/migrations/20261010000000_prompt_version.sql` (etapa 2: versão do prompt no cache);
+     4. `supabase/migrations/20261010000001_checks_listed_link_idx.sql` (etapa 2: índice de "Últimas").
    - **CLI**:
      ```bash
      npx supabase init          # só na primeira vez (cria supabase/config.toml)
@@ -27,9 +29,13 @@ Os valores entre `<>` são seus; nunca faça commit de senhas ou chaves.
    de "Exposed schemas". O frontend usa o Supabase só para o login, que continua funcionando.
 4. Pegue a string de conexão: *Connect → Connection string → **Transaction pooler*** (porta **6543**).
    Ela vira o `DATABASE_URL` do backend. Se a senha tiver `@ / # : ?`, use URL-encode (`@` → `%40`).
-5. (Recomendado até a etapa 9) baixe o certificado em *Database Settings → SSL Configuration*.
-   Com `DATABASE_SSL_ROOT_CERT` apontando para ele, o backend valida o certificado do banco.
-   Sem isso a conexão é criptografada, mas o certificado não é validado.
+5. **Certificado do banco (obrigatório no deploy público):** baixe-o em *Project Settings →
+   Database → SSL Configuration* e salve como **`backend/certs/supabase-ca.crt`** (é o certificado
+   público da CA do Supabase; pode ir para o git). Ele entra na imagem pelo `Dockerfile`
+   (`COPY certs ./certs`) e o deploy define `DATABASE_SSL_ROOT_CERT=/srv/certs/supabase-ca.crt`:
+   a conexão valida a cadeia e o nome do servidor (verify-full). Local: no `backend/.env`, use
+   `DATABASE_SSL_ROOT_CERT=certs/supabase-ca.crt`. Caminho errado ou arquivo que não é PEM faz o
+   backend falhar já na inicialização, com mensagem clara.
 
 > O papel dedicado `app_backend` (privilégio mínimo) fica para a etapa 9:
 > `supabase/manual/app_backend_role.sql`. Até lá use o usuário padrão do pooler.
@@ -99,7 +105,7 @@ python -m venv .venv
 # Windows: .venv\Scripts\activate    ·    Linux/Mac: source .venv/bin/activate
 pip install -r requirements-dev.txt
 cp .env.example .env               # preencha DATABASE_URL
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:create_app --factory --reload --port 8000
 ```
 
 - <http://localhost:8000/health> → `{"status":"ok"}`
@@ -127,29 +133,34 @@ gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
   artifactregistry.googleapis.com secretmanager.googleapis.com
 ```
 
-### 3.1 Segredos (Secret Manager)
+### 3.1 Conta de serviço e segredos
 
-Cinco segredos: `DATABASE_URL`, `SUPABASE_SECRET_KEY`, `BAN_HASH_SALT`, `GEMINI_API_KEY` e
-`GOOGLE_FACTCHECK_API_KEY`. As outras variáveis não são secretas e vão em `--set-env-vars`.
+**Conta de serviço dedicada** para o Cloud Run, sem nenhum papel no projeto: se o backend um
+dia for comprometido, o token dela só lê os segredos do app (a conta padrão do Compute costuma
+ser *Editor* do projeto inteiro).
 
 ```bash
-printf '%s' '<DATABASE_URL do pooler>'   | gcloud secrets create DATABASE_URL --data-file=-
-printf '%s' '<sb_secret_...>'            | gcloud secrets create SUPABASE_SECRET_KEY --data-file=-
-printf '%s' '<o mesmo BAN_HASH_SALT do .env>' | gcloud secrets create BAN_HASH_SALT --data-file=-
-printf '%s' '<chave do AI Studio>'       | gcloud secrets create GEMINI_API_KEY --data-file=-
-printf '%s' '<chave da Fact Check API>'  | gcloud secrets create GOOGLE_FACTCHECK_API_KEY --data-file=-
+gcloud iam service-accounts create checafatosrr-run --display-name "ChecaFatosRR (Cloud Run)"
+```
 
-# Permite que o Cloud Run leia os segredos (conta de serviço padrão do Compute):
-PROJECT_NUMBER=$(gcloud projects describe <PROJECT_ID> --format='value(projectNumber)')
+**Segredos pelo console** (*Security → Secret Manager → Create secret*), um por vez, colando o
+valor no campo do navegador: assim o valor nunca passa pelo terminal nem fica no histórico do
+shell. Cinco segredos: `DATABASE_URL`, `SUPABASE_SECRET_KEY`, `BAN_HASH_SALT`, `GEMINI_API_KEY` e
+`GOOGLE_FACTCHECK_API_KEY` (use os valores atuais do seu `backend/.env`, com as chaves já
+rotacionadas). As outras variáveis não são secretas e vão em `--set-env-vars`.
+
+Depois, só a conta dedicada lê cada segredo:
+
+```bash
 for SECRET in DATABASE_URL SUPABASE_SECRET_KEY BAN_HASH_SALT GEMINI_API_KEY GOOGLE_FACTCHECK_API_KEY; do
   gcloud secrets add-iam-policy-binding "$SECRET" \
-    --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+    --member="serviceAccount:checafatosrr-run@<PROJECT_ID>.iam.gserviceaccount.com" \
     --role="roles/secretmanager.secretAccessor"
 done
 ```
 
-Para trocar o valor depois: `printf '%s' '<novo>' | gcloud secrets versions add DATABASE_URL --data-file=-`
-e faça um novo deploy.
+Para trocar um valor depois: no console, *Secret Manager → segredo → New version*; e faça um novo
+deploy (ou `gcloud run services update ... --update-secrets ...`).
 
 ### 3.2 Deploy
 
@@ -171,8 +182,9 @@ gcloud run deploy checafatosrr-api \
   --region southamerica-east1 \
   --allow-unauthenticated \
   --min-instances 0 --max-instances 3 \
-  --cpu 1 --memory 512Mi --concurrency 40 --timeout 180 \
-  --set-env-vars "^@^APP_ENV=production@LOG_LEVEL=INFO@CORS_ORIGINS=https://<seu-projeto>.pages.dev@SUPABASE_URL=https://<project_ref>.supabase.co@ADMIN_EMAIL=<seu-email>@GEMINI_MODEL_FALLBACKS=gemini-3.8-flash,gemini-3.7-flash@GEMINI_DAILY_CHECKS=200@GEMINI_DAILY_MODERATION=200" \
+  --service-account checafatosrr-run@<PROJECT_ID>.iam.gserviceaccount.com \
+  --cpu 1 --memory 512Mi --concurrency 20 --timeout 180 \
+  --set-env-vars "^@^APP_ENV=production@LOG_LEVEL=INFO@CORS_ORIGINS=https://<seu-projeto>.pages.dev@SUPABASE_URL=https://<project_ref>.supabase.co@ADMIN_EMAIL=<seu-email>@DATABASE_SSL_ROOT_CERT=/srv/certs/supabase-ca.crt@GEMINI_MODEL_FALLBACKS=gemini-3.8-flash,gemini-3.7-flash@GEMINI_DAILY_CHECKS=<pelo RPD>@GEMINI_DAILY_MODERATION=<pelo RPD>" \
   --set-secrets "DATABASE_URL=DATABASE_URL:latest,SUPABASE_SECRET_KEY=SUPABASE_SECRET_KEY:latest,BAN_HASH_SALT=BAN_HASH_SALT:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest,GOOGLE_FACTCHECK_API_KEY=GOOGLE_FACTCHECK_API_KEY:latest"
 ```
 
@@ -195,9 +207,12 @@ Na primeira execução o gcloud pergunta se pode criar o repositório `cloud-run
 Artifact Registry: responda **Y**.
 
 **Se o build falhar com "permission denied"** (comum em projetos criados recentemente), dê à conta
-de serviço padrão as permissões de build:
+de serviço padrão do Compute (que o Cloud Build usa para montar a imagem) as permissões de build.
+Confira em *IAM* se essa conta tem o papel **Editor**: se tiver, troque-o por estes quatro (o app
+em si roda com a `checafatosrr-run`, que não tem nenhum papel no projeto):
 
 ```bash
+PROJECT_NUMBER=$(gcloud projects describe <PROJECT_ID> --format='value(projectNumber)')
 for ROLE in roles/cloudbuild.builds.builder roles/run.builder roles/artifactregistry.writer roles/logging.logWriter; do
   gcloud projects add-iam-policy-binding <PROJECT_ID> \
     --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" --role="$ROLE"
@@ -268,15 +283,26 @@ Deploy pela integração com o Git (recomendado):
 
 1. Cloudflare → *Workers & Pages → Create → Pages → Connect to Git*.
 2. **Root directory**: `frontend` · **Build command**: `npm run build` · **Output**: `dist`.
-3. **Variáveis de ambiente** (Production): `VITE_API_URL=https://<url-do-cloud-run>`,
+3. **Variáveis de ambiente** (Production **e** Preview; ou desligue os deploys de preview em
+   *Settings → Builds → Branch deployments*, porque o build falha sem as variáveis):
+   `VITE_API_URL=https://<url-do-cloud-run>`,
    `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY` e
    `NODE_VERSION=24` (o Vite 8 exige Node recente; o arquivo `frontend/.node-version` também fixa a versão).
 4. Cada push na `main` publica sozinho.
 
-Alternativa sem Git: `npx wrangler pages deploy dist --project-name checafatosrr`.
+Faça o deploy **sempre pela integração com o Git**. Um `wrangler pages deploy` de um `dist`
+montado na sua máquina usaria as variáveis locais (API em localhost). No Cloudflare
+(`CF_PAGES=1`) o build recusa localhost e chave `sb_secret_` no lugar da publicável.
 
 Rotas da SPA: sem um `404.html`, o Pages serve o `index.html` para qualquer caminho. Por isso
 `/qualquer/rota` funciona sem configuração. Os cabeçalhos de segurança ficam em `frontend/public/_headers`.
+
+**CSP:** o build (`npm run build`) acrescenta a `Content-Security-Policy` ao `dist/_headers`, montada
+a partir de `VITE_API_URL` e `VITE_SUPABASE_URL` (`frontend/csp.ts`). Sem `unsafe-inline` nem
+`unsafe-eval`; `connect-src` só libera o próprio site, a API e o Supabase. O build **falha** se
+as variáveis faltarem ou se a API não for `https`. Os e2e (`npm run e2e`) rodam no build de
+produção com a mesma CSP e falham em qualquer violação. Mudou a URL da API ou do Supabase? Refaça
+o deploy do Pages para a CSP acompanhar.
 
 ---
 
@@ -287,3 +313,6 @@ Rotas da SPA: sem um `404.html`, o Pages serve o `index.html` para qualquer cami
 - [ ] O site abre no celular e a página "não encontrada" funciona em uma rota inventada.
 - [ ] Alerta de orçamento criado no Google Cloud.
 - [ ] Data API do Supabase desligada para `public`.
+- [ ] `curl -sI https://<seu-projeto>.pages.dev | grep -i content-security-policy` mostra a CSP
+      com a URL do Cloud Run e a do Supabase.
+- [ ] `/health/ready` responde `database: ok` com `DATABASE_SSL_ROOT_CERT` ligado (verify-full).
