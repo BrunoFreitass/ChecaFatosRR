@@ -25,7 +25,15 @@ export function Layout() {
           >
             ChecaFatos<span className="text-brand-700">RR</span>
           </Link>
-          <UserMenu />
+          <nav aria-label="Principal" className="flex items-center gap-1">
+            <Link
+              to="/ultimas"
+              className="inline-flex min-h-11 items-center rounded-md px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand-700"
+            >
+              Últimas
+            </Link>
+            <UserMenu />
+          </nav>
         </div>
       </header>
 

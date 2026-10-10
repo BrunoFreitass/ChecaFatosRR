@@ -9,7 +9,8 @@ from app.db import dispose_engine
 from app.errors import register_error_handlers
 from app.logging_setup import configure_logging
 from app.middleware import RequestContextMiddleware
-from app.routers import health, profiles
+from app.routers import checks, health, profiles
+from app.services.rate_limit import RateLimiters
 
 
 @asynccontextmanager
@@ -48,6 +49,8 @@ def create_app() -> FastAPI:
         max_age=600,
     )
     register_error_handlers(app)
+    app.state.rate_limiters = RateLimiters()
     app.include_router(health.router)
     app.include_router(profiles.router)
+    app.include_router(checks.router)
     return app

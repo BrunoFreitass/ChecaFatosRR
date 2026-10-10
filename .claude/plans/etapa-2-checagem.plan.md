@@ -396,3 +396,76 @@ Depois:
 - **GCP** → ativar a "Fact Check Tools API" → criar a chave restrita a essa API → `GOOGLE_FACTCHECK_API_KEY`.
 - **`backend/.env`** → `GEMINI_DAILY_CHECKS` e `GEMINI_DAILY_MODERATION` com a cota confirmada.
 - **SQL Editor do Supabase** → aplicar `20261009000000_checagem.sql`.
+
+## Resultado da implementação e das revisões (09/10/2026)
+Revisões: python-reviewer, security-reviewer, typescript-reviewer, database-reviewer e `/code-review`.
+
+**Corrigido após as revisões:**
+- **Banco:**
+  - deadlock entre `begin_check` e `save_result` (lock virou `for no key update`; o upsert não reescreve mais a linha);
+  - `links.published_at` virou `date`;
+  - saiu o índice `checks_recent_idx`, que ficou sem uso.
+- **Concorrência:**
+  - nova leitura do cache logo depois do claim;
+  - o claim fica sempre dentro de `try/finally`;
+  - quem espera assume o claim se o outro falhar (espera máxima de 45 s);
+  - o `release` é protegido contra cancelamento;
+  - nenhum timeout do asyncio envolve chamada ao banco.
+- **Cota:** reservada por tentativa real ao Gemini (`GeminiQuotaExhaustedError` → `checagem_esgotada_hoje`).
+- **Segurança:**
+  - ReDoS na máscara de e-mail (teto de entrada de 10k);
+  - título e URL dentro do bloco delimitado do prompt;
+  - caracteres invisíveis removidos do texto do modelo e recusados em URLs;
+  - regex de URL só ASCII (igual no front);
+  - "Onde conferir" aceita só agências e sites institucionais;
+  - o front só faz link de hosts confiáveis;
+  - redirect para outro domínio não entra em "Últimas";
+  - DNS/redirect interno responde como `pagina_ilegivel` (sem oráculo);
+  - IP "largo" (`127。0。0。1`) recusado antes da conexão;
+  - `Accept-Encoding: identity`;
+  - chave da Fact Check no cabeçalho `X-Goog-Api-Key`.
+- **LGPD:**
+  - CPF sem pontuação (com dígitos verificadores) e CNPJ mascarados;
+  - telefone sem separador só no formato de celular (valores e protocolos não somem);
+  - máscaras não contam como texto útil;
+  - o rascunho do `sessionStorage` é apagado no logout.
+- **Robustez:**
+  - domínio inexistente → `pagina_ilegivel` (não 500);
+  - semáforo do parser solto só quando a thread termina;
+  - cursor sem fuso → 422;
+  - limitador em memória em dependência `async`;
+  - contexto TLS criado uma vez.
+- **Frontend:**
+  - o envio é abortado ao sair da tela;
+  - trava contra duplo envio;
+  - abas com o padrão ARIA (setas, Home e End);
+  - foco no alerta de erro;
+  - Resultado reinicia a cada `slug`;
+  - fallback para veredito desconhecido;
+  - datas com `formatToParts`;
+  - "Carregar mais" sem closure velha;
+  - retry nos erros;
+  - link copiável quando a área de transferência falha.
+
+**Decisões do usuário (09/10/2026), implementadas com testes:**
+- **Confiança sem agência:** sem checagem de agência, `verdadeiro`/`falso` com confiança < 70 vira `nao_verificavel` (explicação visível). Com agência, ou para os outros vereditos, o corte segue em 40.
+- **Teto diário:** 20 checagens novas por usuário em 24 h (janela móvel), `CHECK_DAILY_LIMIT_PER_USER`. O erro é 429 `limite_diario`. Consultas ao cache não contam.
+
+**Bug do teste manual (09/10/2026):**
+- **O erro:** `await session.execute(...).mappings()` em `_check_usage` (o `await` ficou no fim da cadeia) causava 500.
+- **Por que os testes não pegaram:** os testes de fumaça trocam o repositório inteiro por um falso, e os de integração só rodavam na CI.
+- **O que mudou:**
+  - `tests/fake_session.py` (AsyncSession falso e assíncrono) com testes de cada método dos repositórios SQL;
+  - um teste estático (AST) contra `await` mal posicionado;
+  - integração rodando localmente num PostgreSQL 17 portátil (veja o README).
+
+**Adiado (registrado):**
+- **Etapa 9:**
+  - pool pequeno no lugar do NullPool (5+ handshakes TLS por checagem);
+  - purga de `check_requests` antigos;
+  - `X-Robots-Tag: noindex` para `/checagem/*` no Cloudflare;
+  - fechar o cliente do Gemini no `lifespan`.
+- **Etapa 7 (admin):** remover checagens; mascarar dados pessoais na query de URLs exibidas.
+- **Baixo:** tipos `Literal` para `veredito` no repositório; tuplas nos dataclasses frozen.
+- **Testes de integração do banco:** só rodam na CI (não há Postgres com `citext` nesta máquina).
+

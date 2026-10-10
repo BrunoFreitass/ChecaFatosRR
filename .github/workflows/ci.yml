@@ -59,3 +59,12 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+      # E2E com a API simulada (sem backend nem Google). Só o Chromium.
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-trace
+          path: frontend/test-results/
+          retention-days: 7

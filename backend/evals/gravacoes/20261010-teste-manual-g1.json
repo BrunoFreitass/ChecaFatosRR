@@ -1,0 +1,7 @@
+{
+  "data": "2026-10-10",
+  "nota": "Resposta do teste manual de 10/10/2026 (antes da regra 10), reconstruída da checagem salva 6t3fg4dn3201.",
+  "respostas": {
+    "g1-tre-rj-retotalizacao": "{\"veredito\": \"nao_verificavel\", \"resumo\": \"O conteúdo traz uma reportagem formatada como notícia do portal G1 detalhando uma suposta retotalização de votos pelo TRE-RJ na eleição para o governo do Rio de Janeiro de 2026, envolvendo candidatos como Douglas Ruas, Eduardo Paes e Anthony Garotinho. Sem checagens de agências disponíveis e sem confirmação independente nos sistemas da Justiça Eleitoral até o presente momento, o conteúdo não pode ser verificado de forma conclusiva.\", \"pontos_suspeitos\": [\"O texto trata de eventos eleitorais do Rio de Janeiro apresentados em formato noticioso, mas não constam verificações de agências de checagem para corroborar a autenticidade da matéria ou o desfecho processual narrado.\"], \"contexto_faltante\": \"Confirmação nos canais oficiais do Tribunal Superior Eleitoral (TSE) e do Tribunal Regional Eleitoral do Rio de Janeiro (TRE-RJ) a respeito das decisões jurídicas sobre candidaturas e retotalização de votos.\", \"checagens_agencias\": [], \"fontes_sugeridas\": [\"Portal oficial do Tribunal Superior Eleitoral (TSE)\", \"Portal oficial do Tribunal Regional Eleitoral do Rio de Janeiro (TRE-RJ)\", \"Agências profissionais de checagem de fatos\"], \"confianca\": 45}"
+  }
+}

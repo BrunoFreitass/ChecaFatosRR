@@ -251,3 +251,30 @@ def test_delete_account_calls_supabase_admin(
 
     assert response.status_code == 204
     assert admin_api.deleted == [user_id]
+
+
+def test_nickname_check_is_rate_limited_per_user(
+    api: TestClient, repo: FakeProfileRepository
+) -> None:
+    _, headers = login(repo)
+    for _ in range(30):
+        ok = api.get("/apelido/disponivel", params={"q": "bruno_rr"}, headers=headers)
+        assert ok.status_code == 200
+
+    blocked = api.get("/apelido/disponivel", params={"q": "bruno_rr"}, headers=headers)
+    assert blocked.status_code == 429
+    assert blocked.json()["error"]["code"] == "rate_limited"
+    assert int(blocked.headers["Retry-After"]) >= 1
+
+    _, other = login(repo)  # outro usuário não é afetado
+    assert api.get("/apelido/disponivel", params={"q": "x_rr"}, headers=other).status_code == 200
+
+
+def test_profile_creation_is_rate_limited(api: TestClient, repo: FakeProfileRepository) -> None:
+    _, headers = login(repo)
+    for _ in range(10):  # apelidos proibidos: cada tentativa grava no log de moderação
+        api.post("/me", json=body("porra_rr"), headers=headers)
+
+    blocked = api.post("/me", json=body("bruno_rr"), headers=headers)
+    assert blocked.status_code == 429
+    assert blocked.json()["error"]["code"] == "rate_limited"

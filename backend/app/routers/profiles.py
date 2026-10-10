@@ -1,7 +1,8 @@
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser, current_user, is_admin
@@ -12,6 +13,7 @@ from app.legal import CURRENT_TERMS_VERSION
 from app.repositories.profiles import Profile, ProfileRepository, SqlProfileRepository
 from app.schemas.profiles import NicknameAvailabilityOut, ProfileCreate, ProfileOut
 from app.services.profiles import create_profile, nickname_availability
+from app.services.rate_limit import SlidingWindowLimiter
 from app.services.supabase_admin import SupabaseAdmin, get_supabase_admin
 
 router = APIRouter(tags=["perfil"])
@@ -26,6 +28,28 @@ def get_profile_repository(
 User = Annotated[CurrentUser, Depends(current_user)]
 Repo = Annotated[ProfileRepository, Depends(get_profile_repository)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
+
+
+def _rate_limited(
+    name: Literal["profile_create", "nickname_check"],
+) -> Callable[..., Awaitable[None]]:
+    """Limite por usuário (em memória): POST /me e a dica de apelido gravam no log."""
+
+    # async: roda no event loop (uma thread só). Como "def" o FastAPI a levaria ao threadpool
+    # e várias threads mexeriam no mesmo dict/deque sem trava.
+    async def dependency(request: Request, user: User) -> None:
+        limiter: SlidingWindowLimiter = getattr(request.app.state.rate_limiters, name)
+        retry_after = limiter.hit(str(user.id))
+        if retry_after is not None:
+            raise AppError(
+                429,
+                "rate_limited",
+                "Muitas tentativas. Aguarde um pouco e tente de novo.",
+                {"retry_after": retry_after},
+                {"Retry-After": str(retry_after)},
+            )
+
+    return dependency
 
 
 def _to_out(profile: Profile, user: CurrentUser, settings: Settings) -> ProfileOut:
@@ -53,7 +77,12 @@ async def read_me(user: User, repo: Repo, settings: AppSettings) -> ProfileOut:
     return _to_out(profile, user, settings)
 
 
-@router.post("/me", response_model=ProfileOut, status_code=201)
+@router.post(
+    "/me",
+    response_model=ProfileOut,
+    status_code=201,
+    dependencies=[Depends(_rate_limited("profile_create"))],
+)
 async def create_me(
     payload: ProfileCreate, user: User, repo: Repo, settings: AppSettings
 ) -> ProfileOut:
@@ -67,7 +96,11 @@ async def create_me(
     return _to_out(profile, user, settings)
 
 
-@router.get("/apelido/disponivel", response_model=NicknameAvailabilityOut)
+@router.get(
+    "/apelido/disponivel",
+    response_model=NicknameAvailabilityOut,
+    dependencies=[Depends(_rate_limited("nickname_check"))],
+)
 async def check_nickname(
     q: Annotated[str, Query(max_length=40)], _user: User, repo: Repo
 ) -> NicknameAvailabilityOut:
