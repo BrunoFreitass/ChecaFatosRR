@@ -123,6 +123,13 @@ ruff check . && ruff format --check .
 
 ## 3. Backend no Google Cloud Run
 
+> **Dois projetos do Google Cloud.** O projeto criado pelo AI Studio (`gen-lang-client-…`) guarda
+> **só a chave do Gemini** e fica **sem faturamento**: com faturamento vinculado, a chave sai do
+> nível gratuito e passa a ser cobrada por uso. O OAuth do Google, a Fact Check, o Cloud Run, o
+> Cloud Build, o Artifact Registry e o Secret Manager ficam no **outro projeto** (aqui,
+> `checafatosrr`), com faturamento e alerta de orçamento; a chave do Gemini entra nele só como
+> segredo. Nos comandos abaixo, `<PROJECT_ID>` é sempre o projeto do Cloud Run.
+
 Pré-requisito: [gcloud CLI](https://cloud.google.com/sdk/docs/install) instalado. **Não precisa de
 Docker local**: o `--source` envia o código e o Cloud Build monta a imagem com o `backend/Dockerfile`.
 

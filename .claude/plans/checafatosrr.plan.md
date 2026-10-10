@@ -368,3 +368,12 @@ Plano: `.claude/plans/etapa-2-checagem.plan.md`. Mudanças em relação a este p
 - **Sem cota do Gemini:** serve a análise mais recente do mesmo conteúdo (qualquer versão, dentro da janela do cache), com o aviso "Análise anterior". Continua contando como checagem nova (limites de 10/h e 20/dia), para não virar consulta ilimitada. Sem análise anterior: 503 "esgotada hoje".
 - **"Últimas":** um item por link (a checagem listada mais recente).
 - **PROMPT CONGELADO a partir de 22/10/2026** (decisão do usuário). De 22/10 até o fim do 2º turno (25/10), nada de mudar `SYSTEM_INSTRUCTION`, `build_prompt`, `finalize`, o schema, `PROMPT_REVISION` ou `GEMINI_MODEL_FALLBACKS`. Motivo: mudar a versão invalida o cache inteiro de uma vez e, na reta final, a demanda por checagens novas gastaria a cota diária. Exceção só com decisão explícita do usuário.
+
+## 13. Páginas legais: pendências registradas (10/10/2026)
+- **Gemini no nível gratuito:** pelos termos da API do Gemini, no uso gratuito ("Unpaid Services") o Google pode usar o conteúdo enviado e as respostas para melhorar os produtos dele, inclusive com revisão humana. A **Política de Privacidade** precisa dizer isso com clareza:
+  - o link e o texto colado são enviados ao Google (Gemini) para a análise;
+  - podem ser usados pelo Google nessas condições;
+  - não cole dados pessoais. O app já mascara telefone, e-mail e CPF no texto colado, mas o aviso continua necessário.
+  - Conferir o texto vigente dos termos na data da redação.
+- O projeto da chave do Gemini fica **sem faturamento** de propósito (ver `deploy.plan.md`, fase 1). Se um dia passar ao nível pago, revisar a Política (o uso pelo Google muda).
+
