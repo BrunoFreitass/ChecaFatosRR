@@ -53,6 +53,7 @@ def create_app() -> FastAPI:
     )
     register_error_handlers(app)
     app.state.rate_limiters = RateLimiters()
+    app.state.ready_cache = health.ReadyCache()
     app.include_router(health.router)
     app.include_router(profiles.router)
     app.include_router(checks.router)

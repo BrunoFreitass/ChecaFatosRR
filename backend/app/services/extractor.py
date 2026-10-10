@@ -7,6 +7,7 @@ from datetime import date, datetime
 
 import trafilatura
 
+from app.config import get_settings
 from app.services.fetcher import FetchedPage, PageUnreadableError
 from app.services.gemini import BOA_VISTA, MAX_PROMPT_CONTENT_CHARS
 from app.services.url_guard import collect_urls
@@ -17,7 +18,15 @@ logger = logging.getLogger(__name__)
 MAX_TEXT_CHARS = MAX_PROMPT_CONTENT_CHARS  # o mesmo teto do que o Gemini recebe
 MAX_TITLE_CHARS = 500
 MIN_TEXT_CHARS = 200
-_PARSERS = asyncio.Semaphore(2)
+_parsers: asyncio.Semaphore | None = None
+
+
+def _parser_slots() -> asyncio.Semaphore:
+    """Semáforo dos parsers, do tamanho de EXTRACT_CONCURRENCY (criado no primeiro uso)."""
+    global _parsers
+    if _parsers is None:
+        _parsers = asyncio.Semaphore(get_settings().extract_concurrency)
+    return _parsers
 
 
 @dataclass(frozen=True)
@@ -33,7 +42,8 @@ async def extract_page(page: FetchedPage) -> ExtractedPage:
         # lxml é CPU: fora do event loop. A thread não é cancelável, então o semáforo limita
         # quantos parsers rodam juntos (HTML patológico não esgota o executor) e só é solto
         # quando a THREAD termina — não quando a requisição desiste (timeout/cancelamento).
-        await _PARSERS.acquire()
+        slots = _parser_slots()
+        await slots.acquire()
         task = asyncio.ensure_future(
             asyncio.to_thread(
                 trafilatura.bare_extraction,
@@ -46,7 +56,7 @@ async def extract_page(page: FetchedPage) -> ExtractedPage:
                 favor_precision=True,
             )
         )
-        task.add_done_callback(lambda _: _PARSERS.release())
+        task.add_done_callback(lambda _: slots.release())
         document = await asyncio.shield(task)
     except Exception as exc:  # HTML que o parser não aguenta é "página ilegível", não 500
         logger.info("extraction_failed", extra={"error": type(exc).__name__})

@@ -75,6 +75,15 @@ class Settings(BaseSettings):
     check_cache_hours: int = Field(default=24, ge=1)
     fetch_timeout_seconds: float = Field(default=10, gt=0, le=30)
     fetch_max_bytes: int = Field(default=2_000_000, ge=100_000, le=10_000_000)
+    # Parsers de HTML (lxml) ao mesmo tempo. No Render Free (0,1 CPU), 1.
+    extract_concurrency: int = Field(default=2, ge=1, le=8)
+
+    # Pool de conexões ao banco (processo persistente no Render). 0 = NullPool (o Supavisor
+    # agrupa sozinho; testes e plano B Cloud Run). Compatível com transaction mode: sem
+    # prepared statements em cache e sem estado de sessão.
+    db_pool_size: int = Field(default=3, ge=0, le=10)
+    db_pool_max_overflow: int = Field(default=2, ge=0, le=10)
+    db_pool_timeout_seconds: float = Field(default=8, gt=0, le=30)
 
     @field_validator("log_level", mode="before")
     @classmethod

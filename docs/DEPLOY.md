@@ -1,11 +1,13 @@
 # Deploy do ChecaFatosRR
 
-Custo zero: Supabase (Free), Google Cloud Run (free tier), Cloudflare Pages (Free).
+Custo zero: Supabase (Free), **Render (Free)** para o backend, Cloudflare Pages (Free) para o
+site. O Google Cloud Run é o plano B (seção 4): exige faturamento ativo no Google Cloud.
 Os valores entre `<>` são seus; nunca faça commit de senhas ou chaves.
 
-> **Proteja o bolso**: no Google Cloud, crie um alerta de orçamento
-> (Faturamento → Orçamentos e alertas → R$ 10/mês). O Cloud Run exige conta de faturamento
-> ativa mesmo dentro da camada gratuita.
+> **Limites do Render Free que derrubam o serviço:** 750 h de instância por mês **por workspace**
+> (um serviço ligado 24 h gasta 744 h em outubro: não crie outro serviço Free) e a banda de saída
+> incluída no workspace (confira o valor atual na página de preços). Sem forma de pagamento,
+> estourar qualquer um **suspende o serviço até o fim do mês**. Acompanhe o uso no painel.
 
 ---
 
@@ -121,8 +123,120 @@ ruff check . && ruff format --check .
 
 ---
 
-## 3. Backend no Google Cloud Run
+## 3. Backend no Render (principal)
 
+O `render.yaml` na raiz do repositório descreve o serviço (Blueprint): Docker com o mesmo
+`backend/Dockerfile`, região **Virginia** (a mais próxima do Supabase em São Paulo), plano
+**Free**, health check em `/health`, deploy automático **só depois da CI verde** e previews
+desligados. Plano Free: 512 MB e **0,1 CPU**; dorme após 15 min sem acesso (por isso o
+keep-alive da seção 3.4) e pode ser reiniciado pelo Render a qualquer momento.
+
+### 3.1 Criar o serviço
+
+1. <https://dashboard.render.com> → crie a conta (com **2FA**) e conecte o GitHub dando acesso
+   **só a este repositório**. Não convide outros membros: quem tem acesso ao workspace vê as
+   variáveis.
+2. *New → Blueprint* → escolha o repositório. O Render lê o `render.yaml` e pede os valores das
+   variáveis marcadas com `sync: false` (tabela abaixo).
+3. Proteja a branch `main` no GitHub (merge só por PR com a CI verde): o `render.yaml` na `main`
+   é a infraestrutura.
+
+### 3.2 Variáveis
+
+| Nome | Segredo? | Valor |
+|---|---|---|
+| `DATABASE_URL` | **Sim** | do `backend/.env`: Transaction pooler (porta 6543); senha com `@ / # : ?` em URL-encode |
+| `SUPABASE_SECRET_KEY` | **Sim** | do `backend/.env` (`sb_secret_…`, já rotacionada) |
+| `BAN_HASH_SALT` | **Sim** | do `backend/.env`, **o mesmo valor** (o banco é o mesmo; outro salt invalida banimentos) |
+| `GEMINI_API_KEY` | **Sim** | do `backend/.env` (chave do projeto do AI Studio, nível gratuito) |
+| `GOOGLE_FACTCHECK_API_KEY` | **Sim** | do `backend/.env` |
+| `SUPABASE_JWT_SECRET` | **Sim** | **só se** não estiver vazia no `backend/.env` (projeto com "Legacy JWT Secret"); acrescente no painel |
+| `SUPABASE_URL` | Não | `https://<project_ref>.supabase.co` |
+| `ADMIN_EMAIL` | Sensível | seu e-mail de admin |
+| `CORS_ORIGINS` | Não | `https://<seu-projeto>.pages.dev` (provisório: `http://localhost:5173`; tire o localhost depois) |
+| `GEMINI_DAILY_CHECKS` / `GEMINI_DAILY_MODERATION` | Não | pelo RPD do modelo (a soma não passa da cota) |
+| `APP_ENV`, `LOG_LEVEL`, `DATABASE_SSL_ROOT_CERT`, `GEMINI_MODEL_FALLBACKS`, `DB_POOL_SIZE`, `DB_POOL_MAX_OVERFLOW`, `EXTRACT_CONCURRENCY`, `UVICORN_LIMIT_CONCURRENCY` | Não | já definidas no `render.yaml` |
+| `PORT` | — | **não defina**: o Render injeta |
+
+As demais variáveis do `backend/app/config.py` usam o valor padrão. Copie cada valor do `backend/.env`
+direto para o painel: nunca por chat, issue, print ou commit (`ADMIN_EMAIL` também é dado pessoal).
+
+### 3.3 Conferir o deploy
+
+- `https://<servico>.onrender.com/health` → `{"status":"ok"}`
+- `/health/ready` → `{"status":"ok","database":"ok"}` (verify-full com o certificado do Supabase;
+  resultado em cache de 60 s; uma falha fica 10 s). Com o pool lotado (pico de checagens), ele
+  também pode dar 503: o site está de fato saturado naquele momento.
+- `/docs`, `/redoc` e `/openapi.json` → 404
+- Logs (*Dashboard → Logs*): JSON, sem segredos; filtre por `request_id` ou `"severity": "WARNING"`.
+
+### 3.4 Keep-alive e monitoramento (UptimeRobot, grátis)
+
+Crie a conta em <https://uptimerobot.com> com **2FA** e contatos de alerta por **e-mail e push**
+(app do celular). Monitores:
+
+| # | Tipo | Nome | URL | Intervalo | Detalhes |
+|---|---|---|---|---|---|
+| 1 | HTTP(s) | API /health | `https://<servico>.onrender.com/health` | **5 min** | método **GET** (não HEAD); timeout 30 s. Mantém o serviço acordado (dorme com 15 min sem acesso). |
+| 2 | Keyword | API /health/ready | `https://<servico>.onrender.com/health/ready` | **60 min** | palavra-chave `"database":"ok"`, alertar quando **não** existir; método GET. Toca o banco e evita a pausa do Supabase Free (7 dias sem uso). |
+| 3 | Keyword | Site | `https://<seu-projeto>.pages.dev/` | 5 min | palavra-chave `ChecaFatosRR`; opcional (avisa se o Pages cair). |
+
+Teste os alertas uma vez (suspenda o serviço no Render por 10 min e veja o aviso chegar). No dia
+25/10, a reserva se o UptimeRobot falhar é abrir o `/health` manualmente a cada 10 min.
+
+### 3.5 Contingência para 25/10
+
+**Sem cartão no Render** (o que já protege o serviço, sem custo):
+- cache de 24 h por link/texto e "Últimas" com um item por link: leituras repetidas não chamam o
+  Gemini;
+- sem cota do Gemini, o resultado da versão anterior do prompt é servido com o aviso "Análise
+  anterior"; sem nenhuma análise, a resposta é "esgotada hoje" (o site continua no ar);
+- limites por usuário (10 checagens novas/h, 20/dia, 60 consultas/h) e cota diária do Gemini;
+- apuração do TSE (etapa 5) por **cache único no banco** com single-flight: muitos acessos, uma
+  busca no TSE a cada 30 s; o loop em segundo plano fica desligado no Free;
+- **prompt congelado** e nenhum deploy de 22 a 26/10 (cada deploy reinicia o serviço);
+- acompanhar diariamente, de 20/10 em diante, as horas e a banda no painel do Render. Sem cartão
+  não há como evitar a suspensão se um limite estourar: o risco fica aceito.
+
+**Com cartão** (cadastrar **até 20/10**; prefira cartão virtual com limite baixo):
+1. Ative os alertas de gasto do Render e teste uma vez a troca Free → Starter → Free fora do pico.
+2. **24/10 à noite**, pelo **painel** (não por commit no `render.yaml`): plano **Starter**
+   (0,5 CPU, 512 MB, sempre ligado; ~US$ 7/mês, confira a cobrança proporcional na página de
+   preços). Com forma de pagamento, banda excedente vira cobrança em vez de suspensão (o teto é o
+   limite do cartão virtual).
+3. **26/10**: volte para o Free e **remova o cartão**.
+
+### 3.6 Domínio próprio (opcional: `checafatosrr.com.br`)
+
+Com domínio, a API fica atrás do proxy grátis do Cloudflare (cache e limite por IP). A proteção da
+banda do Render só vale **depois** do header secreto de origem (abaixo): sem ele, quem chamar
+`<servico>.onrender.com` direto passa por fora do Cloudflare. No Cloudflare (DNS do domínio):
+
+| Nome | Tipo | Destino | Proxy |
+|---|---|---|---|
+| `checafatosrr.com.br` (raiz) | domínio personalizado do **Pages** (*Pages → Custom domains*) | projeto do Pages | ligado |
+| `www` | CNAME → `checafatosrr.com.br` + regra de redirecionamento 301 para a raiz | — | ligado |
+| `api` | CNAME → `<servico>.onrender.com` | — | **desligado** até o Render validar o domínio; depois **ligado** |
+
+Passos: no Render, *Settings → Custom Domains → `api.checafatosrr.com.br`*; espere o certificado;
+ligue o proxy no Cloudflare com SSL/TLS em **Full (strict)** (nunca "Flexible", que deixa o trecho
+Cloudflare → Render sem criptografia; erro 525/526 = certificado do Render ainda não emitido). Depois atualize `CORS_ORIGINS`
+(`https://checafatosrr.com.br`), `VITE_API_URL` (`https://api.checafatosrr.com.br`, refaça o
+deploy do Pages para a CSP acompanhar), Site URL e Redirect URLs do Supabase e as origens do
+OAuth do Google. Regras do Cloudflare a criar (grátis):
+- **cache de 30 s** só para `GET` em `/checks/latest` e `/checks/<public_id>`, só respostas **200**,
+  e **bypass** quando a requisição tiver o header `Authorization` (o `POST /checks` nunca entra);
+  o backend manda `no-store`, então a regra precisa sobrepor o TTL apenas nesses caminhos;
+- **limite de taxa por IP** no `POST /checks`. O header secreto que impede o acesso direto ao
+`*.onrender.com` ainda não está implementado: entra junto com o domínio.
+
+---
+
+## 4. Plano B — Google Cloud Run
+
+> Só use se o Render não servir: o Cloud Run exige faturamento ativo no Google Cloud (alerta
+> de orçamento obrigatório).
+>
 > **Dois projetos do Google Cloud.** O projeto criado pelo AI Studio (`gen-lang-client-…`) guarda
 > **só a chave do Gemini** e fica **sem faturamento**: com faturamento vinculado, a chave sai do
 > nível gratuito e passa a ser cobrada por uso. O OAuth do Google, a Fact Check, o Cloud Run, o
@@ -140,7 +254,7 @@ gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
   artifactregistry.googleapis.com secretmanager.googleapis.com
 ```
 
-### 3.1 Conta de serviço e segredos
+### 4.1 Conta de serviço e segredos
 
 **Conta de serviço dedicada** para o Cloud Run, sem nenhum papel no projeto: se o backend um
 dia for comprometido, o token dela só lê os segredos do app (a conta padrão do Compute costuma
@@ -169,7 +283,7 @@ done
 Para trocar um valor depois: no console, *Secret Manager → segredo → New version*; e faça um novo
 deploy (ou `gcloud run services update ... --update-secrets ...`).
 
-### 3.2 Deploy
+### 4.2 Deploy
 
 **Ordem na primeira vez** (o CORS do backend precisa da URL do Pages, e o Pages precisa da URL
 do backend):
@@ -233,7 +347,7 @@ crie o projeto fora da organização ou peça ao administrador para liberar `all
 > `CORS_ORIGINS`, troque o separador do gcloud por `@`:
 > `--set-env-vars "^@^APP_ENV=production@LOG_LEVEL=INFO@CORS_ORIGINS=https://a.pages.dev,https://b.com.br"`.
 
-### 3.3 Dia da eleição — 25/10/2026
+### 4.3 Dia da eleição — 25/10/2026
 
 As urnas fecham às 17h (Brasília), 16h em Roraima. Para evitar a espera do *cold start* durante a
 apuração, mantenha **1 instância sempre ligada** (isso tem um custo pequeno, de centavos a poucos
@@ -249,28 +363,13 @@ gcloud run services update checafatosrr-api --region southamerica-east1 --min-in
 
 Para conferir: `gcloud run services describe checafatosrr-api --region southamerica-east1 --format=yaml | grep -i minScale`.
 
-### 3.4 Logs
+### 4.4 Logs
 
 ```bash
 gcloud run services logs read checafatosrr-api --region southamerica-east1 --limit 100
 ```
 
 Os logs são JSON. No Cloud Logging dá para filtrar por `jsonPayload.request_id` ou `severity>=WARNING`.
-
----
-
-## 4. Plano B — Render
-
-Use se o Cloud Run der problema. O Dockerfile é o mesmo.
-
-1. <https://dashboard.render.com> → *New → Web Service* → conecte o repositório.
-2. **Root Directory**: `backend` · **Runtime**: Docker · **Instance**: Free.
-3. **Health Check Path**: `/health`.
-4. Variáveis: as mesmas do Cloud Run (`APP_ENV`, `CORS_ORIGINS`, `DATABASE_URL`, …).
-5. Atualize o `VITE_API_URL` do frontend para a URL do Render e refaça o deploy do frontend.
-
-> O plano Free do Render "dorme" após 15 min sem acesso. O primeiro acesso depois disso leva
-> cerca de 1 minuto.
 
 ---
 
@@ -292,7 +391,7 @@ Deploy pela integração com o Git (recomendado):
 2. **Root directory**: `frontend` · **Build command**: `npm run build` · **Output**: `dist`.
 3. **Variáveis de ambiente** (Production **e** Preview; ou desligue os deploys de preview em
    *Settings → Builds → Branch deployments*, porque o build falha sem as variáveis):
-   `VITE_API_URL=https://<url-do-cloud-run>`,
+   `VITE_API_URL=https://<servico>.onrender.com`,
    `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY` e
    `NODE_VERSION=24` (o Vite 8 exige Node recente; o arquivo `frontend/.node-version` também fixa a versão).
 4. Cada push na `main` publica sozinho.
@@ -315,11 +414,11 @@ o deploy do Pages para a CSP acompanhar.
 
 ## 6. Checklist pós-deploy
 
-- [ ] `GET /health` e `GET /health/ready` respondem 200 no Cloud Run.
+- [ ] `GET /health` e `GET /health/ready` respondem 200 no Render.
 - [ ] `CORS_ORIGINS` contém exatamente a URL do Pages (sem `/` no final).
 - [ ] O site abre no celular e a página "não encontrada" funciona em uma rota inventada.
-- [ ] Alerta de orçamento criado no Google Cloud.
+- [ ] Monitores do UptimeRobot ativos (seção 3.4) e só **um** serviço Free no workspace do Render.
 - [ ] Data API do Supabase desligada para `public`.
 - [ ] `curl -sI https://<seu-projeto>.pages.dev | grep -i content-security-policy` mostra a CSP
-      com a URL do Cloud Run e a do Supabase.
+      com a URL do Render e a do Supabase.
 - [ ] `/health/ready` responde `database: ok` com `DATABASE_SSL_ROOT_CERT` ligado (verify-full).
