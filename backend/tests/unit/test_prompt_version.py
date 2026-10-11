@@ -41,7 +41,8 @@ def test_bumping_the_revision_changes_the_version() -> None:
 # Retrato do pedido montado (build_prompt com entrada fixa + configuração de geração). Se este
 # teste falhar, o código que monta o pedido mudou: SUBA gemini.PROMPT_REVISION (senão o cache
 # continua servindo respostas do comportamento antigo) e registre o novo retrato aqui.
-PROMPT_SNAPSHOTS = {2: "4ebb032599f7"}  # pragma: allowlist secret (hash do pedido)
+# Revisão 3 só mudou as instruções e o finalize: o pedido em si ficou igual.
+PROMPT_SNAPSHOTS = {2: "4ebb032599f7", 3: "4ebb032599f7"}  # pragma: allowlist secret
 
 
 def request_fingerprint(monkeypatch: pytest.MonkeyPatch) -> str:

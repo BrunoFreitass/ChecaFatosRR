@@ -133,7 +133,7 @@ async def test_replay_regrades_recorded_answers_with_current_post_validation() -
         conteudo="Texto da notícia de hoje.",
         publicado_em=date(2026, 10, 9),
         checagens=[],
-        aceitos=["verdadeiro"],
+        aceitos=["nao_verificavel"],
     )
     recorded = {
         "noticia-hoje": json.dumps(
@@ -152,7 +152,9 @@ async def test_replay_regrades_recorded_answers_with_current_post_validation() -
     assert results[0].pontos_ia == [  # a resposta crua fica para medir o prompt
         "Acontecimentos de outubro de 2026, projetando fatos futuros"
     ]
-    assert results[0].veredito == "verdadeiro"
+    # Pós-validação de hoje: "verdadeiro" sem agência vira "Ainda sem checagem" (10/10/2026).
+    assert results[0].veredito_ia == "verdadeiro"
+    assert results[0].veredito == "nao_verificavel"
     assert results[0].pontos == []  # a pós-validação de hoje descarta o "futuro"
 
 
@@ -350,3 +352,29 @@ def test_real_news_cases_keep_only_an_excerpt() -> None:
             assert len(paragraphs) <= 3, c.id
             assert len(c.conteudo) <= 1500, c.id
             assert "trecho" in c.origem, c.id
+
+
+# ---------- política: origem confirmada não é fato verificado (10/10/2026) ----------
+
+
+async def test_production_ruas_answer_is_replayed_as_awaiting_check() -> None:
+    # Resposta real de produção: "Verdadeiro 95%" sem agência. Falha antes da correção.
+    path = CASES_FILE.parent / "gravacoes" / "20261010-producao-ruas.json"
+    raw = path.read_text(encoding="utf-8")
+    assert "Ã" not in raw  # sem dupla codificação
+    recorded = json.loads(raw)["respostas"]
+    cases = [c for c in load_cases(CASES_FILE) if c.id in recorded]
+    assert [c.id for c in cases] == ["g1-ruas-entrevista"]
+
+    [result] = await replay(cases, recorded, today=date(2026, 10, 10))
+
+    assert result.veredito_ia == "verdadeiro"
+    assert result.veredito == "nao_verificavel"
+    assert result.resumo.endswith("Publicado por g1.globo.com (origem confirmada).")
+    assert grade([result], date(2026, 10, 10)).acertos == 1
+
+
+def test_no_case_without_agency_checks_accepts_true() -> None:
+    for c in load_cases(CASES_FILE):
+        if not c.checagens:
+            assert "verdadeiro" not in c.aceitos, c.id

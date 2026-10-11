@@ -45,6 +45,14 @@ MAX_PROMPT_CONTENT_CHARS = 8000
 # mais confiança: limita o dano de uma página que tente manipular o modelo.
 LOW_CONFIDENCE_WITHOUT_AGENCIES = 70
 _CATEGORICAL: frozenset[str] = frozenset({"verdadeiro", "falso"})
+# Política de 10/10/2026: origem confirmada não é fato verificado. "Verdadeiro" exige uma
+# checagem de agência (vinda da API e citada pelo modelo) cuja classificação confirme; sem
+# ela, "nao_verificavel" ("Ainda sem checagem"). Lista FECHADA de rótulos (normalizados):
+# "Verdadeiro, mas...", "Partly true", "Not true" ou "Fato ou Fake" não confirmam.
+_AGENCY_TRUE_LABELS = frozenset(
+    {"verdadeiro", "verdadeira", "verdade", "veridico", "correto", "correta", "fato", "true"}
+    | {"comprovado", "comprovada"}
+)
 MAX_ATTEMPTS = 2
 # "Hoje" do serviço é o de Roraima.
 BOA_VISTA = ZoneInfo("America/Boa_Vista")
@@ -253,13 +261,20 @@ def finalize(verdict: GeminiVerdict, data: AnalysisInput, today: date | None = N
         final = "nao_verificavel"
         downgraded = True
 
+    resumo = _scrub(verdict.resumo, allowed)
+    # Política, independente do corte de confiança acima: sem agência que confirme, a nota
+    # de quem publicou explica o "Ainda sem checagem" de um link.
+    if original == "verdadeiro" and not _corroborated(cited, data):
+        final = "nao_verificavel"
+        resumo = _with_origin_note(resumo, data)
+
     contexto = _scrub(verdict.contexto_faltante, allowed) if verdict.contexto_faltante else None
     return CheckResult(
         veredito=final,
         veredito_ia=original,
         rebaixado_por_confianca=downgraded,
         confianca=verdict.confianca,
-        resumo=_scrub(verdict.resumo, allowed),
+        resumo=resumo,
         pontos_suspeitos=[
             _scrub(p, allowed)
             for p in verdict.pontos_suspeitos
@@ -339,6 +354,32 @@ def _date_mentions(text: str, today: date) -> _DateMentions:
     )
 
 
+def _corroborated(cited: list[str], data: AnalysisInput) -> bool:
+    """Alguma checagem de agência citada pelo modelo confirma o conteúdo."""
+    by_url = {c.url: c for c in data.agency_checks}
+    return any(
+        _rating_label(check.veredito) in _AGENCY_TRUE_LABELS
+        for url in cited
+        if (check := by_url.get(url)) is not None
+    )
+
+
+def _rating_label(rating: str) -> str:
+    """ "#Verídico. " -> "veridico": sem acento, minúsculo, sem pontuação nas pontas."""
+    plain = unicodedata.normalize("NFKD", rating).encode("ascii", "ignore").decode()
+    return " ".join(plain.lower().strip(" #.!").split())
+
+
+def _with_origin_note(resumo: str, data: AnalysisInput) -> str:
+    """Link baixado do próprio domínio: diz quem publicou, sem dizer que os fatos são verdade."""
+    if data.kind != "link" or not data.source_domain:
+        return resumo
+    note = f"Publicado por {data.source_domain} (origem confirmada)."
+    if note in resumo:
+        return resumo
+    return f"{resumo} {note}".strip()
+
+
 def _confidence_floor(veredito: str, data: AnalysisInput) -> int:
     if not data.agency_checks and veredito in _CATEGORICAL:
         return LOW_CONFIDENCE_WITHOUT_AGENCIES
@@ -410,7 +451,10 @@ ideologias, nem recomende voto. Analise apenas se as AFIRMAÇÕES do conteúdo s
 por evidências.
 2. Priorize as checagens de agências fornecidas. Se uma agência já checou a mesma afirmação, \
 siga a conclusão dela e cite-a em checagens_agencias com a URL exata recebida.
-3. Use "nao_verificavel" sempre que faltar evidência suficiente. Não adivinhe.
+3. Use "nao_verificavel" sempre que faltar evidência suficiente. Não adivinhe. Só use \
+"verdadeiro" quando uma checagem de agência fornecida confirmar a afirmação principal (e \
+cite-a); sem essa checagem de agência, o veredito é "nao_verificavel", mesmo para notícia de \
+veículo conhecido.
 4. Nunca invente fontes, links, dados, datas ou citações. Só cite URLs que aparecem nas \
 checagens fornecidas ou no próprio conteúdo. Em fontes_sugeridas, prefira descrições \
 ("site oficial do TSE", "agências de checagem") a links.
@@ -433,10 +477,13 @@ questione quem publicou (nada de "formatada como notícia", "suposta reportagem"
 "se apresenta como"). Se o domínio não for o do veículo citado (domínio parecido, site \
 desconhecido), isso é ponto suspeito; domínio de plataforma onde qualquer pessoa publica \
 (blog, Medium, Google Sites, rede social) não é o veículo. Diferencie "publicado por X" \
-(confirmado) de "fatos ainda não checados por agências". Ao resumir, preserve a \
-atribuição das alegações ("segundo o TRE", "é acusado de"): use "suposto" só para \
-marcar uma alegação, nunca para duvidar de quem publicou. Num texto colado, a atribuição \
-a um veículo NÃO é confirmada: pode ser montagem e, se for relevante, é ponto suspeito.
+(confirmado) de "fatos ainda não checados por agências": origem confirmada não é evidência \
+de que os fatos relatados sejam verdadeiros. Não escreva "reportagem legítima" nem \
+"informação verdadeira" sem checagem de agência; descreva o que o veículo relata. \
+Ao resumir, preserve a atribuição das alegações ("segundo o TRE", "é acusado \
+de"): use "suposto" só para marcar uma alegação, nunca para duvidar de quem \
+publicou. Num texto colado, a atribuição a um veículo NÃO é confirmada: pode ser \
+montagem e, se for relevante, é ponto suspeito.
 
 Vereditos: verdadeiro, enganoso (mistura fatos com distorções), falso, fora_de_contexto \
 (verdadeiro, mas apresentado num contexto que muda o sentido), nao_verificavel.
@@ -447,7 +494,9 @@ Vereditos: verdadeiro, enganoso (mistura fatos com distorções), falso, fora_de
 # servido como cache (continua no link público, com a análise da época). O hash cobre as
 # instruções e o schema; SUBA A REVISÃO quando mudar build_prompt ou finalize de um jeito que
 # mude as respostas (isso não aparece no texto das instruções).
-PROMPT_REVISION = 2  # 2 = data de hoje (Boa Vista) + origem confirmada do link (10/10/2026)
+# 2 = data de hoje (Boa Vista) + origem confirmada do link (10/10/2026)
+# 3 = "verdadeiro" exige checagem de agência; origem confirmada não é fato verificado (10/10)
+PROMPT_REVISION = 3
 
 
 def prompt_version(revision: int, instruction: str) -> str:
