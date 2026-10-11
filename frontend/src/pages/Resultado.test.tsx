@@ -1,10 +1,19 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AgencyCheck, Check } from "../lib/types.ts";
 import { Resultado } from "./Resultado.tsx";
+
+// A checagem chega pelo estado da rota (como vinda do formulário): nada de rede. O módulo
+// real exige VITE_API_URL ao carregar, e a CI roda os testes sem variáveis de ambiente.
+vi.mock("../lib/api.ts", () => ({
+  ApiError: class ApiError extends Error {
+    status = 0;
+  },
+  apiFetch: vi.fn(),
+}));
 
 const AGENCY: AgencyCheck = {
   agencia: "Aos Fatos",
