@@ -103,7 +103,7 @@ def data() -> AnalysisInput:
 async def test_transient_google_errors_then_success(monkeypatch: pytest.MonkeyPatch) -> None:
     models = install_fake_client(
         monkeypatch,
-        [api_error(503, "high demand"), api_error(504, "deadline"), text_response(ANSWER)],
+        [api_error(503, "high demand"), api_error(500, "internal"), text_response(ANSWER)],
     )
     result = await GeminiAnalyzer(google_generate(FAKE_KEY, [MODEL])).analyze(data())
     assert result.veredito == "nao_verificavel"
@@ -178,13 +178,13 @@ async def test_retries_respect_the_analyzer_deadline() -> None:
         await asyncio.Event().wait()
         return None
 
-    generate = with_retries(hangs, attempt_timeout=0.05, budget_seconds=75, sleep=_no_sleep)
+    generate = with_retries(hangs, attempt_timeout=0.05, budget_seconds=48, sleep=_no_sleep)
     analyzer = GeminiAnalyzer(generate, budget_seconds=MIN_ATTEMPT_SECONDS + 0.12)
 
     with pytest.raises(GeminiUnavailableError):
         await analyzer.analyze(data())
     # O analisador só começa com tempo >= MIN_ATTEMPT_SECONDS; as novas tentativas respeitam
-    # o prazo DELE (não os 75 s próprios) e não passam de 3.
+    # o prazo DELE (não os 48 s próprios) e não passam de 3.
     assert 1 <= calls <= 3
 
 

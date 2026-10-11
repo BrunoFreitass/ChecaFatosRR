@@ -156,8 +156,19 @@ keep-alive da seção 3.4) e pode ser reiniciado pelo Render a qualquer momento.
 | `CORS_ORIGINS` | Não | `https://<seu-projeto>.pages.dev` (provisório: `http://localhost:5173`; tire o localhost depois) |
 | `GEMINI_DAILY_CHECKS` / `GEMINI_DAILY_MODERATION` | Não | pelo RPD do modelo (a soma não passa da cota) |
 | `APP_ENV`, `LOG_LEVEL`, `DATABASE_SSL_ROOT_CERT`, `GEMINI_MODEL_FALLBACKS`, `DB_POOL_SIZE`, `DB_POOL_MAX_OVERFLOW`, `EXTRACT_CONCURRENCY`, `UVICORN_LIMIT_CONCURRENCY` | Não | já definidas no `render.yaml` |
+
 | `GEMINI_THINKING_LEVEL` | Não | **não defina** (padrão: thinking desligado por `thinking_budget=0`). Emergência sem deploy: `low` se o log `gemini_usage` mostrar `thoughts_tokens` > 0 (o 3.8-flash recusa `minimal`) |
 | `PORT` | — | **não defina**: o Render injeta |
+
+**Tempo de resposta:** o Render responde atrás do Cloudflare, que corta a requisição em ~100 s
+(erro 524). Por isso a checagem cabe em ~90 s no pior caso (`REQUEST_LIMIT_SECONDS`): 8 s de folga para o banco +
+download 20 s + agências 12 s + Gemini 48 s (uma tentativa de 25 s por modelo antes de trocar).
+
+**Trocar a ordem dos modelos** (ex.: o 3.8 lento de forma consistente): a variável
+`GEMINI_MODEL_FALLBACKS` tem valor fixo no `render.yaml`, então a mudança vai **no arquivo, por
+PR** (a sincronização do Blueprint sobrescreveria um valor trocado só no painel). Para efeito
+imediato, troque também no painel (*Environment*): o serviço reinicia com a nova ordem. A ordem
+não entra no `PROMPT_VERSION`: o cache continua valendo.
 
 As demais variáveis do `backend/app/config.py` usam o valor padrão. Copie cada valor do `backend/.env`
 direto para o painel: nunca por chat, issue, print ou commit (`ADMIN_EMAIL` também é dado pessoal).
@@ -313,10 +324,10 @@ gcloud run deploy checafatosrr-api \
 > `--set-env-vars "^@^..."`: o `^@^` troca o separador das variáveis para `@`, porque
 > `GEMINI_MODEL_FALLBACKS` tem vírgula no valor.
 >
-> `--timeout 180`: uma checagem nova leva até ~107 s no pior caso (download 20 s + agências
-> 12 s + Gemini 75 s, já contando novas tentativas e a troca de modelo). Se outra pessoa
+> `--timeout 180`: uma checagem nova leva até ~80 s no pior caso (download 20 s + agências
+> 12 s + Gemini 48 s, já contando novas tentativas e a troca de modelo). Se outra pessoa
 > estiver checando o mesmo conteúdo, a requisição espera pelo resultado dela e, se a outra
-> falhar, assume a checagem em até 70 s (no máximo ~177 s).
+> falhar, assume a checagem só nos primeiros 2 s (no máximo ~90 s, com o banco).
 
 > **Projeto com "Legacy JWT Secret" (passo 5 da seção 1.1)?** Crie também o segredo
 > `SUPABASE_JWT_SECRET` (como na seção 3.1) e acrescente

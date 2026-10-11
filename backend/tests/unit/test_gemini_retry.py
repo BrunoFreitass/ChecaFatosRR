@@ -16,6 +16,7 @@ from app.services.gemini import (
     AnalysisInput,
     GeminiAnalyzer,
     GeminiCallError,
+    GeminiModelSlowError,
     GeminiUnavailableError,
     build_generate_config,
     build_prompt,
@@ -81,9 +82,9 @@ def retrying(call: ScriptedCall, recorder: Recorder, **kwargs: object) -> object
 # ---------- 503/504 seguidos de sucesso ----------
 
 
-async def test_503_and_504_then_success_completes_the_check() -> None:
+async def test_503_and_500_then_success_completes_the_check() -> None:
     call = ScriptedCall(
-        GeminiCallError(503, "high demand"), GeminiCallError(504, "deadline"), answer()
+        GeminiCallError(503, "high demand"), GeminiCallError(500, "internal"), answer()
     )
     recorder = Recorder()
 
@@ -107,11 +108,19 @@ async def test_retry_does_not_reserve_new_daily_quota() -> None:
     assert reserved == [1]  # só a checagem; as novas tentativas de transporte não gastam cota
 
 
-@pytest.mark.parametrize("status", [429, 500, 503, 504])
+@pytest.mark.parametrize("status", [429, 500, 503])
 async def test_retryable_statuses(status: int) -> None:
     call = ScriptedCall(GeminiCallError(status, "transitório"), answer())
     await GeminiAnalyzer(retrying(call, Recorder())).analyze(data())  # type: ignore[arg-type]
     assert call.calls == 2
+
+
+async def test_deadline_504_is_handed_to_the_next_model_not_retried() -> None:
+    # Prazo estourado: o mesmo prompt no mesmo modelo estoura de novo (ver test_gemini_fallback).
+    call = ScriptedCall(GeminiCallError(504, "Deadline expired"), answer())
+    with pytest.raises(GeminiModelSlowError):
+        await retrying(call, Recorder())("prompt")  # type: ignore[operator]
+    assert call.calls == 1
 
 
 async def test_connection_failure_without_http_status_is_retried() -> None:
@@ -157,13 +166,12 @@ async def test_exponential_backoff_with_jitter() -> None:
     assert recorder.sleeps == [1.5, 2.5]
 
 
-async def test_attempt_that_hangs_is_cut_and_retried() -> None:
+async def test_attempt_that_hangs_is_cut_and_handed_to_the_next_model() -> None:
     call = ScriptedCall("pendurar", answer())
 
-    result = await retrying(call, Recorder(), attempt_timeout=0.05)("prompt")  # type: ignore[operator]
-
-    assert result == answer()
-    assert call.calls == 2
+    with pytest.raises(GeminiModelSlowError):
+        await retrying(call, Recorder(), attempt_timeout=0.05)("prompt")  # type: ignore[operator]
+    assert call.calls == 1
 
 
 async def test_total_budget_stops_retries() -> None:
@@ -175,7 +183,7 @@ async def test_total_budget_stops_retries() -> None:
     assert call.calls < 3  # o orçamento total corta antes da última tentativa
 
 
-def test_worst_case_fits_cloud_run_timeout() -> None:
+def test_worst_case_fits_under_the_cloudflare_cut() -> None:
     from app.repositories.checks import CLAIM_TTL_SECONDS
     from app.services.check_service import (
         AGENCIES_TIMEOUT_SECONDS,
@@ -193,19 +201,39 @@ def test_worst_case_fits_cloud_run_timeout() -> None:
     assert worst_check <= WORST_CHECK_SECONDS
     # O claim não expira no meio de uma checagem legítima.
     assert CLAIM_TTL_SECONDS > worst_check
-    # Quem esperou e assumiu ainda cabe no --timeout 180 do Cloud Run (plano B).
-    assert TAKEOVER_LIMIT_SECONDS + worst_check < 180
-    # Quem espera outra checagem igual espera quase o pior caso dela.
-    from app.services.check_service import WAIT_MAX_SECONDS
+    # O Render responde atrás do Cloudflare, que corta em ~100 s (524): NENHUMA requisição
+    # passa de REQUEST_LIMIT_SECONDS (90), nem a de quem esperou outra checagem e assumiu.
+    # As chamadas ao banco (begin_check, claim, reserve, save...) ficam fora dos tetos das
+    # etapas: DB_MARGIN_SECONDS é a folga delas.
+    from app.services.check_service import (
+        DB_MARGIN_SECONDS,
+        REQUEST_LIMIT_SECONDS,
+        WAIT_MAX_SECONDS,
+    )
 
+    assert REQUEST_LIMIT_SECONDS <= 90
+    assert DB_MARGIN_SECONDS >= 8
+    assert worst_check + DB_MARGIN_SECONDS <= REQUEST_LIMIT_SECONDS
+    assert TAKEOVER_LIMIT_SECONDS + worst_check + DB_MARGIN_SECONDS <= REQUEST_LIMIT_SECONDS
+    assert TAKEOVER_LIMIT_SECONDS >= 1.5  # ainda dá para assumir na 1ª consulta
+    assert WAIT_MAX_SECONDS + DB_MARGIN_SECONDS <= REQUEST_LIMIT_SECONDS
+    # Quem espera outra checagem igual espera quase o pior caso dela.
     assert WAIT_MAX_SECONDS >= worst_check - 5
 
 
+def test_budget_above_the_request_limit_is_rejected() -> None:
+    # Um GEMINI_BUDGET_SECONDS maior no painel quebraria o teto de 90 s: falha no boot.
+    with pytest.raises(ValueError):
+        Settings(gemini_budget_seconds=60)
+
+
 def test_budget_leaves_a_useful_attempt_for_the_next_model() -> None:
-    # Modelo lento: 2 tentativas cortadas no teto + backoff, e o próximo da cadeia ainda
+    # Modelo lento: 1 tentativa cortada no teto + backoff, e o próximo da cadeia ainda
     # precisa de tempo para responder (saudável: 7 a 13 s).
+    from app.services.gemini import DEADLINE_FAILURES_TO_SWITCH
+
     settings = Settings()
-    first_model = 2 * settings.gemini_attempt_timeout_seconds + 2  # backoff de 1 a 2 s
+    first_model = DEADLINE_FAILURES_TO_SWITCH * settings.gemini_attempt_timeout_seconds + 2
     assert settings.gemini_budget_seconds - first_model >= 20
 
 

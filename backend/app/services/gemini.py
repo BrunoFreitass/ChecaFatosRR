@@ -554,10 +554,11 @@ EXHAUSTED_RECHECK_SECONDS = 3600.0
 RETRYABLE_STATUS = frozenset({429, 500, 503, 504})
 # Não começa uma tentativa com menos tempo que isso (ela seria cortada antes de responder).
 MIN_ATTEMPT_SECONDS = 5.0
-# Prazo estourado (504 do Google ou o nosso teto) tantas vezes seguidas no MESMO modelo: ele
-# está lento (teste de 10/10/2026: 504 em 24 s duas vezes; sem teto, nada em 60 s). Repetir o
-# mesmo prompt só gasta o orçamento; a cadeia passa ao próximo modelo.
-DEADLINE_FAILURES_TO_SWITCH = 2
+# Prazo estourado (504 do Google, o nosso teto ou o do SDK) tantas vezes seguidas no MESMO
+# modelo: ele está lento (teste de 10/10/2026: 504 em 24 s duas vezes; sem teto, nada em 60 s).
+# Repetir o mesmo prompt só gasta o orçamento, e a resposta tem de sair antes do corte do
+# Cloudflare (~100 s): já no primeiro, a cadeia passa ao próximo modelo.
+DEADLINE_FAILURES_TO_SWITCH = 1
 # Modelo lento fica no fim da fila por esse tempo: as checagens seguintes não pagam ~50 s nele.
 SLOW_MODEL_COOLDOWN_SECONDS = 300.0
 _GOOGLE_KEY = re.compile(r"AIza[0-9A-Za-z_\-]{10,}")
@@ -614,7 +615,7 @@ def with_retries(
     *,
     max_retries: int = 2,
     attempt_timeout: float = 25.0,
-    budget_seconds: float = 75.0,
+    budget_seconds: float = 48.0,
     base_delay: float = 1.0,
     sleep: Callable[[float], Awaitable[None]] | None = None,  # None = asyncio.sleep na hora
     jitter: Callable[[], float] = random.random,
@@ -764,7 +765,7 @@ class GeminiAnalyzer:
         self,
         generate: Generate,
         *,
-        budget_seconds: float = 75.0,
+        budget_seconds: float = 48.0,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._generate = generate
@@ -867,7 +868,7 @@ def google_generate(
     thinking_level: str = "",
     attempt_timeout: float = 25.0,
     max_retries: int = 2,
-    budget_seconds: float = 75.0,
+    budget_seconds: float = 48.0,
 ) -> ModelChain:
     """`generate` real: SDK google-genai (chave no cabeçalho x-goog-api-key, sem os retries
     do próprio SDK) + `with_retries` por modelo + `with_model_fallback` na cadeia `models`."""
