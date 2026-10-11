@@ -20,6 +20,8 @@ interface RequestOptions {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   signal?: AbortSignal;
+  /** Consulta pública: sem o token (requisição simples, sem preflight, cacheável). */
+  anonymous?: boolean;
 }
 
 const GENERIC_MESSAGE = "Não foi possível concluir. Tente de novo.";
@@ -29,10 +31,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export async function apiFetch<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { data } = await supabase.auth.getSession();
   const headers: Record<string, string> = { Accept: "application/json" };
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
-  if (data.session) headers.Authorization = `Bearer ${data.session.access_token}`;
+  if (!options.anonymous) {
+    const { data } = await supabase.auth.getSession();
+    if (data.session) headers.Authorization = `Bearer ${data.session.access_token}`;
+  }
 
   let response: Response;
   try {
