@@ -59,10 +59,15 @@ class Settings(BaseSettings):
     # 0 = sem "thinking": com o padrão o Flash 3.x passou de 60 s; com 0, de 7 a 13 s.
     # Vale para a checagem e (etapa 4) para a moderação.
     gemini_thinking_budget: int = Field(default=0, ge=0)
+    # Nível nativo dos 3.x; se definido, substitui o budget (o 3.8-flash recusa "minimal").
+    # Saída de emergência sem deploy, se o log gemini_usage mostrar thoughts_tokens > 0.
+    gemini_thinking_level: Literal["", "minimal", "low", "medium", "high"] = ""
     # Teto de cada tentativa, novas tentativas (só 429/500/503/504/rede) e orçamento total.
+    # 75 s: um modelo lento gasta 2 tentativas (~52 s) e o próximo da cadeia ainda tem ~23 s
+    # (saudável responde em 7 a 13 s). Mais que isso, a espera de quem checa passa de 2 min.
     gemini_attempt_timeout_seconds: float = Field(default=25, gt=0, le=60)
     gemini_max_retries: int = Field(default=2, ge=0, le=2)
-    gemini_budget_seconds: float = Field(default=60, gt=0, le=60)
+    gemini_budget_seconds: float = Field(default=75, gt=0, le=90)
     # Cotas diárias (dia do Pacífico, quando a cota gratuita zera). A de moderação é da etapa 4.
     gemini_daily_checks: int = Field(default=200, ge=0)
     gemini_daily_moderation: int = Field(default=200, ge=0)

@@ -193,8 +193,20 @@ def test_worst_case_fits_cloud_run_timeout() -> None:
     assert worst_check <= WORST_CHECK_SECONDS
     # O claim não expira no meio de uma checagem legítima.
     assert CLAIM_TTL_SECONDS > worst_check
-    # Quem esperou e assumiu ainda cabe no --timeout 180 do Cloud Run.
+    # Quem esperou e assumiu ainda cabe no --timeout 180 do Cloud Run (plano B).
     assert TAKEOVER_LIMIT_SECONDS + worst_check < 180
+    # Quem espera outra checagem igual espera quase o pior caso dela.
+    from app.services.check_service import WAIT_MAX_SECONDS
+
+    assert WAIT_MAX_SECONDS >= worst_check - 5
+
+
+def test_budget_leaves_a_useful_attempt_for_the_next_model() -> None:
+    # Modelo lento: 2 tentativas cortadas no teto + backoff, e o próximo da cadeia ainda
+    # precisa de tempo para responder (saudável: 7 a 13 s).
+    settings = Settings()
+    first_model = 2 * settings.gemini_attempt_timeout_seconds + 2  # backoff de 1 a 2 s
+    assert settings.gemini_budget_seconds - first_model >= 20
 
 
 # ---------- texto enviado ao modelo ----------
@@ -214,6 +226,24 @@ def test_default_model_is_fixed_stable_flash_with_thinking_off() -> None:
     settings = Settings()
     assert settings.gemini_models[0] == "gemini-3.8-flash"
     assert settings.gemini_thinking_budget == 0
+
+
+def test_thinking_level_replaces_the_budget_when_set() -> None:
+    # Modelos 3.x: o nível é o controle nativo (o 3.8-flash recusa MINIMAL com 400, aceita LOW).
+    from google.genai import types
+
+    config = build_generate_config(thinking_budget=0, thinking_level="low")
+    assert config.thinking_config is not None
+    assert config.thinking_config.thinking_level == types.ThinkingLevel.LOW
+    assert config.thinking_config.thinking_budget is None  # os dois juntos dão 400
+
+
+def test_thinking_level_setting_is_validated(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert Settings().gemini_thinking_level == ""  # padrão: thinking_budget=0
+    monkeypatch.setenv("GEMINI_THINKING_LEVEL", "minimal")
+    assert Settings().gemini_thinking_level == "minimal"
+    with pytest.raises(ValueError):
+        Settings(gemini_thinking_level="maximo")
 
 
 def test_generate_config_disables_thinking_and_uses_json_schema() -> None:
