@@ -370,7 +370,8 @@ async def test_production_ruas_answer_is_replayed_as_awaiting_check() -> None:
 
     assert result.veredito_ia == "verdadeiro"
     assert result.veredito == "nao_verificavel"
-    assert result.resumo.endswith("Publicado por g1.globo.com (origem confirmada).")
+    assert result.resumo.startswith("Conteúdo publicado em g1.globo.com (origem confirmada)")
+    assert "legítima" not in result.resumo  # o resumo do modelo não aparece
     assert grade([result], date(2026, 10, 10)).acertos == 1
 
 

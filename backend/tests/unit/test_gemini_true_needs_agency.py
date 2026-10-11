@@ -63,47 +63,104 @@ def verdict(veredito: str = "verdadeiro", confianca: int = 95, *cited: str) -> G
     )
 
 
-# ---------- verdadeiro sem agência ----------
+# ---------- verdadeiro sem agência (decisões de 11/10/2026) ----------
+# O resumo do modelo afirmava "reportagem legítima": no lugar dele vai um texto neutro.
+
+NEUTRAL_G1 = (
+    "Conteúdo publicado em g1.globo.com (origem confirmada) sobre: Ruas diz que segurança "
+    "pública será prioridade de seu governo. Não encontramos checagens de agências sobre ele."
+)
 
 
-def test_true_without_agency_on_a_link_is_awaiting_check_with_the_origin_note() -> None:
+def test_true_without_agency_on_a_link_gets_the_neutral_text() -> None:
     result = finalize(verdict(), link(), TODAY)
 
     assert result.veredito == "nao_verificavel"
     assert result.veredito_ia == "verdadeiro"  # o que o modelo disse fica registrado
     assert result.rebaixado_por_confianca is False  # não foi falta de confiança
-    assert result.resumo.startswith(RESUMO)  # resumo mantido
-    assert result.resumo.endswith("Publicado por g1.globo.com (origem confirmada).")
+    assert result.rebaixado_sem_agencia is True
+    assert result.resumo == NEUTRAL_G1  # sem o resumo do modelo (nem o " | G1" do título)
+    assert result.to_json()["rebaixado_sem_agencia"] is True
 
 
-def test_true_without_agency_on_pasted_text_has_no_origin_note() -> None:
+def test_true_without_agency_on_pasted_text_gets_the_neutral_text() -> None:
     result = finalize(verdict(), text(), TODAY)
 
     assert result.veredito == "nao_verificavel"
-    assert result.resumo == RESUMO  # texto colado: a autoria não é confirmada
+    assert result.resumo == "Não encontramos checagens de agências sobre este conteúdo."
 
 
-def test_link_without_confirmed_origin_has_no_note() -> None:
-    result = finalize(verdict(), replace(link(), source_domain=None), TODAY)
+def test_open_platform_link_is_not_called_confirmed_origin() -> None:
+    blog = replace(link(), source_domain="fulano.blogspot.com", open_platform=True)
 
-    assert result.veredito == "nao_verificavel"
+    result = finalize(verdict(), blog, TODAY)
+
+    assert result.resumo.startswith("Conteúdo publicado em fulano.blogspot.com sobre: ")
     assert "origem confirmada" not in result.resumo
 
 
-def test_origin_note_is_not_repeated() -> None:
-    note = "Publicado por g1.globo.com (origem confirmada)."
-    answer = verdict().model_copy(update={"resumo": f"{RESUMO} {note}"})
+def test_link_without_title_or_confirmed_origin() -> None:
+    no_title = replace(link(), title=None)
+    assert finalize(verdict(), no_title, TODAY).resumo == (
+        "Conteúdo publicado em g1.globo.com (origem confirmada). "
+        "Não encontramos checagens de agências sobre ele."
+    )
+    unknown = replace(link(), source_domain=None)
+    assert "origem confirmada" not in finalize(verdict(), unknown, TODAY).resumo
 
-    assert finalize(answer, link(), TODAY).resumo.count(note) == 1
 
-
-def test_true_with_low_confidence_also_gets_the_origin_note() -> None:
-    # Sem agência, o motivo é a política (não só a confiança): a nota aparece do mesmo jeito.
+def test_true_with_low_confidence_also_gets_the_neutral_text() -> None:
     result = finalize(verdict("verdadeiro", 60), link(), TODAY)
 
     assert result.veredito == "nao_verificavel"
     assert result.rebaixado_por_confianca is True
-    assert result.resumo.endswith("Publicado por g1.globo.com (origem confirmada).")
+    assert result.rebaixado_sem_agencia is True
+    assert result.resumo == NEUTRAL_G1
+
+
+def test_true_citing_a_non_confirming_agency_says_the_checks_do_not_confirm() -> None:
+    misleading = replace(AGENCY, veredito="Enganoso")
+    result = finalize(verdict("verdadeiro", 95, misleading.url), link(misleading), TODAY)
+
+    assert result.veredito == "nao_verificavel"
+    assert result.resumo.endswith("As checagens de agências encontradas não confirmam o conteúdo.")
+
+
+def test_finalize_records_the_confirmed_origin_for_later_reads() -> None:
+    assert finalize(verdict(), link(), TODAY).to_json()["origem_confirmada"] == "g1.globo.com"
+    blog = replace(link(), source_domain="fulano.blogspot.com", open_platform=True)
+    assert finalize(verdict(), blog, TODAY).to_json()["origem_confirmada"] is None
+    assert finalize(verdict(), text(), TODAY).to_json()["origem_confirmada"] is None
+
+
+def test_model_answers_that_were_not_downgraded_keep_their_summary() -> None:
+    result = finalize(verdict("nao_verificavel", 50), link(), TODAY)
+    assert result.resumo == RESUMO
+    assert result.rebaixado_sem_agencia is False
+
+
+# ---------- checagens citadas x relacionadas (decisão 3) ----------
+
+OTHER = AgencyCheck(
+    agencia="Lupa",
+    titulo="Outro assunto",
+    veredito="Falso",
+    url="https://lupa.uol.com.br/jornalismo/outro/",
+)
+
+
+def test_agency_checks_the_model_did_not_cite_are_related_not_evidence() -> None:
+    result = finalize(verdict("verdadeiro", 95, AGENCY.url), link(AGENCY, OTHER), TODAY)
+
+    assert [c.url for c in result.checagens_agencias] == [AGENCY.url]
+    assert [c.url for c in result.checagens_relacionadas] == [OTHER.url]
+    assert result.to_json()["checagens_relacionadas"][0]["url"] == OTHER.url
+
+
+def test_only_uncited_checks_leave_the_answer_awaiting_check() -> None:
+    result = finalize(verdict("nao_verificavel", 50), link(OTHER), TODAY)
+    assert result.checagens_agencias == []
+    assert result.checagens_relacionadas == [OTHER]
 
 
 # ---------- verdadeiro com agência ----------
@@ -113,7 +170,8 @@ def test_true_corroborated_by_a_cited_agency_check_stays_true() -> None:
     result = finalize(verdict("verdadeiro", 95, AGENCY.url), link(AGENCY), TODAY)
 
     assert result.veredito == "verdadeiro"
-    assert result.resumo == RESUMO  # sem nota: a agência é a evidência
+    assert result.resumo == RESUMO  # a agência é a evidência: resumo do modelo mantido
+    assert result.rebaixado_sem_agencia is False
 
 
 @pytest.mark.parametrize(
@@ -192,6 +250,7 @@ def test_other_verdicts_are_unchanged(veredito: str) -> None:
     result = finalize(verdict(veredito, 80), link(), TODAY)
     assert result.veredito == veredito
     assert result.resumo == RESUMO
+    assert result.rebaixado_sem_agencia is False
 
 
 # ---------- prompt ----------

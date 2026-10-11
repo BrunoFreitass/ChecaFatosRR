@@ -72,6 +72,8 @@ class CheckSummary:
     created_at: datetime
     # Quantas checagens de agência a checagem tem: 0 + "nao_verificavel" = "Ainda sem checagem".
     agency_checks: int = 0
+    # Classificações dessas checagens: a leitura reaplica a regra do "verdadeiro".
+    agency_ratings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -195,6 +197,13 @@ on conflict (day, purpose) do update set calls = u.calls + 1
 where u.calls < :limit
 returning calls
 """
+
+
+def _ratings(raw: Any) -> tuple[str, ...]:
+    """Classificações das agências vindas do jsonb (texto no asyncpg); só strings valem."""
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    return tuple(r for r in raw if isinstance(r, str)) if isinstance(raw, list) else ()
 
 
 def _row_to_check(row: Any) -> StoredCheck:
@@ -474,7 +483,11 @@ class SqlCheckRepository:
             "select c.public_id, l.domain, l.title, c.veredito, c.created_at, "
             # jsonb_array_length falha em null/objeto: um resultado torto não derruba "Últimas".
             "case when jsonb_typeof(c.result -> 'checagens_agencias') = 'array' "
-            "then jsonb_array_length(c.result -> 'checagens_agencias') else 0 end as agency_checks "
+            "then jsonb_array_length(c.result -> 'checagens_agencias') else 0 end "
+            "as agency_checks, "
+            "case when jsonb_typeof(c.result -> 'checagens_agencias') = 'array' "
+            "then jsonb_path_query_array(c.result -> 'checagens_agencias', '$[*].veredito') "
+            "else '[]'::jsonb end as agency_ratings "
             "from public.checks c join public.links l on l.id = c.link_id "
             "where c.listed "
             # Um item por link: só a checagem listada mais recente (nova versão do prompt não
@@ -490,4 +503,7 @@ class SqlCheckRepository:
         sql += "order by c.created_at desc, c.public_id desc limit :limit"
         async with self._session.begin():
             rows = (await self._session.execute(text(sql), params)).mappings().all()
-        return [CheckSummary(**row) for row in rows]
+        return [
+            CheckSummary(**{**row, "agency_ratings": _ratings(row.get("agency_ratings"))})
+            for row in rows
+        ]

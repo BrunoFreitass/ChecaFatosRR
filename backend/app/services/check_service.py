@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime
 from uuid import UUID
 
+from app.config import DEFAULT_OPEN_PLATFORMS
 from app.errors import AppError
 from app.repositories.checks import (
     CacheHit,
@@ -45,6 +46,7 @@ from app.services.url_guard import (
     is_social_media,
     normalize_url,
 )
+from app.services.verdict_policy import is_open_platform
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +103,7 @@ class CheckSettings:
     limits: Limits
     daily_gemini_checks: int
     model: str  # primeiro da cadeia; vale quando o analisador não informa
+    open_platforms: tuple[str, ...] = DEFAULT_OPEN_PLATFORMS
 
 
 @dataclass(frozen=True)
@@ -332,7 +335,7 @@ async def _analyze(
     published_at: date | None = None
     listed = False
     if isinstance(parsed, LinkInput):
-        read = await _read_link(parsed, tools, timer)
+        read = await _read_link(parsed, tools, timer, settings.open_platforms)
         data, published_at = read.data, read.data.published_at
         # Redirect para outro domínio (ex.: redirect aberto num site conhecido): o conteúdo
         # não é daquele domínio, então não vai para "Últimas" com o nome dele.
@@ -397,7 +400,9 @@ async def _analyze(
     return CheckOutcome(check=saved, cached=False)
 
 
-async def _read_link(parsed: LinkInput, tools: CheckTools, timer: StageTimer) -> _LinkRead:
+async def _read_link(
+    parsed: LinkInput, tools: CheckTools, timer: StageTimer, open_platforms: tuple[str, ...]
+) -> _LinkRead:
     try:
         async with asyncio.timeout(READ_LINK_TIMEOUT_SECONDS):
             with timer.stage("fetch"):
@@ -430,6 +435,7 @@ async def _read_link(parsed: LinkInput, tools: CheckTools, timer: StageTimer) ->
         published_at=extracted.published_at,
         # Origem confirmada: o domínio de onde a página veio de fato (depois de redirects).
         source_domain=final_domain,
+        open_platform=is_open_platform(final_domain, open_platforms),
     )
     return _LinkRead(data=data, final_domain=final_domain)
 

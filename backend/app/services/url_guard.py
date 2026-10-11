@@ -232,4 +232,8 @@ def collect_urls(text: str) -> list[str]:
 
 
 def is_social_media(url: NormalizedUrl) -> bool:
-    return any(url.host == d or url.host.endswith("." + d) for d in _SOCIAL_DOMAINS)
+    return is_social_host(url.host)
+
+
+def is_social_host(host: str) -> bool:
+    return any(host == d or host.endswith("." + d) for d in _SOCIAL_DOMAINS)

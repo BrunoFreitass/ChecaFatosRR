@@ -16,7 +16,7 @@ import time
 import unicodedata
 from collections.abc import Awaitable, Callable, Sequence
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dt_time
 from typing import Annotated, Any, Literal, Protocol
@@ -32,6 +32,7 @@ from app.services.url_guard import (
     InvalidUrlError,
     normalize_url,
 )
+from app.services.verdict_policy import corroborates, neutral_summary
 
 logger = logging.getLogger(__name__)
 
@@ -45,14 +46,6 @@ MAX_PROMPT_CONTENT_CHARS = 8000
 # mais confiança: limita o dano de uma página que tente manipular o modelo.
 LOW_CONFIDENCE_WITHOUT_AGENCIES = 70
 _CATEGORICAL: frozenset[str] = frozenset({"verdadeiro", "falso"})
-# Política de 10/10/2026: origem confirmada não é fato verificado. "Verdadeiro" exige uma
-# checagem de agência (vinda da API e citada pelo modelo) cuja classificação confirme; sem
-# ela, "nao_verificavel" ("Ainda sem checagem"). Lista FECHADA de rótulos (normalizados):
-# "Verdadeiro, mas...", "Partly true", "Not true" ou "Fato ou Fake" não confirmam.
-_AGENCY_TRUE_LABELS = frozenset(
-    {"verdadeiro", "verdadeira", "verdade", "veridico", "correto", "correta", "fato", "true"}
-    | {"comprovado", "comprovada"}
-)
 MAX_ATTEMPTS = 2
 # "Hoje" do serviço é o de Roraima.
 BOA_VISTA = ZoneInfo("America/Boa_Vista")
@@ -159,6 +152,12 @@ class CheckResult:
     # Modelo que respondeu (com fallback, pode não ser o primeiro da cadeia). Fora do to_json:
     # vai só para a coluna checks.model.
     model: str | None = None
+    # "Verdadeiro" sem agência que confirme: virou "Ainda sem checagem" com texto neutro.
+    rebaixado_sem_agencia: bool = False
+    # Checagens que a busca trouxe e o modelo NÃO citou: outro assunto, não evidência.
+    checagens_relacionadas: list[AgencyCheck] = field(default_factory=list)
+    # Domínio de onde a página veio, se não for plataforma aberta (None em texto colado).
+    origem_confirmada: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -167,18 +166,22 @@ class CheckResult:
             "resumo": self.resumo,
             "pontos_suspeitos": self.pontos_suspeitos,
             "contexto_faltante": self.contexto_faltante,
-            "checagens_agencias": [
-                {
-                    "agencia": c.agencia,
-                    "titulo": c.titulo,
-                    "veredito": c.veredito,
-                    "url": c.url,
-                    "data": c.data,
-                }
-                for c in self.checagens_agencias
-            ],
+            "checagens_agencias": [_agency_json(c) for c in self.checagens_agencias],
+            "checagens_relacionadas": [_agency_json(c) for c in self.checagens_relacionadas],
+            "rebaixado_sem_agencia": self.rebaixado_sem_agencia,
+            "origem_confirmada": self.origem_confirmada,
             "fontes_sugeridas": self.fontes_sugeridas,
         }
+
+
+def _agency_json(check: AgencyCheck) -> dict[str, Any]:
+    return {
+        "agencia": check.agencia,
+        "titulo": check.titulo,
+        "veredito": check.veredito,
+        "url": check.url,
+        "data": check.data,
+    }
 
 
 @dataclass(frozen=True)
@@ -194,6 +197,8 @@ class AnalysisInput:
     # Domínio de onde o SERVIDOR baixou a página (depois de redirects). Só em link: é a
     # origem confirmada. Texto colado não tem origem, mesmo que cite um veículo.
     source_domain: str | None = None
+    # Domínio onde qualquer pessoa publica (blog, rede social): sem "origem confirmada".
+    open_platform: bool = False
 
 
 class GeminiUnavailableError(Exception):
@@ -236,11 +241,12 @@ def finalize(verdict: GeminiVerdict, data: AnalysisInput, today: date | None = N
     api_urls = {c.url for c in data.agency_checks}
     allowed = _allowed_urls(data)
 
-    # Checagens: sempre os dados da API (a IA não reescreve o veredito de uma agência).
-    # As que a IA citou vêm primeiro.
-    cited = [c.url for c in verdict.checagens_agencias if c.url in api_urls]
+    # Checagens: sempre os dados da API (a IA não reescreve o veredito de uma agência). Só as
+    # que a IA citou são evidência; as outras são "assuntos relacionados" (decisão de 11/10).
+    cited = list(dict.fromkeys(c.url for c in verdict.checagens_agencias if c.url in api_urls))
     order = {url: i for i, url in enumerate(cited)}
-    checks = sorted(data.agency_checks, key=lambda c: order.get(c.url, len(order)))
+    checks = sorted((c for c in data.agency_checks if c.url in order), key=lambda c: order[c.url])
+    related = [c for c in data.agency_checks if c.url not in order]
 
     # Fontes sugeridas aparecem como link "onde conferir": só agências (vindas da API) e
     # sites institucionais. URLs do próprio conteúdo analisado podem ser do atacante.
@@ -262,11 +268,20 @@ def finalize(verdict: GeminiVerdict, data: AnalysisInput, today: date | None = N
         downgraded = True
 
     resumo = _scrub(verdict.resumo, allowed)
-    # Política, independente do corte de confiança acima: sem agência que confirme, a nota
-    # de quem publicou explica o "Ainda sem checagem" de um link.
-    if original == "verdadeiro" and not _corroborated(cited, data):
+    # Política, independente do corte de confiança acima: sem agência que confirme, o resumo
+    # do modelo (que afirmava a veracidade) dá lugar a um texto neutro.
+    without_agency = original == "verdadeiro" and not any(corroborates(c.veredito) for c in checks)
+    # Guardado no resultado: a leitura de depois não sabe o domínio final (redirect).
+    origin = data.source_domain if data.kind == "link" and not data.open_platform else None
+    if without_agency:
         final = "nao_verificavel"
-        resumo = _with_origin_note(resumo, data)
+        resumo = neutral_summary(
+            data.kind,
+            data.source_domain,
+            data.title,
+            confirmed_origin=origin is not None,
+            agency_checks=bool(checks),
+        )
 
     contexto = _scrub(verdict.contexto_faltante, allowed) if verdict.contexto_faltante else None
     return CheckResult(
@@ -283,6 +298,9 @@ def finalize(verdict: GeminiVerdict, data: AnalysisInput, today: date | None = N
         contexto_faltante=contexto or None,
         checagens_agencias=checks,
         fontes_sugeridas=sources,
+        rebaixado_sem_agencia=without_agency,
+        checagens_relacionadas=related,
+        origem_confirmada=origin,
     )
 
 
@@ -352,32 +370,6 @@ def _date_mentions(text: str, today: date) -> _DateMentions:
         month_up_to_today=any(m <= today for m in months),
         future=any(d > today for d in days + months) or any(y > today.year for y in years),
     )
-
-
-def _corroborated(cited: list[str], data: AnalysisInput) -> bool:
-    """Alguma checagem de agência citada pelo modelo confirma o conteúdo."""
-    by_url = {c.url: c for c in data.agency_checks}
-    return any(
-        _rating_label(check.veredito) in _AGENCY_TRUE_LABELS
-        for url in cited
-        if (check := by_url.get(url)) is not None
-    )
-
-
-def _rating_label(rating: str) -> str:
-    """ "#Verídico. " -> "veridico": sem acento, minúsculo, sem pontuação nas pontas."""
-    plain = unicodedata.normalize("NFKD", rating).encode("ascii", "ignore").decode()
-    return " ".join(plain.lower().strip(" #.!").split())
-
-
-def _with_origin_note(resumo: str, data: AnalysisInput) -> str:
-    """Link baixado do próprio domínio: diz quem publicou, sem dizer que os fatos são verdade."""
-    if data.kind != "link" or not data.source_domain:
-        return resumo
-    note = f"Publicado por {data.source_domain} (origem confirmada)."
-    if note in resumo:
-        return resumo
-    return f"{resumo} {note}".strip()
 
 
 def _confidence_floor(veredito: str, data: AnalysisInput) -> int:
@@ -496,7 +488,8 @@ Vereditos: verdadeiro, enganoso (mistura fatos com distorções), falso, fora_de
 # mude as respostas (isso não aparece no texto das instruções).
 # 2 = data de hoje (Boa Vista) + origem confirmada do link (10/10/2026)
 # 3 = "verdadeiro" exige checagem de agência; origem confirmada não é fato verificado (10/10)
-PROMPT_REVISION = 3
+# 4 = texto neutro no rebaixamento, checagens relacionadas, plataformas abertas (11/10)
+PROMPT_REVISION = 4
 
 
 def prompt_version(revision: int, instruction: str) -> str:

@@ -47,6 +47,10 @@ export interface Check {
   cache: boolean;
   /** Feita com uma versão anterior do verificador (prompt). API antiga: ausente. */
   analise_anterior?: boolean;
+  /** "Verdadeiro" sem agência que confirme: mostrado como "Ainda sem checagem". */
+  rebaixado_sem_agencia?: boolean;
+  /** Checagens da busca que a análise não usou (outro assunto). API antiga: ausente. */
+  checagens_relacionadas?: AgencyCheck[];
 }
 
 export interface CheckSummary {

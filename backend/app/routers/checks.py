@@ -29,6 +29,7 @@ from app.services.check_service import CheckSettings, CheckTools, run_check
 from app.services.factcheck import AgencyCheck, HttpFactCheckClient
 from app.services.fetcher import HttpPageFetcher
 from app.services.gemini import PROMPT_VERSION, GeminiAnalyzer, google_generate
+from app.services.verdict_policy import neutral_summary, read_verdict
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["checagem"])
@@ -113,6 +114,7 @@ def get_check_settings(settings: Annotated[Settings, Depends(get_settings)]) -> 
         daily_gemini_checks=settings.gemini_daily_checks,
         # Rótulo de reserva: a checagem grava o modelo que respondeu (result.model).
         model=settings.gemini_models[0],
+        open_platforms=settings.open_platforms,
     )
 
 
@@ -134,8 +136,26 @@ async def current_profile(
 Repo = Annotated[CheckRepository, Depends(get_check_repository)]
 
 
-def to_out(check: StoredCheck, prompt_version: str, *, cached: bool = False) -> CheckOut:
+def to_out(check: StoredCheck, settings: CheckSettings, *, cached: bool = False) -> CheckOut:
     result = check.result
+    agencies = [item for item in result.get("checagens_agencias") or [] if isinstance(item, dict)]
+    # Regras de hoje também na leitura: corrige checagens salvas antes delas (ex.: "verdadeiro"
+    # sem agência), sem mexer no banco.
+    veredito, downgraded = read_verdict(
+        check.veredito, [str(item.get("veredito", "")) for item in agencies]
+    )
+    resumo = str(result.get("resumo", ""))
+    if downgraded:
+        # Só checagens de antes de 11/10 chegam aqui: elas não guardaram o domínio final
+        # (redirect), então nada de "origem confirmada" sem esse dado.
+        origin = result.get("origem_confirmada")
+        resumo = neutral_summary(
+            check.kind,
+            origin if isinstance(origin, str) else check.domain,
+            check.title,
+            confirmed_origin=isinstance(origin, str),
+            agency_checks=bool(agencies),
+        )
     return CheckOut(
         id=check.public_id,
         tipo=check.kind,
@@ -144,20 +164,24 @@ def to_out(check: StoredCheck, prompt_version: str, *, cached: bool = False) -> 
         title=check.title,
         published_at=check.published_at,
         texto=check.texto,
-        veredito=check.veredito,  # type: ignore[arg-type]
+        veredito=veredito,  # type: ignore[arg-type]
         rebaixado_por_confianca=bool(result.get("rebaixado_por_confianca", False)),
+        rebaixado_sem_agencia=downgraded or bool(result.get("rebaixado_sem_agencia", False)),
         confianca=check.confianca,
-        resumo=str(result.get("resumo", "")),
+        resumo=resumo,
         pontos_suspeitos=list(result.get("pontos_suspeitos") or []),
         contexto_faltante=result.get("contexto_faltante"),
-        checagens_agencias=[
-            AgencyCheckOut(**item) for item in result.get("checagens_agencias") or []
+        checagens_agencias=[AgencyCheckOut(**item) for item in agencies],
+        checagens_relacionadas=[
+            AgencyCheckOut(**item)
+            for item in result.get("checagens_relacionadas") or []
+            if isinstance(item, dict)
         ],
         fontes_sugeridas=list(result.get("fontes_sugeridas") or []),
         created_at=check.created_at,
         cache=cached,
         # Versão diferente OU desconhecida (checagem de antes da coluna, None): avisa.
-        analise_anterior=check.prompt_version != prompt_version,
+        analise_anterior=check.prompt_version != settings.limits.prompt_version,
     )
 
 
@@ -182,7 +206,7 @@ async def create_check(
         tools=tools,
         settings=settings,
     )
-    return to_out(outcome.check, settings.limits.prompt_version, cached=outcome.cached)
+    return to_out(outcome.check, settings, cached=outcome.cached)
 
 
 @router.get("/checks/latest", response_model=LatestChecksOut)
@@ -201,7 +225,7 @@ async def latest_checks(
                 id=item.public_id,
                 domain=item.domain,
                 title=item.title,
-                veredito=item.veredito,  # type: ignore[arg-type]
+                veredito=read_verdict(item.veredito, item.agency_ratings)[0],  # type: ignore[arg-type]
                 created_at=item.created_at,
                 total_agencias=item.agency_checks,
             )
@@ -223,7 +247,7 @@ async def read_check(
     check = await repo.get(public_id)
     if check is None:
         raise _not_found()
-    return to_out(check, settings.limits.prompt_version)
+    return to_out(check, settings)
 
 
 def _not_found() -> AppError:

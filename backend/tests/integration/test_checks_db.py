@@ -414,6 +414,7 @@ async def test_latest_reports_how_many_agency_checks_each_item_has(session: Asyn
         ("com", [agency, agency]),
         ("nulo", None),
         ("objeto", {"x": 1}),
+        ("torto", [{"veredito": 5}, {"x": 1}, "texto"]),
     )
     for name, agencies in cases:
         started = await repo.begin_check(user_id, link(), LIMITS)
@@ -436,6 +437,10 @@ async def test_latest_reports_how_many_agency_checks_each_item_has(session: Asyn
     assert latest[stored["com"].public_id].agency_checks == 2
     assert latest[stored["nulo"].public_id].agency_checks == 0
     assert latest[stored["objeto"].public_id].agency_checks == 0
+    # As classificações vão junto: a leitura reaplica a regra do "verdadeiro" (11/10/2026).
+    assert latest[stored["com"].public_id].agency_ratings == ("Falso", "Falso")
+    for name in ("sem", "nulo", "objeto", "torto"):
+        assert latest[stored[name].public_id].agency_ratings == (), name
 
 
 async def test_cache_is_keyed_by_prompt_version(session: AsyncSession) -> None:
