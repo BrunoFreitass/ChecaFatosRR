@@ -242,6 +242,30 @@ OAuth do Google. Regras do Cloudflare a criar (grátis):
 - **limite de taxa por IP** no `POST /checks`. O header secreto que impede o acesso direto ao
 `*.onrender.com` ainda não está implementado: entra junto com o domínio.
 
+### 3.7 Apuração do TSE (etapa 5)
+
+`GET /tse/resultado` busca o resultado oficial no TSE no máximo **uma vez a cada 30 s por
+escopo** (Brasil e Roraima), guarda o último resultado bom no banco e responde do cache (15 s,
+com ETag). Se o TSE cair ou mudar o formato, a página continua com o último resultado e o log
+mostra `tse_fetch_failed` ou `tse_format_error`. Os padrões já valem para 25/10; só defina no
+painel (*Environment*) para mudar:
+
+| Variável | Padrão | Para quê |
+|---|---|---|
+| `TSE_ELECTION_CODE` | `6258` (2º turno federal 2026) | `6257` = 1º turno (ensaio). Trocar e salvar reinicia o serviço (~1 min) |
+| `TSE_ENABLED` | `true` | `false` esconde a apuração (404 amigável) |
+| `TSE_SCOPES` | `br,rr` | escopos buscados (só `br` e/ou `rr`: a tabela não aceita outros) |
+| `TSE_REFRESH_SECONDS` | `30` | intervalo mínimo entre buscas no TSE |
+| `TSE_URL_TEMPLATE` | `https://resultados.tse.jus.br/oficial/ele2026/{eleicao}/dados/{escopo}/{escopo}-c{cargo:04d}-e{eleicao:06d}-u.json` | só muda se o TSE mudar o endereço; outro host é recusado no boot |
+| `TSE_BANNER_INICIO` / `TSE_BANNER_FIM` | `2026-10-25T16:00:00-04:00` / `2026-10-27T00:00:00-04:00` | janela do banner da home (horário de Boa Vista se vier sem fuso) |
+
+Ensaio (até 18/10): `TSE_ELECTION_CODE=6257` mostra o 1º turno real; depois volte para `6258`
+(o resultado do ensaio não aparece na eleição nova). Nenhuma troca de 22 a 26/10.
+
+Com domínio próprio e regra de cache do Cloudflare para `/tse/*`: inclua o cabeçalho `Origin`
+na chave de cache (ou não crie a regra). Sem isso, uma resposta guardada sem o CORS (pedida por
+um monitor, sem `Origin`) quebra a página para todos. Sem a regra, o ganho vem do ETag/304.
+
 ---
 
 ## 4. Plano B — Google Cloud Run
