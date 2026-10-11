@@ -1,6 +1,7 @@
 import { Link, useLocation } from "react-router";
 
 import { CheckForm } from "../components/CheckForm.tsx";
+import { TseBanner } from "../components/TseBanner.tsx";
 
 export function Home() {
   const location = useLocation();
@@ -9,6 +10,7 @@ export function Home() {
   return (
     <section className="space-y-5">
       <title>ChecaFatosRR — checagem de notícias</title>
+      <TseBanner />
       {accountDeleted && (
         <p role="status" className="rounded-lg bg-green-50 p-4 text-green-900">
           Sua conta foi excluída.
