@@ -373,34 +373,37 @@ async def test_daily_quota_named_only_in_the_message_also_falls_back(
     assert models.calls == [PRIMARY, BACKUP]
 
 
-# ---------- modelo lento (504 de prazo repetido): troca em vez de insistir ----------
+# ---------- modelo lento (prazo estourado): troca em vez de insistir ----------
 # Teste em produção de 10/10/2026: o 3.8-flash deu 504 "Deadline expired" em 24 s e de novo
-# em 24 s; medido depois sem o nosso teto, não respondeu nem em 60 s. Uma 3ª tentativa no
-# mesmo modelo só gastaria o orçamento; o próximo da cadeia ainda pode responder.
+# em 24 s; medido depois sem o nosso teto, não respondeu nem em 60 s. O mesmo prompt no mesmo
+# modelo estoura de novo, e a resposta precisa sair antes do corte do Cloudflare (~100 s): no
+# PRIMEIRO prazo estourado a cadeia já passa ao próximo modelo.
 
 
 def deadline_504() -> Exception:
     return api_error(504, "Deadline expired before operation could complete.")
 
 
-async def test_repeated_504_switches_to_the_next_model(
+async def test_a_504_switches_to_the_next_model(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    models, _ = install(
-        monkeypatch,
-        {PRIMARY: [deadline_504(), deadline_504()], BACKUP: [text_response(ANSWER)]},
-    )
+    models, _ = install(monkeypatch, {PRIMARY: [deadline_504()], BACKUP: [text_response(ANSWER)]})
     caplog.set_level(logging.INFO, logger=gemini.logger.name)
 
     result = await google_generate(FAKE_KEY, [PRIMARY, BACKUP])("prompt")
 
     assert result == Generated(ANSWER, BACKUP)
-    assert models.calls == [PRIMARY, PRIMARY, BACKUP]  # sem 3ª tentativa no lento
+    assert models.calls == [PRIMARY, BACKUP]  # sem 2ª tentativa no lento
     assert models_logged(caplog, "gemini_model_slow") == [PRIMARY]
 
 
-async def test_a_single_504_retries_the_same_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    models, _ = install(monkeypatch, {PRIMARY: [deadline_504(), text_response(ANSWER)], BACKUP: []})
+async def test_other_transient_errors_still_retry_the_same_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    models, _ = install(
+        monkeypatch,
+        {PRIMARY: [api_error(503, "high demand"), text_response(ANSWER)], BACKUP: []},
+    )
 
     result = await google_generate(FAKE_KEY, [PRIMARY, BACKUP])("prompt")
 
@@ -408,7 +411,7 @@ async def test_a_single_504_retries_the_same_model(monkeypatch: pytest.MonkeyPat
     assert models.calls == [PRIMARY, PRIMARY]
 
 
-async def test_attempts_cut_by_our_timeout_twice_also_switch() -> None:
+async def test_attempt_cut_by_our_timeout_also_switches() -> None:
     calls: list[str] = []
 
     async def hangs(_: str) -> str:
@@ -427,7 +430,21 @@ async def test_attempts_cut_by_our_timeout_twice_also_switch() -> None:
         ]
     )
     assert await chain("x") == Generated("do reserva", "b")
-    assert calls == ["p", "p", "b"]
+    assert calls == ["p", "b"]
+
+
+async def test_sdk_read_timeout_also_counts_as_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    models, _ = install(
+        monkeypatch,
+        {PRIMARY: [httpx.ReadTimeout("lento")], BACKUP: [text_response(ANSWER)]},
+    )
+
+    result = await google_generate(FAKE_KEY, [PRIMARY, BACKUP])("prompt")
+
+    assert result == Generated(ANSWER, BACKUP)
+    assert models.calls == [PRIMARY, BACKUP]
 
 
 async def test_slow_model_is_skipped_for_a_while_then_tried_again() -> None:
@@ -448,7 +465,7 @@ async def test_slow_model_is_skipped_for_a_while_then_tried_again() -> None:
     chain = with_model_fallback([("p", primary), ("b", backup)], clock=lambda: now[0])
 
     assert await chain("x") == Generated("do reserva", "b")
-    # As próximas checagens não pagam de novo ~50 s no modelo lento.
+    # As próximas checagens não pagam de novo ~25 s no modelo lento.
     assert await chain("x") == Generated("do reserva", "b")
     assert calls == ["p", "b", "b"]
 
@@ -475,46 +492,14 @@ async def test_every_model_slow_is_unavailable_not_out_of_quota() -> None:
     assert calls == ["x", "x", "x", "x"]
 
 
-async def test_without_retries_a_single_504_already_switches(
+async def test_single_model_chain_that_is_slow_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # GEMINI_MAX_RETRIES=0: não há "2ª vez" no mesmo modelo; o prazo estourado já troca.
-    models, _ = install(monkeypatch, {PRIMARY: [deadline_504()], BACKUP: [text_response(ANSWER)]})
-
-    result = await google_generate(FAKE_KEY, [PRIMARY, BACKUP], max_retries=0)("prompt")
-
-    assert result == Generated(ANSWER, BACKUP)
-    assert models.calls == [PRIMARY, BACKUP]
-
-
-async def test_other_error_between_504s_restarts_the_count(monkeypatch: pytest.MonkeyPatch) -> None:
-    # "Seguidas": 504, 503, 504 não são dois prazos seguidos; segue as regras de retry.
-    models, _ = install(
-        monkeypatch,
-        {
-            PRIMARY: [deadline_504(), api_error(503, "high demand"), deadline_504()],
-            BACKUP: [text_response(ANSWER)],
-        },
-    )
+    # Cadeia de um modelo só: sem reserva, o prazo estourado vira "tente de novo" (503),
+    # nunca "sem cota" (que serviria a análise anterior).
+    models, _ = install(monkeypatch, {PRIMARY: [deadline_504()]})
 
     with pytest.raises(GeminiUnavailableError) as caught:
-        await google_generate(FAKE_KEY, [PRIMARY, BACKUP])("prompt")
-    assert not isinstance(caught.value, GeminiModelSlowError)
-    assert models.calls == [PRIMARY, PRIMARY, PRIMARY]
-
-
-async def test_sdk_read_timeouts_also_count_as_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
-    import httpx
-
-    models, _ = install(
-        monkeypatch,
-        {
-            PRIMARY: [httpx.ReadTimeout("lento"), httpx.ReadTimeout("lento")],
-            BACKUP: [text_response(ANSWER)],
-        },
-    )
-
-    result = await google_generate(FAKE_KEY, [PRIMARY, BACKUP])("prompt")
-
-    assert result == Generated(ANSWER, BACKUP)
-    assert models.calls == [PRIMARY, PRIMARY, BACKUP]
+        await google_generate(FAKE_KEY, [PRIMARY])("prompt")
+    assert not isinstance(caught.value, GeminiQuotaExhaustedError)
+    assert models.calls == [PRIMARY]

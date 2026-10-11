@@ -7,6 +7,7 @@ deixaria a sessão inutilizável para o refund/release logo depois).
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import date, datetime
@@ -46,17 +47,25 @@ from app.services.url_guard import (
 
 logger = logging.getLogger(__name__)
 
-# Tetos das etapas externas. O Gemini tem o próprio orçamento (GEMINI_BUDGET_SECONDS, 75 s:
-# tentativas de 25 s, backoff e troca de modelo lento). Pior caso: 20 + 12 + 75 = 107 s.
+# O Render responde atrás do Cloudflare, que corta a requisição em ~100 s (524): nenhuma
+# requisição de checagem passa disso, com folga.
+REQUEST_LIMIT_SECONDS = 90
+# Folga para as chamadas ao banco, que ficam fora dos tetos das etapas (begin_check, claim,
+# reserva da cota, gravação; Supabase Free pode demorar).
+DB_MARGIN_SECONDS = 8
+# Tetos das etapas externas. O Gemini tem o próprio orçamento (GEMINI_BUDGET_SECONDS, 48 s:
+# tentativa de 25 s no modelo lento e o resto no próximo). Pior caso: 20 + 12 + 48 = 80 s.
 READ_LINK_TIMEOUT_SECONDS = 20  # download (10 s) + extração (fila do semáforo)
 AGENCIES_TIMEOUT_SECONDS = 12  # até 2 buscas de 5 s
-WORST_CHECK_SECONDS = 107
-# Quem perdeu o claim espera a checagem de quem ganhou quase todo o pior caso dela...
+WORST_CHECK_SECONDS = 80
+# Quem perdeu o claim espera a checagem de quem ganhou (medido pelo relógio, desde o início
+# da requisição)...
 WAIT_POLL_SECONDS = 1.5
-WAIT_MAX_SECONDS = 105
-# ...mas só assume o claim (se o outro falhou) enquanto ainda couber a checagem inteira
-# no --timeout 180 do Cloud Run (plano B; o Render não corta antes): 70 + 107 = 177 s.
-TAKEOVER_LIMIT_SECONDS = 70
+WAIT_MAX_SECONDS = REQUEST_LIMIT_SECONDS - DB_MARGIN_SECONDS
+# ...mas só assume o claim (se o outro falhou) enquanto ainda couber a checagem inteira:
+# 2 + 80 + 8 = 90 s, ou seja, só em falha imediata do outro. Depois disso, 409 na hora: o
+# frontend repete a requisição sozinho (RETRY_BUSY_MS) e a nova pega o claim livre.
+TAKEOVER_LIMIT_SECONDS = REQUEST_LIMIT_SECONDS - DB_MARGIN_SECONDS - WORST_CHECK_SECONDS
 
 
 @dataclass(frozen=True)
@@ -72,6 +81,7 @@ class CheckTools:
     factcheck: FactCheckClient
     analyzer: VerdictAnalyzer
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+    clock: Callable[[], float] = time.monotonic
 
 
 @dataclass(frozen=True)
@@ -169,6 +179,7 @@ async def run_check(
     tools: CheckTools,
     settings: CheckSettings,
 ) -> CheckOutcome:
+    request_started = tools.clock()
     parsed, subject = parse_input(url, texto)
 
     try:
@@ -181,7 +192,7 @@ async def run_check(
 
     token = await repo.claim(started.subject)
     if token is None:
-        waited = await _wait_for_other(started, repo, tools, settings)
+        waited = await _wait_for_other(started, repo, tools, settings, request_started)
         if isinstance(waited, CheckOutcome):
             return waited
         token = waited
@@ -206,14 +217,18 @@ async def run_check(
 
 
 async def _wait_for_other(
-    started: Started, repo: CheckRepository, tools: CheckTools, settings: CheckSettings
+    started: Started,
+    repo: CheckRepository,
+    tools: CheckTools,
+    settings: CheckSettings,
+    request_started: float,
 ) -> CheckOutcome | datetime:
     """Espera quem está checando o mesmo conteúdo. Devolve o resultado dele, ou o token do
-    claim se ele ficou livre (o outro falhou) e passou para nós."""
-    waited = 0.0
-    while waited < WAIT_MAX_SECONDS:
+    claim se ele ficou livre (o outro falhou) e ainda cabe uma checagem inteira."""
+    polled = 0.0
+    while True:
         await tools.sleep(WAIT_POLL_SECONDS)
-        waited += WAIT_POLL_SECONDS
+        polled += WAIT_POLL_SECONDS
         fresh = await repo.find_fresh(
             started.subject, settings.limits.cache_hours, settings.limits.prompt_version
         )
@@ -221,10 +236,18 @@ async def _wait_for_other(
             # O resultado de outra pessoa: conta como consulta ao cache, não como checagem.
             await repo.mark_cache_hit(started.request_id)
             return CheckOutcome(check=fresh, cached=True)
-        if waited <= TAKEOVER_LIMIT_SECONDS:
-            token = await repo.claim(started.subject)
-            if token is not None:
+        token = await repo.claim(started.subject)
+        # Relógio real (as consultas ao banco também gastam tempo); as pausas contadas
+        # garantem o fim mesmo com o relógio parado.
+        elapsed = max(polled, tools.clock() - request_started)
+        if token is not None:
+            if elapsed <= TAKEOVER_LIMIT_SECONDS:
                 return token
+            # O outro falhou, mas não cabe mais uma checagem inteira: solta e para de esperar.
+            await _release_safely(repo, started.subject, token)
+            break
+        if elapsed >= WAIT_MAX_SECONDS:
+            break
     await repo.refund(started.request_id)
     raise AppError(
         409,

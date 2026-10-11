@@ -63,6 +63,7 @@ class Env:
         self.settings = settings()
         self.sleeps: list[float] = []
         self.on_sleep: list[Callable[[], None]] = []
+        self.now = 0.0  # relógio da requisição (time.monotonic simulado)
 
     async def sleep(self, seconds: float) -> None:
         self.sleeps.append(seconds)
@@ -71,7 +72,11 @@ class Env:
 
     def tools(self) -> CheckTools:
         return CheckTools(
-            fetcher=self.fetcher, factcheck=self.factcheck, analyzer=self.analyzer, sleep=self.sleep
+            fetcher=self.fetcher,
+            factcheck=self.factcheck,
+            analyzer=self.analyzer,
+            sleep=self.sleep,
+            clock=lambda: self.now,
         )
 
     def login(self, *, with_profile: bool = True) -> tuple[UUID, dict[str, str]]:
@@ -503,6 +508,46 @@ def test_waiter_takes_over_when_the_other_check_fails(api: TestClient, env: Env)
     assert response.json()["cache"] is False
     assert len(env.analyzer.inputs) == 1
     assert len(env.checks.requests) == 1  # agora a checagem é dele: conta no limite
+
+
+def test_waiter_does_not_take_over_without_time_for_a_whole_check(
+    api: TestClient, env: Env
+) -> None:
+    # A outra checagem falhou tarde: assumir agora passaria do corte do Cloudflare (~100 s).
+    # Responde "tente de novo" na hora (sem esperar o resto) e devolve o limite.
+    env.checks.busy = True
+
+    def other_gives_up_late() -> None:
+        if len(env.sleeps) == 3:  # 4,5 s de espera: fora da janela de assumir
+            env.checks.busy = False
+
+    env.on_sleep.append(other_gives_up_late)
+    _, headers = env.login()
+
+    response = api.post("/checks", json={"url": LINK}, headers=headers)
+
+    assert response.status_code == 409
+    assert error_code(response) == "checagem_em_andamento"
+    assert len(env.sleeps) == 3  # não ficou esperando até o fim
+    assert env.analyzer.inputs == []
+    assert env.checks.requests == {}  # limite devolvido
+    assert env.checks.claimed == {}  # o claim pego só para conferir foi solto
+
+
+def test_wait_is_measured_by_the_real_clock(api: TestClient, env: Env) -> None:
+    # As consultas ao banco também gastam tempo: a espera conta o relógio, não só as pausas.
+    env.checks.busy = True
+
+    def slow_database() -> None:
+        env.now += 30.0
+
+    env.on_sleep.append(slow_database)
+    _, headers = env.login()
+
+    response = api.post("/checks", json={"url": LINK}, headers=headers)
+
+    assert response.status_code == 409
+    assert len(env.sleeps) == 3  # 90 s de relógio, não 55 pausas de 1,5 s
 
 
 def test_redirect_to_another_site_is_not_listed(api: TestClient, env: Env) -> None:
