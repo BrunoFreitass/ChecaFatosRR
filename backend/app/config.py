@@ -1,7 +1,10 @@
 import re
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
+from string import Formatter
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -25,6 +28,15 @@ DEFAULT_OPEN_PLATFORMS: tuple[str, ...] = (
     "beehiiv.com",
     "linktr.ee",
 )
+
+# Arquivo de resultado do TSE em 2026 (conferido em 11/10/2026 com o 1º turno, eleição 6257).
+TSE_URL_TEMPLATE = (
+    "https://resultados.tse.jus.br/oficial/ele2026/{eleicao}/dados/{escopo}/"
+    "{escopo}-c{cargo:04d}-e{eleicao:06d}-u.json"
+)
+TSE_HOST = "resultados.tse.jus.br"
+TSE_ALLOWED_SCOPES = ("br", "rr")
+_BOA_VISTA = timezone(timedelta(hours=-4))
 
 # Pasta backend/: caminhos relativos (ex.: certs/supabase-ca.crt) valem a partir dela.
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -106,6 +118,16 @@ class Settings(BaseSettings):
     # Plataformas abertas, separadas por vírgula (ver DEFAULT_OPEN_PLATFORMS).
     open_platform_domains: str = ",".join(DEFAULT_OPEN_PLATFORMS)
 
+    # Apuração do TSE (etapa 5). 6258 = 2º turno federal de 2026 (6257 = 1º turno, ensaio).
+    tse_enabled: bool = True
+    tse_url_template: str = TSE_URL_TEMPLATE
+    tse_election_code: int = Field(default=6258, ge=1, le=999_999)
+    tse_scopes: str = "br,rr"
+    tse_refresh_seconds: int = Field(default=30, ge=10, le=600)
+    # Banner da home (horário de Boa Vista): 16h de 25/10 (17h de Brasília) até o fim de 26/10.
+    tse_banner_inicio: datetime = datetime(2026, 10, 25, 16, 0, tzinfo=_BOA_VISTA)
+    tse_banner_fim: datetime = datetime(2026, 10, 27, 0, 0, tzinfo=_BOA_VISTA)
+
     # Pool de conexões ao banco (processo persistente no Render). 0 = NullPool (o Supavisor
     # agrupa sozinho; testes e plano B Cloud Run). Compatível com transaction mode: sem
     # prepared statements em cache e sem estado de sessão.
@@ -150,6 +172,54 @@ class Settings(BaseSettings):
         if invalid:
             raise ValueError(f"nome de modelo inválido em GEMINI_MODEL_FALLBACKS: {invalid}")
         return ",".join(models)
+
+    @field_validator("tse_url_template")
+    @classmethod
+    def _tse_template_is_the_official_site(cls, value: str) -> str:
+        parts = urlsplit(value)
+        try:
+            fields = {name for _, name, _, _ in Formatter().parse(value) if name is not None}
+        except ValueError:
+            fields = set()
+        if (
+            parts.scheme != "https"
+            or parts.hostname != TSE_HOST
+            or parts.port is not None
+            or parts.username is not None
+            or chr(92) in value
+            or "escopo" not in fields
+            or not fields <= {"escopo", "eleicao", "cargo"}
+        ):
+            raise ValueError(
+                f"TSE_URL_TEMPLATE precisa ser https://{TSE_HOST}/... com {{escopo}} "
+                "(e só {eleicao} e {cargo} além dele)"
+            )
+        return value
+
+    @field_validator("tse_scopes")
+    @classmethod
+    def _tse_scopes_are_ufs(cls, value: str) -> str:
+        items = [item.strip().lower() for item in value.split(",")]
+        # A tabela tse_snapshots só aceita esses (check da migração inicial).
+        if not items or any(item not in TSE_ALLOWED_SCOPES for item in items):
+            raise ValueError("TSE_SCOPES: br e/ou rr, separados por vírgula")
+        return ",".join(dict.fromkeys(items))
+
+    @field_validator("tse_banner_inicio", "tse_banner_fim")
+    @classmethod
+    def _banner_has_timezone(cls, value: datetime) -> datetime:
+        # Sem fuso no painel: horário de Boa Vista (o público do site).
+        return value if value.tzinfo else value.replace(tzinfo=_BOA_VISTA)
+
+    @model_validator(mode="after")
+    def _banner_window_is_valid(self) -> "Settings":
+        if self.tse_banner_fim <= self.tse_banner_inicio:
+            raise ValueError("TSE_BANNER_FIM precisa ser depois de TSE_BANNER_INICIO")
+        return self
+
+    @property
+    def tse_scope_list(self) -> tuple[str, ...]:
+        return tuple(self.tse_scopes.split(","))
 
     @property
     def open_platforms(self) -> tuple[str, ...]:
