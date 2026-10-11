@@ -1,5 +1,5 @@
 {
-  "_leia": "Casos do eval de vereditos (evals/checagem.py). Os marcados 'sintético' foram escritos para o eval e só usam fatos estáveis ou boatos recorrentes; troque-os por notícias reais (cole o texto e a data) e por boatos já checados pela Lupa/Aos Fatos (com a URL REAL da checagem em 'checagens'). Nunca invente URL.",
+  "_leia": "Casos do eval de vereditos (evals/checagem.py). Os marcados 'sintético' foram escritos para o eval e só usam fatos estáveis ou boatos recorrentes; troque-os por notícias reais (cole o texto e a data) e por boatos já checados pela Lupa/Aos Fatos (com a URL REAL da checagem em 'checagens'). Nunca invente URL. Política de 10/10/2026: 'verdadeiro' exige checagem de agência que corrobore; caso sem 'checagens' só aceita 'nao_verificavel' (origem confirmada não é fato verificado).",
   "casos": [
     {
       "id": "g1-tre-rj-retotalizacao",
@@ -9,6 +9,20 @@
       "url": "https://g1.globo.com/rj/rio-de-janeiro/eleicoes/2026/noticia/2026/10/10/tre-rj-retotaliza-votos-neste-sabado-e-deve-confirmar-vitoria-de-ruas-no-1o-turno-entenda.ghtml",
       "titulo": "TRE-RJ retotaliza votos neste sábado e deve confirmar vitória de Ruas | G1",
       "conteudo": "O Tribunal Regional Eleitoral do Rio de Janeiro (TRE-RJ) realiza neste sábado (10), às 15h, a retotalização dos votos para governador do estado. O procedimento deve confirmar a eleição de Douglas Ruas (PL) no primeiro turno, depois que o Tribunal Superior Eleitoral (TSE) anulou os votos recebidos por Anthony Garotinho (Republicanos) e o ex-prefeito Eduardo Paes (PSD) desistiu de recorrer para tentar garantir a realização do segundo turno.\nA retotalização foi determinada após o TSE manter o indeferimento do registro de candidatura de Garotinho e decidir, por cinco votos a dois, pela anulação dos 274.411 votos recebidos por ele na eleição de domingo (4).\nSem esses votos no cálculo dos votos válidos, Ruas passa de 49,27% para cerca de 50,88% e supera a maioria absoluta exigida para vencer no primeiro turno.",
+      "publicado_em": "2026-10-10",
+      "checagens": [],
+      "aceitos": [
+        "nao_verificavel"
+      ]
+    },
+    {
+      "id": "g1-ruas-entrevista",
+      "categoria": "noticia_real",
+      "origem": "real — g1, 10/10/2026; trecho (título + 3 primeiros parágrafos) extraído pelo leitor do app; o texto completo não é guardado (direito autoral). Teste em produção: saiu 'Verdadeiro 95%' sem nenhuma checagem de agência",
+      "kind": "link",
+      "url": "https://g1.globo.com/rj/rio-de-janeiro/eleicoes/2026/noticia/2026/10/10/douglas-ruas-entrevista-ao-rj2.ghtml",
+      "titulo": "Ruas diz que segurança pública será prioridade de seu governo | G1",
+      "conteudo": "Em sua primeira entrevista após ser declarado eleito governador do Rio de Janeiro no primeiro turno, Douglas Ruas (PL) afirmou ao RJ2, neste sábado (10), que a segurança pública será a principal prioridade de seu governo. Ele prometeu convocar, logo no início do mandato, os aprovados em concursos das forças de segurança para reforçar o efetivo no estado.\n“Logo no início do nosso mandato, vou chamar todos os aprovados nos concursos da segurança pública, de todas as forças, para reforçar o efetivo. E vamos trabalhar com muito afinco para devolver as ruas do Rio para o nosso povo”, declarou.\nRuas disse ainda que pretende intensificar as ações de segurança para garantir a circulação da população pelas ruas do estado.",
       "publicado_em": "2026-10-10",
       "checagens": [],
       "aceitos": [
@@ -26,7 +40,7 @@
       "publicado_em": "2026-10-09",
       "checagens": [],
       "aceitos": [
-        "verdadeiro"
+        "nao_verificavel"
       ]
     },
     {
@@ -40,7 +54,7 @@
       "publicado_em": "2026-10-08",
       "checagens": [],
       "aceitos": [
-        "verdadeiro"
+        "nao_verificavel"
       ]
     },
     {
@@ -54,7 +68,7 @@
       "publicado_em": null,
       "checagens": [],
       "aceitos": [
-        "verdadeiro"
+        "nao_verificavel"
       ]
     },
     {
@@ -129,7 +143,7 @@
       "publicado_em": null,
       "checagens": [],
       "aceitos": [
-        "verdadeiro"
+        "nao_verificavel"
       ]
     },
     {
@@ -143,7 +157,6 @@
       "publicado_em": null,
       "checagens": [],
       "aceitos": [
-        "verdadeiro",
         "nao_verificavel"
       ]
     }

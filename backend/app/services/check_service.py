@@ -8,7 +8,8 @@ deixaria a sessão inutilizável para o refund/release logo depois).
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from uuid import UUID
@@ -66,6 +67,33 @@ WAIT_MAX_SECONDS = REQUEST_LIMIT_SECONDS - DB_MARGIN_SECONDS
 # 2 + 80 + 8 = 90 s, ou seja, só em falha imediata do outro. Depois disso, 409 na hora: o
 # frontend repete a requisição sozinho (RETRY_BUSY_MS) e a nova pega o claim livre.
 TAKEOVER_LIMIT_SECONDS = REQUEST_LIMIT_SECONDS - DB_MARGIN_SECONDS - WORST_CHECK_SECONDS
+
+
+# db = begin_check, claim, find_fresh, save_result (a reserva da cota fica em gemini).
+TIMED_STAGES = ("db", "wait", "fetch", "extract", "factcheck", "gemini")
+
+
+class StageTimer:
+    """Tempo de cada etapa da checagem, para o log check_timing (onde vão os segundos)."""
+
+    def __init__(self, clock: Callable[[], float]) -> None:
+        self._clock = clock
+        self.started = clock()  # início da requisição (a espera também mede a partir dele)
+        self.ms: dict[str, int] = {}
+
+    @contextmanager
+    def stage(self, name: str) -> Iterator[None]:
+        started = self._clock()
+        try:
+            yield
+        finally:
+            elapsed = int((self._clock() - started) * 1000)
+            self.ms[name] = self.ms.get(name, 0) + elapsed
+
+    def log(self, outcome: str) -> None:
+        stages = {f"{name}_ms": self.ms.get(name, 0) for name in TIMED_STAGES}
+        total = int((self._clock() - self.started) * 1000)
+        logger.info("check_timing", extra={**stages, "total_ms": total, "outcome": outcome})
 
 
 @dataclass(frozen=True)
@@ -179,20 +207,44 @@ async def run_check(
     tools: CheckTools,
     settings: CheckSettings,
 ) -> CheckOutcome:
-    request_started = tools.clock()
+    timer = StageTimer(tools.clock)
+    outcome = "erro"
+    try:
+        result = await _run_check(user_id, url, texto, repo, tools, settings, timer)
+        outcome = "cache" if result.cached else "nova"
+        return result
+    except AppError as exc:
+        outcome = f"erro:{exc.code}"
+        raise
+    finally:
+        timer.log(outcome)
+
+
+async def _run_check(
+    user_id: UUID,
+    url: str | None,
+    texto: str | None,
+    repo: CheckRepository,
+    tools: CheckTools,
+    settings: CheckSettings,
+    timer: StageTimer,
+) -> CheckOutcome:
     parsed, subject = parse_input(url, texto)
 
     try:
-        outcome = await repo.begin_check(user_id, subject, settings.limits)
+        with timer.stage("db"):
+            begun = await repo.begin_check(user_id, subject, settings.limits)
     except LimitExceededError as exc:
         raise _limit_error(exc) from exc
-    if isinstance(outcome, CacheHit):
-        return CheckOutcome(check=outcome.check, cached=True)
-    started = outcome
+    if isinstance(begun, CacheHit):
+        return CheckOutcome(check=begun.check, cached=True)
+    started = begun
 
-    token = await repo.claim(started.subject)
+    with timer.stage("db"):
+        token = await repo.claim(started.subject)
     if token is None:
-        waited = await _wait_for_other(started, repo, tools, settings, request_started)
+        with timer.stage("wait"):
+            waited = await _wait_for_other(started, repo, tools, settings, timer.started)
         if isinstance(waited, CheckOutcome):
             return waited
         token = waited
@@ -202,13 +254,14 @@ async def run_check(
     saved = False
     try:
         # Outra checagem do mesmo conteúdo pode ter terminado entre o begin_check e o claim.
-        fresh = await repo.find_fresh(
-            started.subject, settings.limits.cache_hours, settings.limits.prompt_version
-        )
+        with timer.stage("db"):
+            fresh = await repo.find_fresh(
+                started.subject, settings.limits.cache_hours, settings.limits.prompt_version
+            )
         if fresh is not None:
             await repo.mark_cache_hit(started.request_id)
             return CheckOutcome(check=fresh, cached=True)
-        result = await _analyze(parsed, started, user_id, repo, tools, settings, token)
+        result = await _analyze(parsed, started, user_id, repo, tools, settings, token, timer)
         saved = not result.cached  # análise anterior servida: nada salvo, solta o claim
         return result
     finally:
@@ -274,11 +327,12 @@ async def _analyze(
     tools: CheckTools,
     settings: CheckSettings,
     claim_token: datetime,
+    timer: StageTimer,
 ) -> CheckOutcome:
     published_at: date | None = None
     listed = False
     if isinstance(parsed, LinkInput):
-        read = await _read_link(parsed, tools)
+        read = await _read_link(parsed, tools, timer)
         data, published_at = read.data, read.data.published_at
         # Redirect para outro domínio (ex.: redirect aberto num site conhecido): o conteúdo
         # não é daquele domínio, então não vai para "Últimas" com o nome dele.
@@ -294,7 +348,8 @@ async def _analyze(
             content_urls=parsed.urls,
         )
 
-    data = replace(data, agency_checks=await _search_agencies(tools, data))
+    with timer.stage("factcheck"):
+        data = replace(data, agency_checks=await _search_agencies(tools, data))
 
     async def reserve() -> bool:
         # A cota só é gasta depois que o conteúdo foi lido (link ilegível não gasta), e a
@@ -302,7 +357,8 @@ async def _analyze(
         return await repo.reserve_gemini("checagem", settings.daily_gemini_checks)
 
     try:
-        result = await tools.analyzer.analyze(data, reserve)
+        with timer.stage("gemini"):
+            result = await tools.analyzer.analyze(data, reserve)
     except GeminiQuotaExhaustedError as exc:
         # Sem cota: a análise de uma versão anterior do prompt é melhor que nada (a tela
         # avisa "análise anterior"). Continua contando como checagem nova: virar consulta
@@ -321,30 +377,33 @@ async def _analyze(
         await repo.refund(started.request_id)
         raise _unavailable() from exc
 
-    saved = await repo.save_result(
-        NewCheck(
-            subject=started.subject,
-            user_id=user_id,
-            veredito=result.veredito,
-            confianca=result.confianca,
-            # O título vai junto no result: é o desta checagem, mesmo se ela não for listada.
-            result={**result.to_json(), "title": data.title},
-            model=result.model or settings.model,
-            listed=listed,
-            title=data.title,
-            published_at=published_at,
-            claim_token=claim_token,
-            prompt_version=settings.limits.prompt_version,
+    with timer.stage("db"):
+        saved = await repo.save_result(
+            NewCheck(
+                subject=started.subject,
+                user_id=user_id,
+                veredito=result.veredito,
+                confianca=result.confianca,
+                # O título vai junto no result: é o desta checagem, mesmo se ela não for listada.
+                result={**result.to_json(), "title": data.title},
+                model=result.model or settings.model,
+                listed=listed,
+                title=data.title,
+                published_at=published_at,
+                claim_token=claim_token,
+                prompt_version=settings.limits.prompt_version,
+            )
         )
-    )
     return CheckOutcome(check=saved, cached=False)
 
 
-async def _read_link(parsed: LinkInput, tools: CheckTools) -> _LinkRead:
+async def _read_link(parsed: LinkInput, tools: CheckTools, timer: StageTimer) -> _LinkRead:
     try:
         async with asyncio.timeout(READ_LINK_TIMEOUT_SECONDS):
-            page = await tools.fetcher.fetch(parsed.url)
-            extracted = await extract_page(page)
+            with timer.stage("fetch"):
+                page = await tools.fetcher.fetch(parsed.url)
+            with timer.stage("extract"):  # inclui a fila do semáforo (0,1 CPU no Render)
+                extracted = await extract_page(page)
         # Endereço final (depois de redirects) que o guard recusa: ilegível, nunca 500.
         final_domain = normalize_url(page.url).domain
     except PageUnreadableError as exc:

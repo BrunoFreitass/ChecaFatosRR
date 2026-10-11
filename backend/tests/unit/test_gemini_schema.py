@@ -312,7 +312,7 @@ async def test_no_quota_means_no_call() -> None:
         ("falso", 69, False, "nao_verificavel"),
         ("falso", 70, False, "falso"),
         ("verdadeiro", 55, False, "nao_verificavel"),
-        ("verdadeiro", 90, False, "verdadeiro"),
+        # "verdadeiro" confiante sem agência: test_gemini_true_needs_agency (política de 10/10).
         # Sem agência: os outros vereditos seguem o corte de 40.
         ("enganoso", 50, False, "enganoso"),
         ("fora_de_contexto", 39, False, "nao_verificavel"),

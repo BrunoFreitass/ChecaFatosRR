@@ -1,0 +1,7 @@
+{
+  "data": "2026-10-10",
+  "nota": "Teste em produção de 10/10/2026 (gemini-3.8-flash, PROMPT_REVISION 2): 'Verdadeiro 95%' sem checagem de agência. Reconstruída da checagem pública s29kr7s0bg2a (a resposta crua não é guardada; o pós-processamento da época não mudou nenhum campo).",
+  "respostas": {
+    "g1-ruas-entrevista": "{\"veredito\": \"verdadeiro\", \"resumo\": \"Reportagem legítima do portal G1 cobrindo a primeira entrevista de Douglas Ruas (PL) à TV Globo após ter a vitória confirmada no primeiro turno para o governo do Rio de Janeiro. O texto registra as declarações, promessas de campanha e o contexto da retotalização de votos pelo TSE.\", \"pontos_suspeitos\": [], \"contexto_faltante\": null, \"checagens_agencias\": [], \"fontes_sugeridas\": [\"Portal G1\", \"Tribunal Superior Eleitoral (TSE)\", \"Tribunal Regional Eleitoral do Rio de Janeiro (TRE-RJ)\"], \"confianca\": 95}"
+  }
+}

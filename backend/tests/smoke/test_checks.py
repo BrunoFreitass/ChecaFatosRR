@@ -1,9 +1,11 @@
 import base64
 import json
+import logging
 import re
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -699,3 +701,61 @@ def test_quota_fallback_with_pasted_text(api: TestClient, env: Env) -> None:
     env.checks.gemini_used = env.settings.daily_gemini_checks
     body = api.post("/checks", json={"texto": MSG}, headers=headers).json()
     assert body["id"] == old["id"] and body["analise_anterior"] is True
+
+
+# ---------- tempo de cada etapa no log (teste de produção: 21,8 s, só 3,3 s no Gemini) ----------
+
+
+def _timing(caplog: pytest.LogCaptureFixture) -> logging.LogRecord:
+    [record] = [r for r in caplog.records if r.getMessage() == "check_timing"]
+    return record
+
+
+def test_new_check_logs_the_time_of_each_stage(
+    api: TestClient, env: Env, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def advancing(seconds: float, call: Callable[..., Any]) -> Callable[..., Any]:
+        async def wrapped(*args: Any, **kwargs: Any) -> Any:
+            env.now += seconds
+            return await call(*args, **kwargs)
+
+        return wrapped
+
+    monkeypatch.setattr(env.fetcher, "fetch", advancing(2.0, env.fetcher.fetch))
+    monkeypatch.setattr(env.factcheck, "search", advancing(4.0, env.factcheck.search))
+    monkeypatch.setattr(env.analyzer, "analyze", advancing(3.0, env.analyzer.analyze))
+    monkeypatch.setattr(env.checks, "save_result", advancing(0.5, env.checks.save_result))
+    caplog.set_level(logging.INFO, logger="app.services.check_service")
+    _, headers = env.login()
+
+    assert api.post("/checks", json={"url": LINK}, headers=headers).status_code == 200
+
+    record = _timing(caplog)
+    assert record.outcome == "nova"
+    assert record.fetch_ms == 2000
+    assert record.factcheck_ms == 4000
+    assert record.gemini_ms == 3000
+    assert record.db_ms >= 500
+    assert record.extract_ms >= 0
+    assert record.total_ms >= 9500
+
+
+def test_cache_hit_and_errors_also_log_the_timing(
+    api: TestClient, env: Env, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="app.services.check_service")
+    _, headers = env.login()
+    api.post("/checks", json={"url": LINK}, headers=headers)
+    caplog.clear()
+
+    api.post("/checks", json={"url": LINK}, headers=headers)
+    assert _timing(caplog).outcome == "cache"
+
+    caplog.clear()
+    env.analyzer.error = GeminiUnavailableError("fora")
+    api.post(
+        "/checks",
+        json={"texto": "URGENTE: a votação foi adiada para novembro, repasse!"},
+        headers=headers,
+    )
+    assert _timing(caplog).outcome == "erro:checagem_indisponivel"
