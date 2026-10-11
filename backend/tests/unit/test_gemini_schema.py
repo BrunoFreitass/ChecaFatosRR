@@ -124,14 +124,17 @@ def test_agency_checks_come_from_the_api_not_from_the_model() -> None:
     )
     result = finalize(parse_verdict(raw), data())  # type: ignore[arg-type]
 
-    # Só checagens da API; a citada pela IA vem primeiro; o veredito é o da agência.
-    assert result.checagens_agencias == [LUPA, AOS_FATOS]
+    # Só checagens da API e o veredito é o da agência. Só a citada pela IA é evidência; a
+    # outra vai para "assuntos relacionados" (decisão de 11/10/2026).
+    assert result.checagens_agencias == [LUPA]
+    assert result.checagens_relacionadas == [AOS_FATOS]
     assert all(c.veredito == "Falso" for c in result.checagens_agencias)
 
 
-def test_api_checks_are_added_when_model_omits_them() -> None:
+def test_api_checks_the_model_omits_are_related() -> None:
     result = finalize(parse_verdict(answer(checagens_agencias=[])), data())  # type: ignore[arg-type]
-    assert result.checagens_agencias == [AOS_FATOS, LUPA]
+    assert result.checagens_agencias == []
+    assert result.checagens_relacionadas == [AOS_FATOS, LUPA]
 
 
 def test_invented_source_urls_are_removed() -> None:

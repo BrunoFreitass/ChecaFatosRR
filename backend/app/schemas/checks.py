@@ -47,6 +47,10 @@ class CheckOut(BaseModel):
     checagens_agencias: list[AgencyCheckOut]
     fontes_sugeridas: list[str]
     created_at: datetime
+    # "Verdadeiro" sem agência que confirme (mostrado como "Ainda sem checagem").
+    rebaixado_sem_agencia: bool = False
+    # Checagens da busca que a análise não usou: "Checagens sobre assuntos relacionados".
+    checagens_relacionadas: list[AgencyCheckOut] = Field(default_factory=list)
     cache: bool = False
     # Feita com uma versão anterior do prompt (a tela mostra um aviso discreto).
     analise_anterior: bool = False

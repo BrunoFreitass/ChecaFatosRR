@@ -6,6 +6,26 @@ from typing import Literal
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Domínios onde qualquer pessoa publica (blogs, newsletters, sites gratuitos): um link deles
+# não é "origem confirmada" (OPEN_PLATFORM_DOMAINS; redes sociais entram sempre).
+DEFAULT_OPEN_PLATFORMS: tuple[str, ...] = (
+    "blogspot.com",
+    "wordpress.com",
+    "medium.com",
+    "substack.com",
+    "sites.google.com",
+    "github.io",
+    "wixsite.com",
+    "tumblr.com",
+    "weebly.com",
+    "webnode.page",
+    "jimdosite.com",
+    "notion.site",
+    "telegra.ph",
+    "beehiiv.com",
+    "linktr.ee",
+)
+
 # Pasta backend/: caminhos relativos (ex.: certs/supabase-ca.crt) valem a partir dela.
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
@@ -83,6 +103,8 @@ class Settings(BaseSettings):
     fetch_max_bytes: int = Field(default=2_000_000, ge=100_000, le=10_000_000)
     # Parsers de HTML (lxml) ao mesmo tempo. No Render Free (0,1 CPU), 1.
     extract_concurrency: int = Field(default=2, ge=1, le=8)
+    # Plataformas abertas, separadas por vírgula (ver DEFAULT_OPEN_PLATFORMS).
+    open_platform_domains: str = ",".join(DEFAULT_OPEN_PLATFORMS)
 
     # Pool de conexões ao banco (processo persistente no Render). 0 = NullPool (o Supavisor
     # agrupa sozinho; testes e plano B Cloud Run). Compatível com transaction mode: sem
@@ -128,6 +150,12 @@ class Settings(BaseSettings):
         if invalid:
             raise ValueError(f"nome de modelo inválido em GEMINI_MODEL_FALLBACKS: {invalid}")
         return ",".join(models)
+
+    @property
+    def open_platforms(self) -> tuple[str, ...]:
+        """OPEN_PLATFORM_DOMAINS em minúsculas, sem espaços nem itens vazios."""
+        items = (d.strip().lower().strip(".") for d in self.open_platform_domains.split(","))
+        return tuple(dict.fromkeys(d for d in items if d))
 
     @property
     def gemini_models(self) -> tuple[str, ...]:

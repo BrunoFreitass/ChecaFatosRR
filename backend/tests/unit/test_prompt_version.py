@@ -41,8 +41,9 @@ def test_bumping_the_revision_changes_the_version() -> None:
 # Retrato do pedido montado (build_prompt com entrada fixa + configuração de geração). Se este
 # teste falhar, o código que monta o pedido mudou: SUBA gemini.PROMPT_REVISION (senão o cache
 # continua servindo respostas do comportamento antigo) e registre o novo retrato aqui.
-# Revisão 3 só mudou as instruções e o finalize: o pedido em si ficou igual.
-PROMPT_SNAPSHOTS = {2: "4ebb032599f7", 3: "4ebb032599f7"}  # pragma: allowlist secret
+# Revisões 3 e 4 só mudaram as instruções e o finalize: o pedido em si ficou igual.
+_REQUEST_V2 = "4ebb032599f7"  # pragma: allowlist secret (hash do pedido, não é segredo)
+PROMPT_SNAPSHOTS = {2: _REQUEST_V2, 3: _REQUEST_V2, 4: _REQUEST_V2}
 
 
 def request_fingerprint(monkeypatch: pytest.MonkeyPatch) -> str:
@@ -76,3 +77,8 @@ def test_request_changes_require_a_revision_bump(monkeypatch: pytest.MonkeyPatch
     assert request_fingerprint(monkeypatch) == PROMPT_SNAPSHOTS.get(gemini.PROMPT_REVISION), (
         "O pedido ao Gemini mudou: suba PROMPT_REVISION e registre o novo retrato."
     )
+
+
+def test_revision_4_neutral_text_and_related_checks() -> None:
+    # 11/10/2026: o finalize mudou as respostas (texto neutro, relacionadas): cache novo.
+    assert gemini.PROMPT_REVISION >= 4

@@ -144,6 +144,13 @@ class _FakeRow:
     prompt_version: str = ""
 
 
+def _agency_ratings(result: dict[str, object]) -> tuple[str, ...]:
+    agencies = result.get("checagens_agencias")
+    if not isinstance(agencies, list):
+        return ()
+    return tuple(a["veredito"] for a in agencies if isinstance(a, dict) and "veredito" in a)
+
+
 def _agency_count(result: dict[str, object]) -> int:
     # Igual ao SQL de latest(): só lista conta; null ou objeto viram 0.
     agencies = result.get("checagens_agencias")
@@ -291,6 +298,7 @@ class FakeCheckRepository:
                 veredito=r.check.veredito,
                 created_at=r.check.created_at,
                 agency_checks=_agency_count(r.check.result),
+                agency_ratings=_agency_ratings(r.check.result),
             )
             for r in rows[:limit]
         ]

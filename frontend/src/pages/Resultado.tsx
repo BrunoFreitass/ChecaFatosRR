@@ -17,7 +17,7 @@ import {
   verdictLabel,
   visibleSuspiciousPoints,
 } from "../lib/format.ts";
-import type { Check } from "../lib/types.ts";
+import type { AgencyCheck, Check } from "../lib/types.ts";
 
 const DISCLAIMER =
   "Análise automatizada. Confira também as agências de checagem e o site do TSE.";
@@ -50,6 +50,32 @@ function TextWithLinks({ text, hosts }: { text: string; hosts: Set<string> }) {
         );
       })}
     </>
+  );
+}
+
+function AgencyList({ items }: { items: AgencyCheck[] }) {
+  return (
+    <ul className="space-y-3">
+      {items.map((item, index) => {
+        const href = safeHref(item.url);
+        return (
+          <li key={`${item.url}-${index}`} className="rounded-lg border border-slate-200 bg-white p-3">
+            <p className="text-sm font-semibold text-slate-600">
+              {item.agencia}
+              {item.data && <> · {formatDate(item.data)}</>}
+            </p>
+            {href ? (
+              <a href={href} {...EXTERNAL} className={LINK_CLASS}>
+                {item.titulo}
+              </a>
+            ) : (
+              <p className="font-semibold">{item.titulo}</p>
+            )}
+            <p className="text-sm text-slate-800">Classificação da agência: {item.veredito}</p>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -125,7 +151,8 @@ function ResultadoDaChecagem({ slug }: { slug: string }) {
   }
 
   const { check } = state;
-  const hosts = trustedHosts(check.checagens_agencias.map((item) => item.url));
+  const related = check.checagens_relacionadas ?? [];
+  const hosts = trustedHosts([...check.checagens_agencias, ...related].map((item) => item.url));
   // Não verificável sem checagem de agência: neutro ("Ainda sem checagem"), nunca "parece falso".
   const awaiting = isAwaitingCheck(check.veredito, check.checagens_agencias.length);
   const label = awaiting ? AWAITING_CHECK_LABEL : verdictLabel(check.veredito);
@@ -187,7 +214,10 @@ function ResultadoDaChecagem({ slug }: { slug: string }) {
         <p className="text-lg text-slate-800">
           <TextWithLinks text={check.resumo} hosts={hosts} />
         </p>
-        <p className="text-sm text-slate-600">Confiança da análise: {check.confianca}%</p>
+        {/* A confiança é a do modelo no veredito dele: sem checagem, o número confunde. */}
+        {!awaiting && (
+          <p className="text-sm text-slate-600">Confiança da análise: {check.confianca}%</p>
+        )}
       </section>
 
       {suspicious.length > 0 && (
@@ -225,29 +255,21 @@ function ResultadoDaChecagem({ slug }: { slug: string }) {
             Não encontramos checagens de agências sobre este conteúdo.
           </p>
         ) : (
-          <ul className="space-y-3">
-            {check.checagens_agencias.map((item, index) => {
-              const href = safeHref(item.url);
-              return (
-                <li key={`${item.url}-${index}`} className="rounded-lg border border-slate-200 bg-white p-3">
-                  <p className="text-sm font-semibold text-slate-600">
-                    {item.agencia}
-                    {item.data && <> · {formatDate(item.data)}</>}
-                  </p>
-                  {href ? (
-                    <a href={href} {...EXTERNAL} className={LINK_CLASS}>
-                      {item.titulo}
-                    </a>
-                  ) : (
-                    <p className="font-semibold">{item.titulo}</p>
-                  )}
-                  <p className="text-sm text-slate-800">Classificação da agência: {item.veredito}</p>
-                </li>
-              );
-            })}
-          </ul>
+          <AgencyList items={check.checagens_agencias} />
         )}
       </section>
+
+      {related.length > 0 && (
+        <section aria-labelledby="relacionadas" className="space-y-2">
+          <h2 id="relacionadas" className="text-xl font-bold">
+            Checagens sobre assuntos relacionados
+          </h2>
+          <p className="text-slate-700">
+            Estas checagens tratam de assuntos parecidos, não deste conteúdo.
+          </p>
+          <AgencyList items={related} />
+        </section>
+      )}
 
       {check.fontes_sugeridas.length > 0 && (
         <section aria-labelledby="fontes" className="space-y-2">

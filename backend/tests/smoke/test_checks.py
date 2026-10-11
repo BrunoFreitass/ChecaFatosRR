@@ -759,3 +759,98 @@ def test_cache_hit_and_errors_also_log_the_timing(
         headers=headers,
     )
     assert _timing(caplog).outcome == "erro:checagem_indisponivel"
+
+
+# ---------- regras de veredito também na leitura (decisões de 11/10/2026) ----------
+
+
+def _stored_true_without_agency(api: TestClient, env: Env) -> str:
+    # Simula uma checagem salva antes da política: "verdadeiro" sem nenhuma agência.
+    env.analyzer.veredito = "verdadeiro"
+    env.analyzer.confianca = 95
+    _, headers = env.login()
+    created = api.post("/checks", json={"url": LINK}, headers=headers).json()
+    row = env.checks.rows[0]
+    row.check = replace(
+        row.check,
+        veredito="verdadeiro",
+        result={**row.check.result, "resumo": "Reportagem legítima.", "checagens_agencias": []},
+    )
+    return str(created["id"])
+
+
+def test_public_page_reads_an_old_true_without_agency_as_awaiting_check(
+    api: TestClient, env: Env
+) -> None:
+    check_id = _stored_true_without_agency(api, env)
+
+    body = api.get(f"/checks/{check_id}").json()
+
+    assert body["veredito"] == "nao_verificavel"
+    assert body["rebaixado_sem_agencia"] is True
+    # Checagem antiga não guardou o domínio final (redirect): sem "origem confirmada".
+    assert body["resumo"].startswith("Conteúdo publicado em folhabv.com.br sobre: ")
+    assert "origem confirmada" not in body["resumo"]
+    assert "legítima" not in body["resumo"]
+
+
+def test_latest_reads_an_old_true_without_agency_as_awaiting_check(
+    api: TestClient, env: Env
+) -> None:
+    check_id = _stored_true_without_agency(api, env)
+
+    [item] = api.get("/checks/latest").json()["items"]
+
+    assert item["id"] == check_id
+    assert item["veredito"] == "nao_verificavel"
+    assert item["total_agencias"] == 0
+
+
+def test_old_true_with_a_corroborating_agency_is_kept(api: TestClient, env: Env) -> None:
+    env.analyzer.veredito = "verdadeiro"
+    env.factcheck.results = [
+        AgencyCheck("Aos Fatos", "Confirmado", "Verdadeiro", "https://aosfatos.org/v")
+    ]
+    _, headers = env.login()
+    created = api.post("/checks", json={"url": LINK}, headers=headers).json()
+
+    assert api.get(f"/checks/{created['id']}").json()["veredito"] == "verdadeiro"
+    assert api.get("/checks/latest").json()["items"][0]["veredito"] == "verdadeiro"
+
+
+def test_related_agency_checks_are_returned_separately(api: TestClient, env: Env) -> None:
+    _, headers = env.login()
+    created = api.post("/checks", json={"url": LINK}, headers=headers).json()
+    related = {
+        "agencia": "Lupa",
+        "titulo": "Outro",
+        "veredito": "Falso",
+        "url": "https://lupa.uol.com.br/x",
+    }
+    row = env.checks.rows[0]
+    row.check = replace(row.check, result={**row.check.result, "checagens_relacionadas": [related]})
+
+    body = api.get(f"/checks/{created['id']}").json()
+
+    assert body["checagens_relacionadas"] == [{**related, "data": None}]
+
+
+def test_old_checks_without_related_field_read_as_empty(api: TestClient, env: Env) -> None:
+    _, headers = env.login()
+    created = api.post("/checks", json={"url": LINK}, headers=headers).json()
+    assert api.get(f"/checks/{created['id']}").json()["checagens_relacionadas"] == []
+
+
+def test_open_platform_link_reaches_the_analyzer_flagged(api: TestClient, env: Env) -> None:
+    _, headers = env.login()
+    response = api.post(
+        "/checks", json={"url": "https://fulano.blogspot.com/2026/10/post.html"}, headers=headers
+    )
+    assert response.status_code == 200
+    assert env.analyzer.inputs[0].open_platform is True
+
+
+def test_news_site_link_is_not_an_open_platform(api: TestClient, env: Env) -> None:
+    _, headers = env.login()
+    api.post("/checks", json={"url": LINK}, headers=headers)
+    assert env.analyzer.inputs[0].open_platform is False
