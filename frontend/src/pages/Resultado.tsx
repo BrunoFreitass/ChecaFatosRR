@@ -6,6 +6,7 @@ import { ShareButtons } from "../components/ShareButtons.tsx";
 import { VerdictBadge } from "../components/VerdictBadge.tsx";
 import { ApiError, apiFetch } from "../lib/api.ts";
 import {
+  AGENCIES_ONLY_LABEL,
   AWAITING_CHECK_LABEL,
   formatDate,
   formatDateTime,
@@ -153,10 +154,20 @@ function ResultadoDaChecagem({ slug }: { slug: string }) {
   const { check } = state;
   const related = check.checagens_relacionadas ?? [];
   const hosts = trustedHosts([...check.checagens_agencias, ...related].map((item) => item.url));
+  // Gemini indisponível (sem cota ou no limite): só o que as agências publicaram, sem veredito.
+  const agenciesOnly = check.modo === "agencias";
   // Não verificável sem checagem de agência: neutro ("Ainda sem checagem"), nunca "parece falso".
-  const awaiting = isAwaitingCheck(check.veredito, check.checagens_agencias.length);
-  const label = awaiting ? AWAITING_CHECK_LABEL : verdictLabel(check.veredito);
-  const suspicious = visibleSuspiciousPoints(check.pontos_suspeitos, awaiting);
+  const awaiting =
+    !agenciesOnly && isAwaitingCheck(check.veredito, check.checagens_agencias.length);
+  const label = agenciesOnly
+    ? AGENCIES_ONLY_LABEL
+    : awaiting
+      ? AWAITING_CHECK_LABEL
+      : verdictLabel(check.veredito);
+  // Sem IA, não há pontos suspeitos nem contexto (e nada de texto de IA sob o selo neutro).
+  const suspicious = agenciesOnly
+    ? []
+    : visibleSuspiciousPoints(check.pontos_suspeitos, awaiting);
   const subject =
     check.tipo === "link" ? check.title || check.domain || "Notícia" : "Mensagem encaminhada";
   const shareText = `ChecaFatosRR: "${subject}" — ${label}`;
@@ -169,13 +180,19 @@ function ResultadoDaChecagem({ slug }: { slug: string }) {
       {check.tipo === "texto" && <meta name="robots" content="noindex" />}
 
       <header className="space-y-3">
-        <VerdictBadge verdict={check.veredito} size="lg" awaitingCheck={awaiting} />
+        {agenciesOnly ? (
+          <p className="inline-flex rounded-full bg-slate-200 px-4 py-2 text-lg font-semibold text-slate-900">
+            {AGENCIES_ONLY_LABEL}
+          </p>
+        ) : (
+          <VerdictBadge verdict={check.veredito} size="lg" awaitingCheck={awaiting} />
+        )}
         {awaiting && (
           <p className="rounded-lg bg-slate-100 p-3 text-slate-800">
             Não encontramos checagens sobre este conteúdo. Isso não significa que seja falso.
           </p>
         )}
-        {check.rebaixado_por_confianca && (
+        {!agenciesOnly && check.rebaixado_por_confianca && (
           <p className="rounded-lg bg-slate-100 p-3 text-sm text-slate-800">
             {awaiting
               ? "A análise automática também teve pouca confiança neste conteúdo."
@@ -215,7 +232,7 @@ function ResultadoDaChecagem({ slug }: { slug: string }) {
           <TextWithLinks text={check.resumo} hosts={hosts} />
         </p>
         {/* A confiança é a do modelo no veredito dele: sem checagem, o número confunde. */}
-        {!awaiting && (
+        {!awaiting && !agenciesOnly && (
           <p className="text-sm text-slate-600">Confiança da análise: {check.confianca}%</p>
         )}
       </section>
@@ -235,7 +252,7 @@ function ResultadoDaChecagem({ slug }: { slug: string }) {
         </section>
       )}
 
-      {check.contexto_faltante && (
+      {!agenciesOnly && check.contexto_faltante && (
         <section aria-labelledby="contexto" className="space-y-2">
           <h2 id="contexto" className="text-xl font-bold">
             Contexto que falta
@@ -248,7 +265,7 @@ function ResultadoDaChecagem({ slug }: { slug: string }) {
 
       <section aria-labelledby="agencias" className="space-y-2">
         <h2 id="agencias" className="text-xl font-bold">
-          O que dizem as agências de checagem
+          {agenciesOnly ? "Checagens de agências encontradas" : "O que dizem as agências de checagem"}
         </h2>
         {check.checagens_agencias.length === 0 ? (
           <p className="text-slate-700">

@@ -308,6 +308,33 @@ test("análise atual não mostra o aviso de análise anterior", async ({ page })
   await expect(page.getByText("Análise anterior", { exact: false })).toHaveCount(0);
 });
 
+test("Gemini indisponível: modo só agências com selo neutro", async ({ page }) => {
+  await signIn(page);
+  await mockApi(page, {
+    [`GET /checks/${LINK_CHECK.id}`]: (route) =>
+      json(route, 200, {
+        ...LINK_CHECK,
+        modo: "agencias",
+        veredito: "nao_verificavel",
+        confianca: 0,
+        pontos_suspeitos: [],
+        fontes_sugeridas: [],
+        resumo:
+          "A análise automática está indisponível agora. Abaixo estão as checagens de agências " +
+          "encontradas sobre o assunto: confira se tratam do mesmo conteúdo.",
+      }),
+  });
+
+  await page.goto(`/checagem/${LINK_CHECK.id}`);
+
+  await expect(page.getByText("Análise automática indisponível agora").first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Checagens de agências encontradas" })).toBeVisible();
+  await expect(page.getByRole("link", { name: /É falso que a votação em RR foi adiada/ })).toBeVisible();
+  await expect(page.getByText(/Confiança da análise/)).toHaveCount(0);
+  // Sem veredito próprio: nem o selo neutro de "sem checagem".
+  await expect(page.getByText("Ainda sem checagem")).toHaveCount(0);
+});
+
 test("o site é servido com a CSP de produção", async ({ page }) => {
   await mockApi(page, {});
   const response = await page.goto("/");

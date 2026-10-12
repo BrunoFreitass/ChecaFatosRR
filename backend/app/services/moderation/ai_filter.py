@@ -115,6 +115,9 @@ class AiModerator:
         all_exhausted = getattr(self._generate, "all_exhausted", None)
         if all_exhausted is not None and all_exhausted():
             return self._unavailable("sem_cota")
+        rate_limited_now = getattr(self._generate, "rate_limited_now", None)
+        if rate_limited_now is not None and rate_limited_now():
+            return self._unavailable("indisponivel")  # sem gastar a cota do dia
         try:
             if not await reserve():
                 return self._unavailable("sem_cota")

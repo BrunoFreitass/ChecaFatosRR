@@ -11,6 +11,7 @@ import jwt
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from app.repositories.checks import (
+    AGENCIES_ONLY_VERSION,
     CacheHit,
     CheckSummary,
     LimitExceededError,
@@ -243,7 +244,11 @@ class FakeCheckRepository:
         return self._fresh(subject, prompt_version)
 
     async def find_previous(self, subject: SubjectRef, cache_hours: int) -> StoredCheck | None:
-        matches = [row.check for row in self.rows if row.ref == subject]
+        matches = [
+            row.check
+            for row in self.rows
+            if row.ref == subject and row.prompt_version != AGENCIES_ONLY_VERSION
+        ]
         return matches[-1] if matches else None
 
     async def reserve_gemini(self, purpose: str, daily_limit: int) -> bool:
@@ -281,6 +286,17 @@ class FakeCheckRepository:
     async def mark_cache_hit(self, request_id: int) -> None:
         if request_id in self.requests:
             self.requests[request_id] = (self.requests[request_id][0], True)
+
+    async def convert_to_lookup(
+        self, request_id: int, user_id: UUID, lookups_per_hour: int
+    ) -> int | None:
+        if self._used(user_id, True) >= lookups_per_hour:
+            return 1800
+        self.requests[request_id] = (user_id, True)
+        return None
+
+    async def release_gemini(self, purpose: str) -> None:
+        self.gemini_used = max(0, self.gemini_used - 1)
 
     async def refund(self, request_id: int) -> None:
         self.requests.pop(request_id, None)
@@ -346,9 +362,12 @@ class FakeFactCheck:
     def __init__(self) -> None:
         self.queries: list[list[str]] = []
         self.results: list[AgencyCheck] = []
+        self.error: Exception | None = None
 
     async def search(self, queries: list[str]) -> list[AgencyCheck]:
         self.queries.append(queries)
+        if self.error is not None:
+            raise self.error
         return self.results
 
 
@@ -361,7 +380,10 @@ class FakeAnalyzer:
         self.model: str | None = None  # modelo que "respondeu" (None = não informado)
 
     async def analyze(
-        self, data: AnalysisInput, reserve: Callable[[], Awaitable[bool]] | None = None
+        self,
+        data: AnalysisInput,
+        reserve: Callable[[], Awaitable[bool]] | None = None,
+        release: Callable[[], Awaitable[None]] | None = None,
     ) -> CheckResult:
         if reserve is not None and not await reserve():
             raise GeminiQuotaExhaustedError

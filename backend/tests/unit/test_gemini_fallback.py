@@ -188,16 +188,17 @@ async def test_other_errors_do_not_fall_back(
     assert models.calls == [PRIMARY]
 
 
-async def test_per_minute_429_retries_the_same_model(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_per_minute_429_moves_to_the_next_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Cada modelo tem o seu RPM: o próximo responde na hora (detalhes em test_gemini_rpm).
     models, _ = install(
         monkeypatch,
-        {PRIMARY: [api_error(429, "rate", PER_MINUTE), text_response(ANSWER)], BACKUP: []},
+        {PRIMARY: [api_error(429, "rate", PER_MINUTE)], BACKUP: [text_response(ANSWER)]},
     )
 
     result = await google_generate(FAKE_KEY, [PRIMARY, BACKUP])("prompt")
 
-    assert result == Generated(ANSWER, PRIMARY)
-    assert models.calls == [PRIMARY, PRIMARY]
+    assert result == Generated(ANSWER, BACKUP)
+    assert models.calls == [PRIMARY, BACKUP]
 
 
 # ---------- memória do modelo esgotado ----------

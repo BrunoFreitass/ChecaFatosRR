@@ -17,6 +17,7 @@ from uuid import UUID
 from app.config import DEFAULT_OPEN_PLATFORMS
 from app.errors import AppError
 from app.repositories.checks import (
+    AGENCIES_ONLY_VERSION,
     CacheHit,
     CheckRepository,
     LimitExceededError,
@@ -33,6 +34,7 @@ from app.services.factcheck import AgencyCheck, FactCheckClient, build_queries
 from app.services.fetcher import PageFetcher, PageUnreadableError
 from app.services.gemini import (
     AnalysisInput,
+    GeminiContentBlockedError,
     GeminiQuotaExhaustedError,
     GeminiUnavailableError,
     VerdictAnalyzer,
@@ -46,7 +48,7 @@ from app.services.url_guard import (
     is_social_media,
     normalize_url,
 )
-from app.services.verdict_policy import is_open_platform
+from app.services.verdict_policy import agencies_only_result, is_open_platform
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +121,7 @@ class CheckTools:
 class CheckOutcome:
     check: StoredCheck
     cached: bool
+    agencies_only: bool = False  # Gemini indisponível: só o que as agências publicaram
 
 
 @dataclass(frozen=True)
@@ -153,15 +156,6 @@ def _unavailable() -> AppError:
         503,
         "checagem_indisponivel",
         "A checagem automática está indisponível agora. Tente de novo em alguns minutos.",
-    )
-
-
-def _quota_exhausted() -> AppError:
-    return AppError(
-        503,
-        "checagem_esgotada_hoje",
-        "O limite diário de checagens automáticas acabou. Volte amanhã — "
-        "enquanto isso, consulte as agências de checagem e o site do TSE.",
     )
 
 
@@ -214,7 +208,7 @@ async def run_check(
     outcome = "erro"
     try:
         result = await _run_check(user_id, url, texto, repo, tools, settings, timer)
-        outcome = "cache" if result.cached else "nova"
+        outcome = "agencias" if result.agencies_only else "cache" if result.cached else "nova"
         return result
     except AppError as exc:
         outcome = f"erro:{exc.code}"
@@ -354,7 +348,12 @@ async def _analyze(
         )
 
     with timer.stage("factcheck"):
-        data = replace(data, agency_checks=await _search_agencies(tools, data))
+        agency_checks, agencies_failed = await _search_agencies(tools, data)
+        data = replace(data, agency_checks=agency_checks)
+
+    async def release() -> None:
+        # Nenhuma requisição chegou ao Google (todos no limite por minuto): a unidade volta.
+        await repo.release_gemini("checagem")
 
     async def reserve() -> bool:
         # A cota só é gasta depois que o conteúdo foi lido (link ilegível não gasta), e a
@@ -363,24 +362,32 @@ async def _analyze(
 
     try:
         with timer.stage("gemini"):
-            result = await tools.analyzer.analyze(data, reserve)
-    except GeminiQuotaExhaustedError as exc:
-        # Sem cota: a análise de uma versão anterior do prompt é melhor que nada (a tela
-        # avisa "análise anterior"). Continua contando como checagem nova: virar consulta
-        # escaparia do limite de consultas (que só o begin_check verifica).
+            result = await tools.analyzer.analyze(data, reserve, release)
+    except GeminiContentBlockedError as exc:
+        # Recusa de segurança do modelo: tentar de novo dá no mesmo, e uma página pública
+        # "tente mais tarde" seria enganosa. Devolve o limite do usuário (como antes).
+        await repo.refund(started.request_id)
+        raise _unavailable() from exc
+    except (GeminiQuotaExhaustedError, GeminiUnavailableError) as exc:
+        # Sem cota (nossa ou do Google), no limite por minuto ou com todos os modelos fora:
+        # 1º a análise de IA de uma versão anterior do prompt (a tela avisa "análise
+        # anterior"; continua contando como checagem nova, senão escaparia do limite de
+        # consultas); 2º o modo "só agências", na hora, sem esperar.
+        reason = type(exc).__name__
         try:
             previous = await repo.find_previous(started.subject, settings.limits.cache_hours)
             if previous is not None:
-                logger.info("quota_exhausted_served_previous_analysis")
+                logger.info("gemini_unavailable_served_previous_analysis", extra={"reason": reason})
                 return CheckOutcome(check=previous, cached=True)
-        except Exception:  # o fallback é um extra: se falhar, segue o caminho "sem cota"
+        except Exception:  # o fallback é um extra: se falhar, segue para o modo agências
             logger.exception("previous_analysis_lookup_failed")
-        await repo.refund(started.request_id)
-        raise _quota_exhausted() from exc
-    except GeminiUnavailableError as exc:
-        # Falha nossa: devolve o limite do usuário (a cota diária gasta não volta).
-        await repo.refund(started.request_id)
-        raise _unavailable() from exc
+        return await _agencies_only(
+            _AgenciesOnly(data, started, user_id, claim_token, published_at, agencies_failed),
+            repo,
+            settings,
+            timer,
+            reason,
+        )
 
     with timer.stage("db"):
         saved = await repo.save_result(
@@ -400,6 +407,67 @@ async def _analyze(
             )
         )
     return CheckOutcome(check=saved, cached=False)
+
+
+@dataclass(frozen=True)
+class _AgenciesOnly:
+    data: AnalysisInput
+    started: Started
+    user_id: UUID
+    claim_token: datetime
+    published_at: date | None
+    search_failed: bool
+
+
+async def _agencies_only(
+    job: _AgenciesOnly,
+    repo: CheckRepository,
+    settings: CheckSettings,
+    timer: StageTimer,
+    reason: str,
+) -> CheckOutcome:
+    """Resultado sem IA (só o que a Fact Check API trouxe), salvo com a versão reservada:
+    tem link público, nunca vira cache e não é "Últimas". O pedido vira consulta: não conta
+    no limite de checagens com IA, mas conta no de consultas (Gemini fora não libera geral)."""
+    data, started = job.data, job.started
+    try:
+        with timer.stage("db"):
+            retry = await repo.convert_to_lookup(
+                started.request_id, job.user_id, settings.limits.lookups_per_hour
+            )
+            if retry is not None:
+                raise _limit_error(LimitExceededError("consultas", retry))
+            saved = await repo.save_result(
+                NewCheck(
+                    subject=started.subject,
+                    user_id=job.user_id,
+                    veredito="nao_verificavel",
+                    confianca=0,
+                    result=agencies_only_result(
+                        data.agency_checks, data.title, search_failed=job.search_failed
+                    ),
+                    model=AGENCIES_ONLY_VERSION,
+                    listed=False,
+                    title=data.title,
+                    published_at=job.published_at,
+                    claim_token=job.claim_token,
+                    prompt_version=AGENCIES_ONLY_VERSION,
+                )
+            )
+    except BaseException:
+        # Nada salvo: o pedido não conta em limite nenhum (o finally de _run_check solta o
+        # claim). shield: termina mesmo se a requisição foi cancelada.
+        await asyncio.shield(repo.refund(started.request_id))
+        raise
+    logger.info(
+        "agencies_only_mode",
+        extra={
+            "reason": reason,
+            "agency_checks": len(data.agency_checks),
+            "search_failed": job.search_failed,
+        },
+    )
+    return CheckOutcome(check=saved, cached=False, agencies_only=True)
 
 
 async def _read_link(
@@ -442,13 +510,17 @@ async def _read_link(
     return _LinkRead(data=data, final_domain=final_domain)
 
 
-async def _search_agencies(tools: CheckTools, data: AnalysisInput) -> list[AgencyCheck]:
+async def _search_agencies(
+    tools: CheckTools, data: AnalysisInput
+) -> tuple[list[AgencyCheck], bool]:
+    """As checagens encontradas e se a busca falhou (no modo "só agências", "não
+    encontramos" e "não conseguimos consultar" são mensagens diferentes)."""
     try:
         async with asyncio.timeout(AGENCIES_TIMEOUT_SECONDS):
-            return await tools.factcheck.search(build_queries(data.title, data.content))
+            return await tools.factcheck.search(build_queries(data.title, data.content)), False
     except Exception as exc:  # a Fact Check API nunca derruba a checagem
         logger.warning("factcheck_failed", extra={"error": type(exc).__name__})
-        return []
+        return [], True
 
 
 def _listable(title: str | None, domain: str) -> bool:

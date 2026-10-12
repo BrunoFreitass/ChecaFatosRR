@@ -54,6 +54,9 @@ class CheckOut(BaseModel):
     cache: bool = False
     # Feita com uma versão anterior do prompt (a tela mostra um aviso discreto).
     analise_anterior: bool = False
+    # "agencias": Gemini sem cota ou no limite; só o que as agências publicaram, sem IA
+    # (selo neutro "Análise automática indisponível agora").
+    modo: Literal["ia", "agencias"] = "ia"
 
 
 class CheckSummaryOut(BaseModel):

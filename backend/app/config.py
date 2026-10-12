@@ -104,7 +104,12 @@ class Settings(BaseSettings):
     # Cotas diárias (dia do Pacífico, quando a cota gratuita zera). A de moderação (etapa 4)
     # é provisória (decisão de 12/10/2026) até o RPD real do Flash-Lite; esgotada, o
     # comentário é publicado e vai para a fila do admin (fail-open).
-    gemini_daily_checks: int = Field(default=200, ge=0)
+    # Nível gratuito (AI Studio, 12/10/2026): RPD 20 por modelo, 2 modelos = 40; 36 deixa
+    # margem. Esgotada, a checagem responde no modo "só agências".
+    gemini_daily_checks: int = Field(default=36, ge=0)
+    # RPM 5 por modelo no nível gratuito: modelo cheio é pulado sem chamar o Google, e com
+    # todos cheios a checagem responde na hora no modo "só agências". 0 = sem limite local.
+    gemini_rpm_per_model: int = Field(default=5, ge=0)
     gemini_daily_moderation: int = Field(default=100, ge=0)
     # Moderação de comentários (etapa 4): Flash-Lite estáveis de nome fixo, pela models.list
     # de 12/10/2026. Uma tentativa por modelo, dentro do teto curto da moderação.

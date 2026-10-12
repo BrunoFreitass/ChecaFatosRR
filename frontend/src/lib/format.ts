@@ -9,6 +9,8 @@ export const VERDICT_LABEL: Record<Verdict, string> = {
 };
 
 export const AWAITING_CHECK_LABEL = "Ainda sem checagem";
+/** Modo "só agências" (Gemini sem cota ou no limite por minuto): no lugar do veredito. */
+export const AGENCIES_ONLY_LABEL = "Análise automática indisponível agora";
 
 /**
  * "Não verificável" sem checagem de agência é NEUTRO: ninguém checou ainda, o que não quer

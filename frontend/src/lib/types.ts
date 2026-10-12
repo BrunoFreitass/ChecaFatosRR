@@ -51,6 +51,8 @@ export interface Check {
   rebaixado_sem_agencia?: boolean;
   /** Checagens da busca que a análise não usou (outro assunto). API antiga: ausente. */
   checagens_relacionadas?: AgencyCheck[];
+  /** "agencias": Gemini indisponível, só o que as agências publicaram (sem IA). API antiga: ausente. */
+  modo?: "ia" | "agencias";
 }
 
 export interface CheckSummary {
