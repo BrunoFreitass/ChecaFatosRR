@@ -7,10 +7,13 @@ respondeu 504 (~33 s) e 503 (~22 s) e a checagem falhou sem nenhuma nova tentati
 import asyncio
 import json
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import pytest
 
 from app.config import Settings
+from app.services import gemini
 from app.services.gemini import (
     MAX_PROMPT_CONTENT_CHARS,
     AnalysisInput,
@@ -123,6 +126,46 @@ async def test_deadline_504_is_handed_to_the_next_model_not_retried() -> None:
     assert call.calls == 1
 
 
+@contextmanager
+def has_next_model() -> Iterator[None]:
+    """Como dentro de uma ModelChain com outro modelo depois deste. Dentro do teste (e não
+    numa fixture): o runner async reaproveitado não veria o ContextVar da fixture."""
+    token = gemini._HAS_NEXT_MODEL.set(True)
+    try:
+        yield
+    finally:
+        gemini._HAS_NEXT_MODEL.reset(token)
+
+
+async def test_two_503_in_a_row_hand_the_model_over() -> None:
+    # 503 persistente ("high demand"): a cadeia tenta o próximo modelo (test_gemini_fallback).
+    call = ScriptedCall(GeminiCallError(503, "a"), GeminiCallError(503, "b"), answer())
+    with has_next_model(), pytest.raises(GeminiModelSlowError):
+        await retrying(call, Recorder())("prompt")  # type: ignore[operator]
+    assert call.calls == 2
+
+
+async def test_without_a_next_model_503s_keep_retrying() -> None:
+    call = ScriptedCall(GeminiCallError(503, "a"), GeminiCallError(503, "b"), answer())
+    assert await retrying(call, Recorder())("prompt") == answer()  # type: ignore[operator]
+    assert call.calls == 3
+
+
+async def test_503_count_restarts_after_another_error() -> None:
+    call = ScriptedCall(GeminiCallError(503, "a"), GeminiCallError(500, "b"), answer())
+    assert await retrying(call, Recorder())("prompt") == answer()  # type: ignore[operator]
+    assert call.calls == 3
+
+
+async def test_503_on_the_last_attempt_also_hands_the_model_over() -> None:
+    call = ScriptedCall(
+        GeminiCallError(500, "a"), GeminiCallError(500, "b"), GeminiCallError(503, "c")
+    )
+    with has_next_model(), pytest.raises(GeminiModelSlowError):
+        await retrying(call, Recorder())("prompt")  # type: ignore[operator]
+    assert call.calls == 3
+
+
 async def test_connection_failure_without_http_status_is_retried() -> None:
     call = ScriptedCall(GeminiCallError(None, "ConnectError"), answer())
     await GeminiAnalyzer(retrying(call, Recorder())).analyze(data())  # type: ignore[arg-type]
@@ -145,7 +188,7 @@ async def test_client_errors_are_not_retried(status: int) -> None:
 
 
 async def test_gives_up_after_two_new_attempts() -> None:
-    call = ScriptedCall(*[GeminiCallError(503, "high demand")] * 3, answer())
+    call = ScriptedCall(*[GeminiCallError(500, "internal")] * 3, answer())
 
     with pytest.raises(GeminiUnavailableError):
         await GeminiAnalyzer(retrying(call, Recorder())).analyze(data())  # type: ignore[arg-type]
@@ -157,7 +200,7 @@ async def test_gives_up_after_two_new_attempts() -> None:
 
 
 async def test_exponential_backoff_with_jitter() -> None:
-    call = ScriptedCall(GeminiCallError(503, "a"), GeminiCallError(503, "b"), answer())
+    call = ScriptedCall(GeminiCallError(503, "a"), GeminiCallError(500, "b"), answer())
     recorder = Recorder()
 
     await retrying(call, recorder, base_delay=1.0)("prompt")  # type: ignore[operator]

@@ -461,10 +461,12 @@ def test_naive_cursor_is_rejected(api: TestClient) -> None:
 
 
 def test_result_finished_between_cache_miss_and_claim_is_reused(api: TestClient, env: Env) -> None:
+    # Outra requisição checava (claim ativo) e salvou logo antes do nosso claim.
+    env.checks.busy = True
     original_claim = env.checks.claim
 
     async def claim_after_other_finished(subject: SubjectRef) -> datetime | None:
-        claimed = await original_claim(subject)
+        env.checks.busy = False
         stored = StoredCheck(
             public_id=new_public_id(),
             kind="link",
@@ -481,7 +483,7 @@ def test_result_finished_between_cache_miss_and_claim_is_reused(api: TestClient,
         env.checks.rows.append(
             _FakeRow(subject, stored, True, uuid4(), env.settings.limits.prompt_version)
         )
-        return claimed
+        return await original_claim(subject)
 
     env.checks.claim = claim_after_other_finished  # type: ignore[method-assign]
     _, headers = env.login()

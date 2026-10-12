@@ -212,9 +212,19 @@ class FakeCheckRepository:
             raise LimitExceededError("diario", 43200)
         if self._used(user_id, False) >= limits.checks_per_hour:
             raise LimitExceededError("checagens", 1800)
+        # Como no SQL: o claim vem junto, e o cache só é conferido de novo se havia outro
+        # claim ativo antes (ele pode ter acabado e salvo no meio).
+        busy = self.busy or ref in self.claimed
         request_id = self._id()
         self.requests[request_id] = (user_id, False)
-        return Started(ref, request_id)
+        token = await self.claim(ref)
+        if token is not None and busy:
+            fresh = self._fresh(ref, limits.prompt_version)
+            if fresh is not None:
+                self.requests[request_id] = (user_id, True)
+                await self.release(ref, token)
+                return CacheHit(fresh)
+        return Started(ref, request_id, token)
 
     async def claim(self, subject: SubjectRef) -> datetime | None:
         if self.busy or subject in self.claimed:

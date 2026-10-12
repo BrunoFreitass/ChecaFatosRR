@@ -109,12 +109,16 @@ def _candidates(cargo: dict[str, Any]) -> Iterator[tuple[dict[str, Any], str | N
 
 
 def _ordered(found: list[tuple[dict[str, Any], str | None]]) -> list[Candidate]:
-    """Ordem do TSE (seq); sem ela, por votos."""
+    """Mais votado primeiro, pelos votos DESTE arquivo; empate: menor número.
 
-    def key(item: tuple[dict[str, Any], str | None]) -> tuple[int, int]:
+    Não usa o "seq" do TSE: no arquivo de uma UF ele segue a ordem nacional.
+    """
+
+    def key(item: tuple[dict[str, Any], str | None]) -> tuple[int, int, str]:
         cand = item[0]
-        seq = _int(cand.get("seq"))
-        return (seq if seq is not None else 10_000, -(_int(cand.get("vap")) or 0))
+        numero = _text(cand.get("n")) or ""
+        as_int = int(numero) if _DIGITS.fullmatch(numero) else 1_000_000
+        return (-(_int(cand.get("vap")) or 0), as_int, numero)
 
     out = []
     for cand, party in sorted(found, key=key):

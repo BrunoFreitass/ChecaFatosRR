@@ -23,6 +23,7 @@ from app.repositories.checks import (
     Started,
     StoredCheck,
     TextSubject,
+    new_public_id,
 )
 from tests.integration.conftest import create_auth_user
 
@@ -95,7 +96,7 @@ async def test_link_check_cache_and_public_id(session: AsyncSession) -> None:
 
     started = await repo.begin_check(user_id, subject, LIMITS)
     assert isinstance(started, Started)
-    token = await repo.claim(started.subject)
+    token = started.claim_token  # o begin_check já toma o claim
     assert token is not None
     assert await repo.claim(started.subject) is None  # single-flight: o segundo perde
 
@@ -118,7 +119,8 @@ async def test_expired_claim_can_be_taken_again(session: AsyncSession) -> None:
     user_id = await new_user(session)
     started = await repo.begin_check(user_id, link(), LIMITS)
     assert isinstance(started, Started)
-    assert await repo.claim(started.subject)
+    assert started.claim_token is not None
+    assert await repo.claim(started.subject) is None
     async with session.begin():
         await session.execute(
             text(
@@ -347,7 +349,7 @@ async def test_only_the_claim_owner_releases_it(session: AsyncSession) -> None:
     started = await repo.begin_check(user_id, link(), LIMITS)
     assert isinstance(started, Started)
 
-    old_token = await repo.claim(started.subject)
+    old_token = started.claim_token
     assert old_token is not None
     async with session.begin():  # o claim de A expira
         await session.execute(
@@ -552,3 +554,56 @@ async def test_pool_reuses_the_connection_and_recovers_from_a_dropped_one(
         await task
     assert await backend_pid() > 0
     await dispose_engine()
+
+
+# ---------- begin_check com o claim (ensaio de 12/10/2026) ----------
+
+
+async def test_two_users_same_new_link_only_one_takes_the_claim(session: AsyncSession) -> None:
+    subject = link()
+    users = [await new_user(session), await new_user(session)]
+
+    async def begin(user_id: UUID) -> Started | CacheHit:
+        async with other_session() as own:
+            return await SqlCheckRepository(own).begin_check(user_id, subject, LIMITS)
+
+    results = await asyncio.gather(*(begin(u) for u in users))
+
+    assert all(isinstance(r, Started) for r in results)
+    tokens = [r.claim_token for r in results if isinstance(r, Started)]
+    assert sum(t is not None for t in tokens) == 1  # single-flight
+    assert len({r.subject for r in results if isinstance(r, Started)}) == 1  # mesmo link
+
+
+async def test_save_in_progress_sends_the_other_request_to_wait(session: AsyncSession) -> None:
+    # A está gravando (sem commit). B não espera o lock: vê o claim de A ativo, recebe
+    # Started sem claim e vai para a espera, que acha o resultado depois do commit de A.
+    # (O caso de A commitar exatamente entre o 2º e o 3º comando de B, em que B reconfere o
+    # cache, está em test_sql_repositories e no smoke.)
+    repo = SqlCheckRepository(session)
+    public_id = new_public_id()
+    first, second = await new_user(session), await new_user(session)
+    subject = link()
+    started = await repo.begin_check(first, subject, LIMITS)
+    assert isinstance(started, Started) and started.claim_token is not None
+
+    async with other_session() as saver:
+        async with saver.begin():
+            await saver.execute(
+                text("update public.links set checking_until = null where id = :id"),
+                {"id": started.subject.id},
+            )
+            await saver.execute(
+                text(
+                    "insert into public.checks (link_id, veredito, confianca, result, model, "
+                    "created_by, public_id, listed, prompt_version) values (:id, 'falso', 80, "
+                    "'{}'::jsonb, 'm', :uid, :pid, true, :v)"
+                ),
+                {"id": started.subject.id, "uid": first, "pid": public_id, "v": VERSION},
+            )
+            async with other_session() as own:
+                waiting = await SqlCheckRepository(own).begin_check(second, subject, LIMITS)
+            assert isinstance(waiting, Started) and waiting.claim_token is None
+
+    fresh = await repo.find_fresh(started.subject, 24, VERSION)  # 1ª consulta da espera
+    assert fresh is not None and fresh.public_id == public_id

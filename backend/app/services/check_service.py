@@ -71,7 +71,7 @@ WAIT_MAX_SECONDS = REQUEST_LIMIT_SECONDS - DB_MARGIN_SECONDS
 TAKEOVER_LIMIT_SECONDS = REQUEST_LIMIT_SECONDS - DB_MARGIN_SECONDS - WORST_CHECK_SECONDS
 
 
-# db = begin_check, claim, find_fresh, save_result (a reserva da cota fica em gemini).
+# db = begin_check (com o claim), save_result (a reserva da cota fica em gemini).
 TIMED_STAGES = ("db", "wait", "fetch", "extract", "factcheck", "gemini")
 
 
@@ -243,8 +243,9 @@ async def _run_check(
         return CheckOutcome(check=begun.check, cached=True)
     started = begun
 
-    with timer.stage("db"):
-        token = await repo.claim(started.subject)
+    # O begin_check já tomou o claim (e conferiu o cache depois dele, se preciso).
+    token = started.claim_token
+    took_over = token is None
     if token is None:
         with timer.stage("wait"):
             waited = await _wait_for_other(started, repo, tools, settings, timer.started)
@@ -256,14 +257,15 @@ async def _run_check(
     # Daqui em diante o claim é nosso: o finally sempre o solta se não houver resultado salvo.
     saved = False
     try:
-        # Outra checagem do mesmo conteúdo pode ter terminado entre o begin_check e o claim.
-        with timer.stage("db"):
-            fresh = await repo.find_fresh(
-                started.subject, settings.limits.cache_hours, settings.limits.prompt_version
-            )
-        if fresh is not None:
-            await repo.mark_cache_hit(started.request_id)
-            return CheckOutcome(check=fresh, cached=True)
+        if took_over:
+            # A outra checagem pode ter terminado entre a última consulta da espera e o claim.
+            with timer.stage("db"):
+                fresh = await repo.find_fresh(
+                    started.subject, settings.limits.cache_hours, settings.limits.prompt_version
+                )
+            if fresh is not None:
+                await repo.mark_cache_hit(started.request_id)
+                return CheckOutcome(check=fresh, cached=True)
         result = await _analyze(parsed, started, user_id, repo, tools, settings, token, timer)
         saved = not result.cached  # análise anterior servida: nada salvo, solta o claim
         return result

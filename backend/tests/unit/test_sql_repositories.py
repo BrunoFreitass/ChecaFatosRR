@@ -50,108 +50,130 @@ CHECK_ROW = {
 }
 
 
-def usage(used: int, retry: int | None = None) -> list[dict[str, object]]:
-    return [{"used": used, "retry": retry}]
+NO_CHECK = dict.fromkeys(CHECK_ROW)
 
 
-def daily(params: dict[str, object]) -> bool:
-    return params.get("hours") == 24
+def state(
+    *,
+    lookups: int = 0,
+    daily: int = 0,
+    hourly: int = 0,
+    busy: bool = False,
+    fresh: bool = False,
+) -> list[dict[str, object]]:
+    """Linha do 2º comando do begin_check: uso nas janelas, claim ativo e cache."""
+    return [
+        {
+            "lookups_used": lookups,
+            "lookups_retry": 120,
+            "daily_used": daily,
+            "daily_retry": 3600,
+            "hourly_used": hourly,
+            "hourly_retry": 600,
+            "busy": busy,
+            **(CHECK_ROW if fresh else NO_CHECK),
+        }
+    ]
 
 
-def hourly(params: dict[str, object]) -> bool:
-    return params.get("hours") == 1
-
-
-def session_for_new_link(*, daily_used: int = 0, hourly_used: int = 0) -> FakeAsyncSession:
+def session_for(
+    *, subject_id: int | None = 7, token: datetime | None = NOW, **usage: object
+) -> FakeAsyncSession:
     session = FakeAsyncSession()
-    session.on("select id from public.links", scalar=None)
-    session.on("insert into public.links", scalar=7)
-    session.on("from public.check_requests", rows=usage(daily_used, 3600), when=daily)
-    session.on("from public.check_requests", rows=usage(hourly_used, 600), when=hourly)
-    session.on("insert into public.check_requests", scalar=99)
+    session.on("with lock as", rows=[{"locked": 1, "id": subject_id}])
+    session.on("from public.check_requests where user_id", rows=state(**usage))  # type: ignore[arg-type]
+    session.on("with r as", rows=[{"request_id": 99, "token": token}])
+    session.on("insert into public.check_requests", scalar=98)  # consulta ao cache
     return session
 
 
 # ---------- begin_check ----------
 
 
-async def test_begin_check_new_link() -> None:
-    session = session_for_new_link()
+async def test_begin_check_new_link_takes_the_claim_in_three_statements() -> None:
+    session = session_for()
 
     outcome = await SqlCheckRepository(session).begin_check(USER, LINK, LIMITS)
 
-    assert outcome == Started(SubjectRef("link", 7), 99)
-    assert "for no key update" in session.sql_log()[0]  # o lock por usuário vem antes de tudo
+    assert outcome == Started(SubjectRef("link", 7), 99, NOW)
+    log = session.sql_log()
+    assert "for no key update" in log[0]  # o lock por usuário vem antes de tudo
+    assert "insert into public.links" in log[0]  # e o assunto, no mesmo comando
+    assert "count(*) filter" in log[1] and "left join lateral" in log[1]
+    assert "set checking_until = clock_timestamp()" in log[2]  # pedido + claim juntos
+    assert len(log) == 3
     assert session.transactions == 1  # uma transação só
-    windows = [s.params["hours"] for s in session.statements if "count(*)" in s.sql]
-    assert windows == [24, 1]  # diário antes do horário
 
 
-async def test_begin_check_reuses_existing_link_without_insert() -> None:
-    session = FakeAsyncSession()
-    session.on("select id from public.links", scalar=7)
-    session.on("from public.check_requests", rows=usage(0))
-    session.on("insert into public.check_requests", scalar=99)
+async def test_begin_check_when_someone_else_is_checking() -> None:
+    session = session_for(token=None, busy=True)
 
     outcome = await SqlCheckRepository(session).begin_check(USER, LINK, LIMITS)
 
-    assert outcome == Started(SubjectRef("link", 7), 99)
-    assert not any("insert into public.links" in sql for sql in session.sql_log())
+    assert outcome == Started(SubjectRef("link", 7), 99, None)  # vai esperar o outro
+    assert len(session.sql_log()) == 3
+
+
+async def test_claim_freed_meanwhile_rechecks_the_cache() -> None:
+    # Havia claim ativo no 2º comando e ele acabou antes do nosso: o outro pode ter salvo.
+    session = session_for(busy=True)
+    session.on("order by c.created_at desc limit 1", rows=[CHECK_ROW])
+
+    outcome = await SqlCheckRepository(session).begin_check(USER, LINK, LIMITS)
+
+    assert isinstance(outcome, CacheHit)
+    reuse = session.statements[-1]
+    assert "set cache_hit = true" in reuse.sql and "checking_until = null" in reuse.sql
+    assert reuse.params == {"rid": 99, "sid": 7, "token": NOW}
+    assert session.transactions == 1
 
 
 async def test_begin_check_text_inserted_concurrently() -> None:
-    session = FakeAsyncSession()
-    session.on("select id from public.texts", scalar=None, once=True)  # 1ª busca: não existe
-    session.on("insert into public.texts", scalar=None)  # outra transação inseriu antes
-    session.on("select id from public.texts", scalar=12)  # 2ª busca: acha
-    session.on("from public.check_requests", rows=usage(0))
-    session.on("insert into public.check_requests", scalar=5)
+    session = session_for(subject_id=None)
+    session.on("select id from public.texts where text_hash", scalar=12)  # 2ª busca: acha
     subject = TextSubject(body="Mensagem encaminhada", text_hash=b"t" * 32)
 
     outcome = await SqlCheckRepository(session).begin_check(USER, subject, LIMITS)
 
-    assert outcome == Started(SubjectRef("texto", 12), 5)
+    assert outcome == Started(SubjectRef("texto", 12), 99, NOW)
+    assert "insert into public.texts" in session.sql_log()[0]
 
 
 @pytest.mark.parametrize(
-    ("daily_used", "hourly_used", "kind", "retry"),
-    [(20, 0, "diario", 3600), (5, 10, "checagens", 600)],
+    ("daily", "hourly", "kind", "retry"),
+    [(20, 0, "diario", 3600), (20, 10, "diario", 3600), (5, 10, "checagens", 600)],
 )
-async def test_begin_check_limits(daily_used: int, hourly_used: int, kind: str, retry: int) -> None:
-    session = session_for_new_link(daily_used=daily_used, hourly_used=hourly_used)
+async def test_begin_check_limits(daily: int, hourly: int, kind: str, retry: int) -> None:
+    session = session_for(daily=daily, hourly=hourly)
 
     with pytest.raises(LimitExceededError) as exc:
         await SqlCheckRepository(session).begin_check(USER, LINK, LIMITS)
 
-    assert exc.value.kind == kind
+    assert exc.value.kind == kind  # os dois estouraram: o diário (Retry-After maior)
     assert exc.value.retry_after_seconds == retry
     assert not any("insert into public.check_requests" in sql for sql in session.sql_log())
 
 
 async def test_begin_check_cache_hit_counts_only_lookups() -> None:
-    session = FakeAsyncSession()
-    session.on("select id from public.links", scalar=7)
-    session.on("from public.checks c", rows=[CHECK_ROW])
-    session.on("from public.check_requests", rows=usage(0))
-    session.on("insert into public.check_requests", scalar=99)
+    session = session_for(fresh=True, daily=20, hourly=10)  # tetos de checagem não contam
 
     outcome = await SqlCheckRepository(session).begin_check(USER, LINK, LIMITS)
 
     assert isinstance(outcome, CacheHit)
     assert outcome.check.result == {"resumo": "r"}
-    usage_queries = [s for s in session.statements if "count(*)" in s.sql]
-    assert [q.params["cache_hit"] for q in usage_queries] == [True]  # sem teto diário/horário
+    insert = session.statements[-1]
+    assert insert.params["cache_hit"] is True
+    assert not any("checking_until" in sql for sql in session.sql_log()[2:])  # sem claim
+    assert len(session.sql_log()) == 3
 
 
 async def test_cache_lookup_limit() -> None:
-    session = FakeAsyncSession()
-    session.on("select id from public.links", scalar=7)
-    session.on("from public.checks c", rows=[CHECK_ROW])
-    session.on("from public.check_requests", rows=usage(60, 120))
+    session = session_for(fresh=True, lookups=60)
 
     with pytest.raises(LimitExceededError) as exc:
         await SqlCheckRepository(session).begin_check(USER, LINK, LIMITS)
     assert exc.value.kind == "consultas"
+    assert exc.value.retry_after_seconds == 120
 
 
 # ---------- demais métodos ----------
@@ -159,7 +181,7 @@ async def test_cache_lookup_limit() -> None:
 
 async def test_claim_release_quota_refund() -> None:
     session = FakeAsyncSession()
-    session.on("set checking_until = now() + make_interval", scalar=NOW, once=True)
+    session.on("set checking_until = clock_timestamp() + make_interval", scalar=NOW, once=True)
     session.on("insert into public.gemini_usage", scalar=3, once=True)
     repo = SqlCheckRepository(session)
     ref = SubjectRef("link", 7)
@@ -210,7 +232,7 @@ async def test_find_fresh_get_and_latest() -> None:
 
 async def test_save_result() -> None:
     session = FakeAsyncSession()
-    session.on("from public.checks c", rows=[CHECK_ROW])
+    session.on("insert into public.checks", rows=[CHECK_ROW])
 
     stored = await SqlCheckRepository(session).save_result(
         NewCheck(
@@ -224,13 +246,39 @@ async def test_save_result() -> None:
             listed=True,
             title="Título",
             published_at=date(2026, 9, 28),
+            claim_token=NOW,
         )
     )
 
     assert stored.public_id == "0123456789ab"
-    insert = next(s for s in session.statements if "insert into public.checks" in s.sql)
-    assert insert.params["result"] == '{"resumo": "r"}'
+    assert stored.published_at == date(2026, 9, 28)
+    [save] = session.statements  # um comando só: solta o claim, título e insert
+    assert "update public.links" in save.sql and "insert into public.checks" in save.sql
+    assert save.params["result"] == '{"resumo": "r"}'
+    assert save.params["token"] == NOW and save.params["listed"] is True
     assert session.transactions == 1
+
+
+async def test_save_text_result_has_no_link_fields() -> None:
+    session = FakeAsyncSession()
+    session.on("insert into public.checks", rows=[{**CHECK_ROW, "kind": "texto"}])
+
+    await SqlCheckRepository(session).save_result(
+        NewCheck(
+            prompt_version="v1",
+            subject=SubjectRef("texto", 3),
+            user_id=USER,
+            veredito="falso",
+            confianca=80,
+            result={"resumo": "r"},
+            model="gemini-teste",
+            listed=False,
+        )
+    )
+
+    [save] = session.statements
+    assert "update public.texts" in save.sql and "text_id" in save.sql
+    assert "title" not in save.params
 
 
 # ---------- perfis ----------
