@@ -159,7 +159,7 @@ async def test_503_count_restarts_after_another_error() -> None:
 
 async def test_503_on_the_last_attempt_also_hands_the_model_over() -> None:
     call = ScriptedCall(
-        GeminiCallError(500, "a"), GeminiCallError(500, "b"), GeminiCallError(503, "c")
+        GeminiCallError(None, "rede"), GeminiCallError(None, "rede"), GeminiCallError(503, "c")
     )
     with has_next_model(), pytest.raises(GeminiModelSlowError):
         await retrying(call, Recorder())("prompt")  # type: ignore[operator]
@@ -347,3 +347,10 @@ def test_google_message_never_carries_the_key() -> None:
     assert FAKE_KEY not in message
     assert "AIza" not in message  # qualquer chave do Google, mesmo que não seja a nossa
     assert len(message) <= 300
+
+
+async def test_two_500_in_a_row_also_hand_the_model_over() -> None:
+    call = ScriptedCall(GeminiCallError(500, "a"), GeminiCallError(500, "b"), answer())
+    with has_next_model(), pytest.raises(GeminiModelSlowError):
+        await retrying(call, Recorder())("prompt")  # type: ignore[operator]
+    assert call.calls == 2

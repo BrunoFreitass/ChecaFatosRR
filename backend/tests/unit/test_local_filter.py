@@ -90,3 +90,15 @@ def test_clean_result_has_no_category() -> None:
 )
 def test_normalize(raw: str, expected: str) -> None:
     assert normalize(raw) == expected
+
+
+def test_zero_width_characters_do_not_hide_a_word() -> None:
+    # Revisão de segurança (12/10/2026): "po<ZWSP>rra" escapava do filtro local.
+    hidden = "po" + chr(0x200B) + "rra e ca" + chr(0x2060) + "ralho"
+    assert check_text(hidden).blocked
+
+
+@pytest.mark.parametrize("hidden", [0x034F, 0xFE0F, 0x3164, 0x115F, 0x2800, 0x200D])
+def test_other_invisible_characters_do_not_hide_a_word(hidden: int) -> None:
+    # /code-review (12/10/2026): seletor de variação, CGJ e caracteres de preenchimento.
+    assert check_text("po" + chr(hidden) + "rra").blocked

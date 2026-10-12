@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import CurrentUser
 from app.errors import AppError
 from app.legal import CURRENT_TERMS_VERSION
+from app.repositories.checks import new_public_id
 from app.repositories.profiles import SqlProfileRepository
 from app.services.bans import ban_hash
 from app.services.profiles import create_profile
@@ -126,10 +127,10 @@ async def insert_comment(
     async with session.begin():
         result = await session.execute(
             text(
-                "insert into public.comments (user_id, link_id, parent_id, body) "
-                "values (:u, :l, :p, 'texto') returning id"
+                "insert into public.comments (user_id, link_id, parent_id, body, public_id) "
+                "values (:u, :l, :p, 'texto', :pid) returning id"
             ),
-            {"u": user_id, "l": link_id, "p": parent_id},
+            {"u": user_id, "l": link_id, "p": parent_id, "pid": new_public_id()},
         )
         return int(result.scalar_one())
 

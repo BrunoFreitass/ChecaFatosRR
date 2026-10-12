@@ -86,9 +86,20 @@ def normalize(text: str) -> str:
     return _strip_accents(text).translate(_LEET)
 
 
+# Marcas e formatação invisíveis (acentos soltos, seletores de variação, ZWSP, CGJ).
+_INVISIBLE_CATEGORIES = frozenset({"Mn", "Me", "Cf"})
+# Letras "vazias" que aparecem como espaço em branco (preenchimento hangul, braille vazio).
+_FILLERS = frozenset({0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800})
+
+
 def _strip_accents(text: str) -> str:
+    # Sem acentos e sem caracteres invisíveis: "po<ZWSP>rra" não escapa do filtro.
     decomposed = unicodedata.normalize("NFKD", text.lower())
-    return "".join(char for char in decomposed if not unicodedata.combining(char))
+    return "".join(
+        char
+        for char in decomposed
+        if unicodedata.category(char) not in _INVISIBLE_CATEGORIES and ord(char) not in _FILLERS
+    )
 
 
 def _split(text: str, separators: re.Pattern[str]) -> list[str]:
