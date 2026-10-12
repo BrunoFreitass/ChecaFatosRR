@@ -14,7 +14,8 @@ import re
 import secrets
 import time
 import unicodedata
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Sequence
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
@@ -605,6 +606,9 @@ DEADLINE_FAILURES_TO_SWITCH = 1
 # passa ao próximo (ensaio de 12/10/2026). Um 503 isolado ainda ganha uma nova tentativa,
 # salvo se ela comer o tempo que o próximo modelo precisaria (503 lento, ~22 s em 09/10).
 UNAVAILABLE_FAILURES_TO_SWITCH = 2
+# Erros do lado do Google tratados como "modelo sobrecarregado" (o 500 entrou com a moderação,
+# que roda sem novas tentativas: um 500 no 1º Flash-Lite não pode desligar a cadeia inteira).
+OVERLOADED_STATUS = frozenset({500, 503})
 # Modelo lento ou sobrecarregado fica no fim da fila por esse tempo: as checagens seguintes
 # não pagam ~50 s nele.
 SLOW_MODEL_COOLDOWN_SECONDS = 300.0
@@ -629,6 +633,21 @@ class GeminiModelSlowError(GeminiUnavailableError):
         self.reason = reason
 
 
+class GeminiContentBlockedError(GeminiUnavailableError):
+    """O próprio Gemini recusou o conteúdo (resposta vazia por SAFETY e afins). Na checagem é
+    só "indisponível"; na moderação de comentários é bloqueio (nunca fail-open)."""
+
+
+@contextmanager
+def deadline_scope(seconds: float) -> Iterator[None]:
+    """Prazo total compartilhado pelas tentativas e pela cadeia de modelos (with_retries)."""
+    token = _DEADLINE.set(time.monotonic() + seconds)
+    try:
+        yield
+    finally:
+        _DEADLINE.reset(token)
+
+
 class GeminiCallError(Exception):
     """Falha de UMA chamada ao modelo. status None = sem resposta HTTP (rede/timeout)."""
 
@@ -640,10 +659,15 @@ class GeminiCallError(Exception):
         retryable: bool | None = None,
         quota_exhausted: bool = False,
         deadline: bool = False,
+        blocked: bool = False,
     ) -> None:
         super().__init__(f"{status}: {message}")
         self.status = status
         self.message = message
+        # Recusa de segurança do modelo: o mesmo prompt teria o mesmo fim.
+        self.blocked = blocked
+        if blocked:
+            retryable = False
         # Prazo estourado (504 do Google ou timeout de leitura do SDK): conta para "modelo lento".
         self.deadline = deadline or status == 504
         # Cota diária do Google acabou: não adianta repetir, e o usuário deve ver "volte amanhã".
@@ -699,9 +723,11 @@ def with_retries(
             except GeminiCallError as exc:
                 status, message, retryable = exc.status, exc.message, exc.retryable
                 quota_exhausted, deadline_hit = exc.quota_exhausted, exc.deadline
+                exc_info: GeminiCallError | None = exc
             except TimeoutError:
                 status, message, retryable = None, "sem resposta dentro do teto da tentativa", True
                 quota_exhausted, deadline_hit = False, True
+                exc_info = None
             logger.warning(
                 "gemini_api_error",
                 extra={
@@ -716,24 +742,30 @@ def with_retries(
             )
             if quota_exhausted:
                 raise GeminiQuotaExhaustedError
+            if isinstance(exc_info, GeminiCallError) and exc_info.blocked:
+                raise GeminiContentBlockedError(message)
             # Só prazos SEGUIDOS contam (outro erro no meio zera); sem novas tentativas
             # (max_retries=0), o primeiro já basta para tentar o próximo modelo.
             deadline_failures = deadline_failures + 1 if deadline_hit else 0
             if deadline_failures >= min(DEADLINE_FAILURES_TO_SWITCH, max_retries + 1):
                 raise GeminiModelSlowError(model)
-            overloaded = status == 503 and _HAS_NEXT_MODEL.get()
+            has_next = _HAS_NEXT_MODEL.get()
+            # Modelo renomeado ou removido (404): o próximo da cadeia, na hora (12/10/2026).
+            if status == 404 and has_next:
+                raise GeminiModelSlowError(model, "404")
+            overloaded = status in OVERLOADED_STATUS and has_next
             unavailable_failures = unavailable_failures + 1 if overloaded else 0
             if unavailable_failures >= UNAVAILABLE_FAILURES_TO_SWITCH or (
                 overloaded and attempt > max_retries
             ):
-                raise GeminiModelSlowError(model, "503")
+                raise GeminiModelSlowError(model, str(status))
             if not retryable or attempt > max_retries:
                 raise GeminiUnavailableError(f"api {status}")
             delay = base_delay * 2 ** (attempt - 1) + jitter() * base_delay
             # Nova tentativa no sobrecarregado só se, depois dela inteira, ainda sobrar uma
             # tentativa útil para o próximo modelo da cadeia (o teto de 90 s vale para todos).
             if overloaded and deadline - clock() < delay + attempt_timeout + MIN_ATTEMPT_SECONDS:
-                raise GeminiModelSlowError(model, "503")
+                raise GeminiModelSlowError(model, str(status))
             if deadline - clock() < delay + min(attempt_timeout, MIN_ATTEMPT_SECONDS):
                 raise GeminiUnavailableError("sem tempo para nova tentativa")
             await (sleep or asyncio.sleep)(delay)
@@ -878,12 +910,19 @@ class GeminiAnalyzer:
         raise GeminiUnavailableError("resposta fora do schema")
 
 
-def _empty_reason(response: Any) -> str:
+# finish_reason de recusa de conteúdo (a resposta vem vazia).
+_SAFETY_FINISH = frozenset({"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "IMAGE_SAFETY"})
+
+
+def _empty_reason(response: Any) -> tuple[str, bool]:
+    """Motivo da resposta sem texto e se foi recusa de segurança do modelo."""
     candidates = getattr(response, "candidates", None) or []
     finish = getattr(candidates[0], "finish_reason", None) if candidates else None
     feedback = getattr(response, "prompt_feedback", None)
     blocked = getattr(feedback, "block_reason", None) if feedback else None
-    return f"resposta sem texto (finish_reason={finish}, block_reason={blocked})"
+    finish_name = str(getattr(finish, "name", finish) or "")
+    refused = blocked is not None or finish_name in _SAFETY_FINISH
+    return f"resposta sem texto (finish_reason={finish}, block_reason={blocked})", refused
 
 
 def _log_usage(model: str, prompt: str, response: Any, started: float) -> None:
@@ -937,9 +976,12 @@ def google_generate(
     attempt_timeout: float = 25.0,
     max_retries: int = 2,
     budget_seconds: float = 48.0,
+    config: Any = None,
 ) -> ModelChain:
     """`generate` real: SDK google-genai (chave no cabeçalho x-goog-api-key, sem os retries
-    do próprio SDK) + `with_retries` por modelo + `with_model_fallback` na cadeia `models`."""
+    do próprio SDK) + `with_retries` por modelo + `with_model_fallback` na cadeia `models`.
+
+    `config` None = a da checagem (build_generate_config); a moderação passa a dela."""
     if isinstance(models, str) or not models:
         raise ValueError("models deve ser uma lista não vazia de nomes de modelo")
     import httpx
@@ -949,7 +991,10 @@ def google_generate(
     client = genai.Client(
         api_key=api_key, http_options=types.HttpOptions(timeout=int(attempt_timeout * 1000))
     )
-    config = build_generate_config(thinking_budget=thinking_budget, thinking_level=thinking_level)
+    if config is None:
+        config = build_generate_config(
+            thinking_budget=thinking_budget, thinking_level=thinking_level
+        )
 
     def raw_call(model: str) -> RawCall:
         async def call(prompt: str) -> str | None:
@@ -974,7 +1019,8 @@ def google_generate(
                 raise GeminiCallError(None, type(exc).__name__, retryable=False) from None
             if not response.text:
                 # Bloqueio de segurança, MAX_TOKENS etc.: o mesmo prompt teria o mesmo fim.
-                raise GeminiCallError(None, _empty_reason(response), retryable=False)
+                reason, refused = _empty_reason(response)
+                raise GeminiCallError(None, reason, retryable=False, blocked=refused)
             _log_usage(model, prompt, response, started)
             return response.text
 

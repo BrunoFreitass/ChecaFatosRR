@@ -6,7 +6,7 @@ from string import Formatter
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Domínios onde qualquer pessoa publica (blogs, newsletters, sites gratuitos): um link deles
@@ -101,9 +101,14 @@ class Settings(BaseSettings):
     gemini_attempt_timeout_seconds: float = Field(default=25, gt=0, le=25)
     gemini_max_retries: int = Field(default=2, ge=0, le=2)
     gemini_budget_seconds: float = Field(default=48, gt=0, le=48)
-    # Cotas diárias (dia do Pacífico, quando a cota gratuita zera). A de moderação é da etapa 4.
+    # Cotas diárias (dia do Pacífico, quando a cota gratuita zera). A de moderação (etapa 4)
+    # é provisória (decisão de 12/10/2026) até o RPD real do Flash-Lite; esgotada, o
+    # comentário é publicado e vai para a fila do admin (fail-open).
     gemini_daily_checks: int = Field(default=200, ge=0)
-    gemini_daily_moderation: int = Field(default=200, ge=0)
+    gemini_daily_moderation: int = Field(default=100, ge=0)
+    # Moderação de comentários (etapa 4): Flash-Lite estáveis de nome fixo, pela models.list
+    # de 12/10/2026. Uma tentativa por modelo, dentro do teto curto da moderação.
+    gemini_moderation_models: str = "gemini-3.5-flash-lite,gemini-3.1-flash-lite"
     # Chave restrita à Fact Check Tools API. Vazio = segue sem checagens de agências.
     google_factcheck_api_key: str | None = Field(default=None, repr=False)
     check_rate_limit_per_hour: int = Field(default=10, ge=1)
@@ -162,15 +167,16 @@ class Settings(BaseSettings):
     def _empty_to_none(cls, value: str | None) -> str | None:
         return value.strip() if value and value.strip() else None
 
-    @field_validator("gemini_model_fallbacks")
+    @field_validator("gemini_model_fallbacks", "gemini_moderation_models")
     @classmethod
-    def _normalize_model_chain(cls, value: str) -> str:
+    def _normalize_model_chain(cls, value: str, info: ValidationInfo) -> str:
+        env = (info.field_name or "").upper()
         models = list(dict.fromkeys(name.strip() for name in value.split(",") if name.strip()))
         if not models:
-            raise ValueError("GEMINI_MODEL_FALLBACKS precisa de pelo menos um modelo")
+            raise ValueError(f"{env} precisa de pelo menos um modelo")
         invalid = [name for name in models if not _MODEL_NAME.fullmatch(name)]
         if invalid:
-            raise ValueError(f"nome de modelo inválido em GEMINI_MODEL_FALLBACKS: {invalid}")
+            raise ValueError(f"nome de modelo inválido em {env}: {invalid}")
         return ",".join(models)
 
     @field_validator("tse_url_template")
@@ -231,6 +237,11 @@ class Settings(BaseSettings):
     def gemini_models(self) -> tuple[str, ...]:
         """A cadeia de GEMINI_MODEL_FALLBACKS, em ordem e sem repetição."""
         return tuple(self.gemini_model_fallbacks.split(","))
+
+    @property
+    def gemini_moderation_models_list(self) -> tuple[str, ...]:
+        """A cadeia de GEMINI_MODERATION_MODELS, em ordem e sem repetição."""
+        return tuple(self.gemini_moderation_models.split(","))
 
     @field_validator("database_ssl_root_cert")
     @classmethod

@@ -175,12 +175,12 @@ async def test_all_models_out_of_daily_quota_is_quota_exhausted(
 
 @pytest.mark.parametrize(
     "error",
-    [api_error(500, "internal"), api_error(400, "invalid argument"), ConnectionResetError()],
+    [api_error(400, "invalid argument"), api_error(401, "key"), ConnectionResetError()],
 )
 async def test_other_errors_do_not_fall_back(
     monkeypatch: pytest.MonkeyPatch, error: BaseException
 ) -> None:
-    # Cota diária, prazo e 503 persistente trocam de modelo; o resto segue as regras de retry.
+    # Cota diária, prazo, 404 e 500/503 persistentes trocam de modelo; o resto segue o retry.
     models, _ = install(monkeypatch, {PRIMARY: [error], BACKUP: [text_response(ANSWER)]})
 
     with pytest.raises(GeminiUnavailableError):
@@ -558,6 +558,23 @@ async def test_without_retries_the_first_503_already_switches(
     assert models.calls == [PRIMARY, BACKUP]
 
 
+@pytest.mark.parametrize("status", [404, 500])
+async def test_missing_or_broken_model_hands_over_to_the_next(
+    monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    # /code-review (12/10/2026): modelo renomeado (404) ou com erro interno não pode desligar a
+    # cadeia inteira, se há outro modelo depois dele.
+    models, _ = install(
+        monkeypatch,
+        {PRIMARY: [api_error(status, "x")] * 3, BACKUP: [text_response(ANSWER)]},
+    )
+
+    result = await google_generate(FAKE_KEY, [PRIMARY, BACKUP], max_retries=0)("prompt")
+
+    assert result == Generated(ANSWER, BACKUP)
+    assert models.calls == [PRIMARY, BACKUP]
+
+
 async def test_slow_503_switches_at_once_to_leave_time_for_the_next_model() -> None:
     # 503 que demorou (~22 s no teste de 09/10): repetir no mesmo modelo comeria o tempo
     # do próximo. Troca já, sem backoff.
@@ -693,3 +710,10 @@ async def test_model_in_cooldown_is_not_a_successor_for_a_503() -> None:
 
     assert await chain("x") == Generated("do reserva", "b")
     assert calls == ["p", "b", "b", "b", "b"]
+
+
+async def test_missing_model_alone_is_still_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    install(monkeypatch, {PRIMARY: [api_error(404, "not found")]})
+    with pytest.raises(GeminiUnavailableError) as caught:
+        await google_generate(FAKE_KEY, [PRIMARY])("prompt")
+    assert not isinstance(caught.value, GeminiQuotaExhaustedError)

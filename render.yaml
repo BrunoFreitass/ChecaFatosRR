@@ -53,6 +53,8 @@ services:
         value: /srv/certs/supabase-ca.crt
       - key: GEMINI_MODEL_FALLBACKS
         value: gemini-3.8-flash,gemini-3.7-flash
+      - key: GEMINI_MODERATION_MODELS
+        value: gemini-3.5-flash-lite,gemini-3.1-flash-lite
       - key: DB_POOL_SIZE
         value: "3"
       - key: DB_POOL_MAX_OVERFLOW
