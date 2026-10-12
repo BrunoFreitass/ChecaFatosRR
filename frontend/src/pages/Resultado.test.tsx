@@ -98,4 +98,57 @@ describe("Resultado", () => {
       screen.queryByRole("heading", { name: "Checagens sobre assuntos relacionados" }),
     ).toBeNull();
   });
+describe("modo só agências (Gemini indisponível)", () => {
+    const FOUND =
+      "A análise automática está indisponível agora. Abaixo estão as checagens de agências " +
+      "encontradas sobre o assunto: confira se tratam do mesmo conteúdo.";
+    const agenciesOnly = (overrides: Partial<Check> = {}) =>
+      check({ modo: "agencias", confianca: 0, resumo: FOUND, checagens_agencias: [AGENCY], ...overrides });
+
+    it("mostra só o selo neutro: sem veredito, sem confiança e sem 'Ainda sem checagem'", () => {
+      renderResult(agenciesOnly());
+      expect(screen.getAllByText("Análise automática indisponível agora")).toHaveLength(1);
+      expect(screen.queryByText("Não verificável")).toBeNull();
+      expect(screen.queryByText("Ainda sem checagem")).toBeNull();
+      expect(screen.queryByText(/Confiança da análise/)).toBeNull();
+    });
+
+    it("usa o selo neutro no título da página", () => {
+      renderResult(agenciesOnly());
+      expect(document.title).toContain("Análise automática indisponível agora");
+    });
+
+    it("lista as checagens das agências encontradas, com link", () => {
+      renderResult(agenciesOnly());
+      const heading = screen.getByRole("heading", { name: "Checagens de agências encontradas" });
+      expect(heading.closest("section")?.textContent).toContain("Não houve adiamento");
+      const link = screen.getByRole("link", { name: /Não houve adiamento/ });
+      expect(link.getAttribute("href")).toBe(AGENCY.url);
+    });
+
+    it("sem checagens, diz que nada foi encontrado", () => {
+      renderResult(agenciesOnly({ checagens_agencias: [], resumo: "Indisponível agora." }));
+      expect(screen.getByText(/não encontramos checagens de agências/i)).toBeTruthy();
+    });
+
+    it("não mostra texto de IA (pouca confiança, pontos suspeitos, contexto)", () => {
+      renderResult(
+        agenciesOnly({
+          rebaixado_por_confianca: true,
+          pontos_suspeitos: ["Não cita fonte"],
+          contexto_faltante: "Contexto da IA",
+        }),
+      );
+      expect(screen.queryByText(/pouca confiança/)).toBeNull();
+      expect(screen.queryByRole("heading", { name: "Pontos suspeitos" })).toBeNull();
+      expect(screen.queryByRole("heading", { name: "Contexto que falta" })).toBeNull();
+    });
+  });
+
+  it("checagem sem o campo modo (API antiga) segue com o veredito de sempre", () => {
+    renderResult(check({ veredito: "falso", confianca: 85, checagens_agencias: [AGENCY] }));
+    expect(screen.queryByText("Análise automática indisponível agora")).toBeNull();
+    expect(screen.getByRole("heading", { name: "O que dizem as agências de checagem" })).toBeTruthy();
+  });
 });
+

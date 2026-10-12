@@ -15,7 +15,13 @@ from app.config import Settings, get_settings
 from app.db import get_session
 from app.errors import AppError
 from app.legal import CURRENT_TERMS_VERSION
-from app.repositories.checks import CheckRepository, Limits, SqlCheckRepository, StoredCheck
+from app.repositories.checks import (
+    AGENCIES_ONLY_VERSION,
+    CheckRepository,
+    Limits,
+    SqlCheckRepository,
+    StoredCheck,
+)
 from app.repositories.profiles import Profile, ProfileRepository
 from app.routers.profiles import get_profile_repository
 from app.schemas.checks import (
@@ -60,6 +66,7 @@ def _analyzer(
     attempt_timeout: float,
     max_retries: int,
     budget_seconds: float,
+    rpm_per_model: int,
 ) -> GeminiAnalyzer:
     # Um cliente do SDK por processo (reaproveita conexões).
     generate = google_generate(
@@ -70,6 +77,7 @@ def _analyzer(
         attempt_timeout=attempt_timeout,
         max_retries=max_retries,
         budget_seconds=budget_seconds,
+        rpm_per_model=rpm_per_model,
     )
     return GeminiAnalyzer(generate, budget_seconds=budget_seconds)
 
@@ -98,6 +106,7 @@ def get_check_tools(settings: Annotated[Settings, Depends(get_settings)]) -> Che
             settings.gemini_attempt_timeout_seconds,
             settings.gemini_max_retries,
             settings.gemini_budget_seconds,
+            settings.gemini_rpm_per_model,
         ),
     )
 
@@ -138,6 +147,7 @@ Repo = Annotated[CheckRepository, Depends(get_check_repository)]
 
 def to_out(check: StoredCheck, settings: CheckSettings, *, cached: bool = False) -> CheckOut:
     result = check.result
+    agencies_only = check.prompt_version == AGENCIES_ONLY_VERSION
     agencies = [item for item in result.get("checagens_agencias") or [] if isinstance(item, dict)]
     # Regras de hoje também na leitura: corrige checagens salvas antes delas (ex.: "verdadeiro"
     # sem agência), sem mexer no banco.
@@ -180,8 +190,11 @@ def to_out(check: StoredCheck, settings: CheckSettings, *, cached: bool = False)
         fontes_sugeridas=list(result.get("fontes_sugeridas") or []),
         created_at=check.created_at,
         cache=cached,
-        # Versão diferente OU desconhecida (checagem de antes da coluna, None): avisa.
-        analise_anterior=check.prompt_version != settings.limits.prompt_version,
+        modo="agencias" if agencies_only else "ia",
+        # Versão diferente OU desconhecida (checagem de antes da coluna, None): avisa. O modo
+        # "só agências" não é análise, nem anterior.
+        analise_anterior=not agencies_only
+        and check.prompt_version != settings.limits.prompt_version,
     )
 
 

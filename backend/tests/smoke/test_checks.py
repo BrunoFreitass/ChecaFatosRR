@@ -20,7 +20,12 @@ from app.routers.profiles import get_profile_repository
 from app.services.check_service import CheckSettings, CheckTools
 from app.services.factcheck import AgencyCheck
 from app.services.fetcher import PageUnreadableError
-from app.services.gemini import GeminiQuotaExhaustedError, GeminiUnavailableError
+from app.services.gemini import (
+    GeminiContentBlockedError,
+    GeminiQuotaExhaustedError,
+    GeminiRateLimitedError,
+    GeminiUnavailableError,
+)
 from app.services.url_guard import BlockedAddressError
 from tests.fakes import (
     TEST_SUPABASE_URL,
@@ -329,24 +334,25 @@ def test_cache_lookups_have_their_own_limit(api: TestClient, env: Env) -> None:
     assert error_code(blocked) == "limite_consultas"
 
 
-def test_daily_quota_exhausted_does_not_spend_user_limit(api: TestClient, env: Env) -> None:
+def test_daily_quota_exhausted_answers_with_agencies_only(api: TestClient, env: Env) -> None:
     env.settings = settings(daily=0)
     _, headers = env.login()
     response = api.post("/checks", json={"url": LINK}, headers=headers)
-    assert response.status_code == 503
-    assert error_code(response) == "checagem_esgotada_hoje"
-    assert env.checks.requests == {}
+    assert response.status_code == 200
+    assert response.json()["modo"] == "agencias"
+    # Conta como consulta (limite de consultas), não como checagem com IA.
+    assert [hit for _, hit in env.checks.requests.values()] == [True]
     assert env.checks.claimed == {}
     assert env.analyzer.inputs == []
 
 
-def test_gemini_failure_refunds_the_user_limit(api: TestClient, env: Env) -> None:
-    env.analyzer.error = GeminiUnavailableError("api 429")
+def test_gemini_failure_answers_with_agencies_only(api: TestClient, env: Env) -> None:
+    env.analyzer.error = GeminiUnavailableError("modelos lentos")
     _, headers = env.login()
     response = api.post("/checks", json={"texto": MSG}, headers=headers)
-    assert response.status_code == 503
-    assert error_code(response) == "checagem_indisponivel"
-    assert env.checks.requests == {}
+    assert response.status_code == 200
+    assert response.json()["modo"] == "agencias"
+    assert [hit for _, hit in env.checks.requests.values()] == [True]
     assert env.checks.claimed == {}
     assert env.checks.gemini_used == 1  # a unidade da cota diária não volta
 
@@ -597,9 +603,9 @@ def test_google_daily_quota_shows_come_back_tomorrow(api: TestClient, env: Env) 
     env.analyzer.error = GeminiQuotaExhaustedError()
     _, headers = env.login()
     response = api.post("/checks", json={"texto": MSG}, headers=headers)
-    assert response.status_code == 503
-    assert error_code(response) == "checagem_esgotada_hoje"
-    assert env.checks.requests == {}  # não gastou o limite do usuário
+    assert response.status_code == 200
+    assert response.json()["modo"] == "agencias"
+    assert [hit for _, hit in env.checks.requests.values()] == [True]  # consulta
 
 
 def test_new_prompt_version_does_not_serve_old_results_as_cache(api: TestClient, env: Env) -> None:
@@ -658,15 +664,14 @@ def test_without_quota_serves_the_previous_prompt_version_analysis(
     assert [hit for _, hit in env.checks.requests.values()] == [False, False]
 
 
-def test_without_quota_and_without_previous_analysis_is_still_503(
+def test_without_quota_and_without_previous_analysis_answers_with_agencies(
     api: TestClient, env: Env
 ) -> None:
     env.settings = settings(daily=0)
     _, headers = env.login()
     response = api.post("/checks", json={"url": LINK}, headers=headers)
-    assert response.status_code == 503
-    assert error_code(response) == "checagem_esgotada_hoje"
-    assert env.checks.requests == {}
+    assert response.status_code == 200
+    assert response.json()["modo"] == "agencias"
 
 
 def test_public_link_flags_an_analysis_from_a_previous_prompt(api: TestClient, env: Env) -> None:
@@ -760,7 +765,7 @@ def test_cache_hit_and_errors_also_log_the_timing(
         json={"texto": "URGENTE: a votação foi adiada para novembro, repasse!"},
         headers=headers,
     )
-    assert _timing(caplog).outcome == "erro:checagem_indisponivel"
+    assert _timing(caplog).outcome == "agencias"
 
 
 # ---------- regras de veredito também na leitura (decisões de 11/10/2026) ----------
@@ -856,3 +861,161 @@ def test_news_site_link_is_not_an_open_platform(api: TestClient, env: Env) -> No
     _, headers = env.login()
     api.post("/checks", json={"url": LINK}, headers=headers)
     assert env.analyzer.inputs[0].open_platform is False
+
+
+# ---------- modo "só agências" (12/10/2026) ----------
+# Gemini sem cota, em 429 por minuto ou com todos os modelos fora: responde na hora com o
+# resultado da Fact Check API, sem IA, com o selo neutro "Análise automática indisponível".
+
+
+def agency_check(**extra: str) -> AgencyCheck:
+    values = {
+        "agencia": "Agência Lupa",
+        "titulo": "É falso que o 2º turno em Roraima foi adiado",
+        "veredito": "Falso",
+        "url": "https://lupa.uol.com.br/jornalismo/2026/10/10/adiamento-falso",
+        "data": "2026-10-10",
+    }
+    return AgencyCheck(**(values | extra))
+
+
+def test_agencies_only_result_shows_what_the_agencies_found(api: TestClient, env: Env) -> None:
+    env.factcheck.results = [agency_check()]
+    env.analyzer.error = GeminiRateLimitedError("rpm")
+    _, headers = env.login()
+
+    body = api.post("/checks", json={"url": LINK}, headers=headers).json()
+
+    assert body["modo"] == "agencias"
+    assert body["veredito"] == "nao_verificavel"  # sem IA, nada de veredito próprio
+    assert body["confianca"] == 0
+    assert body["analise_anterior"] is False
+    assert [c["agencia"] for c in body["checagens_agencias"]] == ["Agência Lupa"]
+    assert "indisponível" in body["resumo"]
+    assert body["pontos_suspeitos"] == []
+    # O link público mostra o mesmo resultado.
+    assert api.get(f"/checks/{body['id']}").json()["modo"] == "agencias"
+    # E não vai para "Últimas".
+    latest = api.get("/checks/latest").json()["items"]
+    assert body["id"] not in [item["id"] for item in latest]
+
+
+def test_agencies_only_without_agency_checks_still_answers(api: TestClient, env: Env) -> None:
+    env.analyzer.error = GeminiRateLimitedError("rpm")
+    _, headers = env.login()
+
+    body = api.post("/checks", json={"texto": MSG}, headers=headers).json()
+
+    assert body["modo"] == "agencias"
+    assert body["checagens_agencias"] == []
+    assert "indisponível" in body["resumo"]
+
+
+def test_agencies_only_is_not_served_as_cache(api: TestClient, env: Env) -> None:
+    env.analyzer.error = GeminiRateLimitedError("rpm")
+    _, headers = env.login()
+    first = api.post("/checks", json={"url": LINK}, headers=headers).json()
+
+    env.analyzer.error = None  # o Gemini voltou
+    again = api.post("/checks", json={"url": LINK}, headers=headers).json()
+
+    assert again["modo"] == "ia" and again["cache"] is False and again["id"] != first["id"]
+    assert len(env.analyzer.inputs) == 2  # a 1ª falhou (limite por minuto), a 2ª analisou
+    assert env.checks.saved[-1].prompt_version == "v-teste"
+
+
+def test_agencies_only_is_never_the_previous_analysis(api: TestClient, env: Env) -> None:
+    env.analyzer.error = GeminiRateLimitedError("rpm")
+    _, headers = env.login()
+    api.post("/checks", json={"url": LINK}, headers=headers)
+
+    env.analyzer.error = GeminiQuotaExhaustedError()
+    body = api.post("/checks", json={"url": LINK}, headers=headers).json()
+
+    # Sem análise de IA anterior: modo agências de novo (não "análise anterior").
+    assert body["modo"] == "agencias" and body["analise_anterior"] is False
+
+
+def test_previous_ai_analysis_wins_over_agencies_only(api: TestClient, env: Env) -> None:
+    _, headers = env.login()
+    old = api.post("/checks", json={"url": LINK}, headers=headers).json()
+
+    new_prompt_version(env)
+    env.analyzer.error = GeminiUnavailableError("modelos lentos")
+    body = api.post("/checks", json={"url": LINK}, headers=headers).json()
+
+    assert body["id"] == old["id"] and body["analise_anterior"] is True
+    assert body["modo"] == "ia"
+
+
+def test_agencies_only_does_not_use_the_ai_check_limit(api: TestClient, env: Env) -> None:
+    env.settings = settings(checks_per_hour=1)
+    env.analyzer.error = GeminiRateLimitedError("rpm")
+    _, headers = env.login()
+
+    for index in range(3):
+        response = api.post("/checks", json={"url": f"{LINK}-{index}"}, headers=headers)
+        assert response.status_code == 200
+        assert response.json()["modo"] == "agencias"
+
+
+# ---------- revisões do modo "só agências" (12/10/2026) ----------
+
+
+def test_agencies_only_respects_the_lookup_limit(api: TestClient, env: Env) -> None:
+    # Sem IA o pedido vira consulta, mas não ilimitada: Gemini fora não abre a porteira.
+    env.settings = settings(lookups_per_hour=2)
+    env.analyzer.error = GeminiRateLimitedError("rpm")
+    _, headers = env.login()
+
+    for index in range(2):
+        ok = api.post("/checks", json={"url": f"{LINK}-{index}"}, headers=headers)
+        assert ok.status_code == 200 and ok.json()["modo"] == "agencias"
+
+    blocked = api.post("/checks", json={"url": f"{LINK}-9"}, headers=headers)
+    assert blocked.status_code == 429
+    assert error_code(blocked) == "limite_consultas"
+    assert int(blocked.headers["Retry-After"]) > 0
+    assert env.checks.claimed == {}
+    assert len(env.checks.saved) == 2  # o bloqueado não salvou página pública
+
+
+def test_content_refused_by_gemini_is_not_an_agencies_page(api: TestClient, env: Env) -> None:
+    # Recusa de segurança não passa com "tente de novo": continua 503 e devolve o limite.
+    env.analyzer.error = GeminiContentBlockedError("finish_reason=SAFETY")
+    _, headers = env.login()
+
+    response = api.post("/checks", json={"texto": MSG}, headers=headers)
+
+    assert response.status_code == 503
+    assert error_code(response) == "checagem_indisponivel"
+    assert env.checks.requests == {}
+    assert env.checks.saved == []
+
+
+def test_agencies_only_says_when_the_fact_check_api_failed(api: TestClient, env: Env) -> None:
+    env.factcheck.error = TimeoutError()
+    env.analyzer.error = GeminiRateLimitedError("rpm")
+    _, headers = env.login()
+
+    body = api.post("/checks", json={"url": LINK}, headers=headers).json()
+
+    assert body["modo"] == "agencias"
+    assert "não conseguimos consultar as agências" in body["resumo"]
+    assert "não encontramos" not in body["resumo"]
+
+
+def test_agencies_only_save_failure_gives_the_limit_back(api: TestClient, env: Env) -> None:
+    env.analyzer.error = GeminiRateLimitedError("rpm")
+
+    async def broken_save(_: object) -> object:
+        raise ConnectionError("banco fora")
+
+    env.checks.save_result = broken_save  # type: ignore[method-assign]
+    _, headers = env.login()
+
+    response = api.post("/checks", json={"url": LINK}, headers=headers)
+
+    assert response.status_code == 500
+    assert env.checks.requests == {}  # o pedido não conta em limite nenhum
+    assert env.checks.claimed == {}

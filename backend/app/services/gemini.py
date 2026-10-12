@@ -14,6 +14,7 @@ import re
 import secrets
 import time
 import unicodedata
+from collections import deque
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -176,13 +177,7 @@ class CheckResult:
 
 
 def _agency_json(check: AgencyCheck) -> dict[str, Any]:
-    return {
-        "agencia": check.agencia,
-        "titulo": check.titulo,
-        "veredito": check.veredito,
-        "url": check.url,
-        "data": check.data,
-    }
+    return check.as_json()
 
 
 @dataclass(frozen=True)
@@ -219,8 +214,18 @@ async def _always_allowed() -> bool:
     return True
 
 
+# Devolve a unidade da cota diária reservada (nenhuma requisição chegou ao Google).
+Release = Callable[[], Awaitable[None]]
+
+
+async def _nothing_to_release() -> None:
+    return None
+
+
 class VerdictAnalyzer(Protocol):
-    async def analyze(self, data: AnalysisInput, reserve: Reserve = ...) -> CheckResult: ...
+    async def analyze(
+        self, data: AnalysisInput, reserve: Reserve = ..., release: Release = ...
+    ) -> CheckResult: ...
 
 
 # ---------------------------------------------------------------------------------------
@@ -623,6 +628,69 @@ _DEADLINE: ContextVar[float | None] = ContextVar("gemini_deadline", default=None
 _HAS_NEXT_MODEL: ContextVar[bool] = ContextVar("gemini_has_next_model", default=False)
 
 
+class GeminiRateLimitedError(GeminiUnavailableError):
+    """Todos os modelos no limite por minuto (RPM): a checagem responde na hora no modo
+    "só agências", sem esperar o minuto virar. called=False: nenhuma requisição chegou ao
+    Google (a unidade da cota diária reservada pode ser devolvida)."""
+
+    def __init__(self, message: str, *, called: bool = True) -> None:
+        super().__init__(message)
+        self.called = called
+
+
+class GeminiModelRateLimitedError(GeminiUnavailableError):
+    """Um modelo atingiu o limite por minuto: a cadeia tenta o próximo, sem nova tentativa
+    (repetir em 1 a 2 s só gastaria outra requisição do mesmo minuto)."""
+
+    def __init__(self, model: str | None, *, local: bool = False) -> None:
+        super().__init__(f"limite por minuto: {model}")
+        self.model = model
+        # True = o nosso limitador barrou antes de chamar o Google (nada foi gasto lá).
+        self.local = local
+
+
+# Janela do limite por minuto do Google (RPM).
+RPM_WINDOW_SECONDS = 60.0
+
+
+class RpmLimiter:
+    """Requisições por minuto por modelo, neste processo (o Render roda uma instância só).
+
+    Nível gratuito (AI Studio, 12/10/2026): RPM 5 por modelo. Modelo cheio é pulado sem
+    chamar o Google. rpm 0 = sem limite local (o 429 do Google ainda bloqueia o modelo por
+    um minuto, via saturate). Estado num event loop só: sem corrida.
+    """
+
+    def __init__(self, rpm: int, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self._rpm = rpm
+        self._clock = clock
+        self._calls: dict[str, deque[float]] = {}
+        self._blocked_until: dict[str, float] = {}
+
+    def _window(self, model: str) -> deque[float]:
+        calls = self._calls.setdefault(model, deque())
+        cutoff = self._clock() - RPM_WINDOW_SECONDS
+        while calls and calls[0] <= cutoff:
+            calls.popleft()
+        return calls
+
+    def has_room(self, model: str) -> bool:
+        if self._clock() < self._blocked_until.get(model, float("-inf")):
+            return False
+        return self._rpm <= 0 or len(self._window(model)) < self._rpm
+
+    def try_acquire(self, model: str) -> bool:
+        if not self.has_room(model):
+            return False
+        if self._rpm > 0:
+            self._window(model).append(self._clock())
+        return True
+
+    def saturate(self, model: str) -> None:
+        """O Google respondeu 429 por minuto: o minuto deste modelo acabou."""
+        self._blocked_until[model] = self._clock() + RPM_WINDOW_SECONDS
+
+
 class GeminiModelSlowError(GeminiUnavailableError):
     """Um modelo estourou o prazo ou ficou sobrecarregado (503 persistente): a cadeia tenta
     o próximo e deixa este no fim da fila."""
@@ -660,13 +728,18 @@ class GeminiCallError(Exception):
         quota_exhausted: bool = False,
         deadline: bool = False,
         blocked: bool = False,
+        rate_limited: bool = False,
+        local: bool = False,
     ) -> None:
         super().__init__(f"{status}: {message}")
         self.status = status
         self.message = message
         # Recusa de segurança do modelo: o mesmo prompt teria o mesmo fim.
         self.blocked = blocked
-        if blocked:
+        # Limite por minuto (RPM): repetir no mesmo minuto não adianta; a cadeia segue.
+        self.rate_limited = rate_limited
+        self.local = local  # barrado pelo nosso limitador, sem chegar ao Google
+        if blocked or rate_limited:
             retryable = False
         # Prazo estourado (504 do Google ou timeout de leitura do SDK): conta para "modelo lento".
         self.deadline = deadline or status == 504
@@ -744,6 +817,8 @@ def with_retries(
                 raise GeminiQuotaExhaustedError
             if isinstance(exc_info, GeminiCallError) and exc_info.blocked:
                 raise GeminiContentBlockedError(message)
+            if isinstance(exc_info, GeminiCallError) and exc_info.rate_limited:
+                raise GeminiModelRateLimitedError(model, local=exc_info.local)
             # Só prazos SEGUIDOS contam (outro erro no meio zera); sem novas tentativas
             # (max_retries=0), o primeiro já basta para tentar o próximo modelo.
             deadline_failures = deadline_failures + 1 if deadline_hit else 0
@@ -803,12 +878,14 @@ class ModelChain:
         *,
         clock: Callable[[], float] = time.monotonic,
         seconds_until_reset: Callable[[], float] = seconds_until_quota_reset,
+        limiter: RpmLimiter | None = None,
     ) -> None:
         self._chain = list(chain)
         self._clock = clock
         self._seconds_until_reset = seconds_until_reset
         self._exhausted_until: dict[str, float] = {}
         self._slow_until: dict[str, float] = {}
+        self._limiter = limiter or RpmLimiter(0, clock=clock)
 
     def _slow(self, model: str) -> bool:
         return self._clock() < self._slow_until.get(model, float("-inf"))
@@ -820,8 +897,18 @@ class ModelChain:
         """Todos sem cota: o analisador falha antes de reservar a cota diária nossa."""
         return not any(self._available(model) for model, _ in self._chain)
 
+    def rate_limited_now(self) -> bool:
+        """Todos os modelos com cota estão no limite por minuto: falha na hora, antes de
+        reservar a cota diária (a checagem responde no modo "só agências")."""
+        available = [model for model, _ in self._chain if self._available(model)]
+        return bool(available) and not any(self._limiter.has_room(m) for m in available)
+
     async def __call__(self, prompt: str) -> Generated:
-        usable = [(model, call) for model, call in self._chain if self._available(model)]
+        available = [(model, call) for model, call in self._chain if self._available(model)]
+        # Modelo no limite por minuto nem é chamado (RPM 5 no nível gratuito).
+        usable = [(model, call) for model, call in available if self._limiter.has_room(model)]
+        rate_limited_seen = len(usable) < len(available)
+        called = False  # alguma requisição chegou ao Google (gastou cota lá)?
         # Os lentos por último (sort estável: entre iguais, a ordem da cadeia).
         usable.sort(key=lambda item: self._slow(item[0]))
         slow_seen = False
@@ -831,21 +918,30 @@ class ModelChain:
             try:
                 text = await call(prompt)
             except GeminiQuotaExhaustedError:
+                called = True
                 wait = min(self._seconds_until_reset(), EXHAUSTED_RECHECK_SECONDS)
                 self._exhausted_until[model] = self._clock() + wait
                 logger.warning("gemini_model_quota_exhausted", extra={"model": model})
                 continue
             except GeminiModelSlowError as exc:
+                called = True
                 self._slow_until[model] = self._clock() + SLOW_MODEL_COOLDOWN_SECONDS
                 logger.warning("gemini_model_slow", extra={"model": model, "reason": exc.reason})
                 slow_seen = True
+                continue
+            except GeminiModelRateLimitedError as exc:
+                logger.warning("gemini_model_rate_limited", extra={"model": model})
+                called = called or not exc.local
+                rate_limited_seen = True
                 continue
             finally:
                 _HAS_NEXT_MODEL.reset(token)
             logger.info("gemini_model_responded", extra={"model": model})
             return Generated(text, model)
-        if slow_seen:  # instabilidade, não falta de cota: o usuário vê "tente de novo"
+        if slow_seen:  # instabilidade, não falta de cota
             raise GeminiUnavailableError("modelos lentos")
+        if rate_limited_seen:  # o minuto acaba logo; a cota do dia, não
+            raise GeminiRateLimitedError("todos os modelos no limite por minuto", called=called)
         raise GeminiQuotaExhaustedError
 
 
@@ -854,8 +950,9 @@ def with_model_fallback(
     *,
     clock: Callable[[], float] = time.monotonic,
     seconds_until_reset: Callable[[], float] = seconds_until_quota_reset,
+    limiter: RpmLimiter | None = None,
 ) -> ModelChain:
-    return ModelChain(chain, clock=clock, seconds_until_reset=seconds_until_reset)
+    return ModelChain(chain, clock=clock, seconds_until_reset=seconds_until_reset, limiter=limiter)
 
 
 class GeminiAnalyzer:
@@ -872,7 +969,12 @@ class GeminiAnalyzer:
         self._budget = budget_seconds
         self._now = now
 
-    async def analyze(self, data: AnalysisInput, reserve: Reserve = _always_allowed) -> CheckResult:
+    async def analyze(
+        self,
+        data: AnalysisInput,
+        reserve: Reserve = _always_allowed,
+        release: Release = _nothing_to_release,
+    ) -> CheckResult:
         now = self._now()
         prompt = build_prompt(data, now)
         today = now.astimezone(BOA_VISTA).date()
@@ -885,6 +987,10 @@ class GeminiAnalyzer:
             all_exhausted = getattr(self._generate, "all_exhausted", None)
             if all_exhausted is not None and all_exhausted():
                 raise GeminiQuotaExhaustedError
+            # Todos no limite por minuto: falha na hora, sem gastar a cota diária nossa.
+            rate_limited_now = getattr(self._generate, "rate_limited_now", None)
+            if rate_limited_now is not None and rate_limited_now():
+                raise GeminiRateLimitedError("todos os modelos no limite por minuto", called=False)
             # Uma unidade da cota por resposta pedida (resposta fora do schema pede outra).
             # Fora do timeout abaixo: é chamada ao banco.
             # Sem cota (1ª ou 2ª tentativa): "sem cota", para o serviço servir a análise anterior.
@@ -898,6 +1004,12 @@ class GeminiAnalyzer:
                     raw = await self._generate(prompt)
             except TimeoutError as exc:
                 raise GeminiUnavailableError("orçamento de tempo esgotado") from exc
+            except GeminiRateLimitedError as exc:
+                # Outra checagem ocupou o minuto entre o pré-check e a chamada: nada chegou
+                # ao Google, então a unidade da cota diária volta (36/dia é apertado).
+                if not exc.called:
+                    await release()
+                raise
             finally:
                 _DEADLINE.reset(token)
             model = None
@@ -977,6 +1089,7 @@ def google_generate(
     max_retries: int = 2,
     budget_seconds: float = 48.0,
     config: Any = None,
+    rpm_per_model: int = 0,
 ) -> ModelChain:
     """`generate` real: SDK google-genai (chave no cabeçalho x-goog-api-key, sem os retries
     do próprio SDK) + `with_retries` por modelo + `with_model_fallback` na cadeia `models`.
@@ -996,8 +1109,13 @@ def google_generate(
             thinking_budget=thinking_budget, thinking_level=thinking_level
         )
 
+    limiter = RpmLimiter(rpm_per_model)
+
     def raw_call(model: str) -> RawCall:
         async def call(prompt: str) -> str | None:
+            # Cada requisição (inclusive novas tentativas) conta no RPM do modelo.
+            if not limiter.try_acquire(model):
+                raise GeminiCallError(429, "limite local por minuto", rate_limited=True, local=True)
             started = time.monotonic()
             try:
                 response = await client.aio.models.generate_content(
@@ -1010,7 +1128,13 @@ def google_generate(
                 # 429 de cota DIÁRIA não passa em segundos: repetir só gasta o orçamento
                 # (with_model_fallback passa ao próximo modelo da cadeia).
                 daily = exc.code == 429 and "PerDay" in f"{exc.details} {exc.message}"
-                raise GeminiCallError(exc.code, message, quota_exhausted=daily) from None
+                # 429 que não é da cota diária: limite por minuto. O minuto do modelo acabou.
+                per_minute = exc.code == 429 and not daily
+                if per_minute:
+                    limiter.saturate(model)
+                raise GeminiCallError(
+                    exc.code, message, quota_exhausted=daily, rate_limited=per_minute
+                ) from None
             except (httpx.TimeoutException, TimeoutError) as exc:  # sem resposta no prazo
                 raise GeminiCallError(None, type(exc).__name__, deadline=True) from None
             except (httpx.TransportError, OSError) as exc:  # sem resposta (rede)
@@ -1039,4 +1163,4 @@ def google_generate(
         )
         for model in models
     ]
-    return with_model_fallback(chain)
+    return with_model_fallback(chain, limiter=limiter)

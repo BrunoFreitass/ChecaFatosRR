@@ -121,13 +121,16 @@ async def test_daily_quota_429_is_not_retried(monkeypatch: pytest.MonkeyPatch) -
     assert models.calls == 1
 
 
-async def test_per_minute_429_is_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_per_minute_429_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    # RPM 5 no nível gratuito: repetir em 1 a 2 s só gasta outra requisição do mesmo minuto.
+    # Sem outro modelo, vira "limite por minuto" (a checagem responde no modo agências).
     details = [{"violations": [{"quotaId": "GenerateRequestsPerMinutePerProjectPerModel"}]}]
     models = install_fake_client(
         monkeypatch, [api_error(429, "rate", details), text_response(ANSWER)]
     )
-    assert await google_generate(FAKE_KEY, [MODEL])("prompt") == Generated(ANSWER, MODEL)
-    assert models.calls == 2
+    with pytest.raises(gemini.GeminiRateLimitedError):
+        await google_generate(FAKE_KEY, [MODEL])("prompt")
+    assert models.calls == 1
 
 
 async def test_bad_request_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:

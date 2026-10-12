@@ -31,6 +31,16 @@ class AgencyCheck:
     url: str
     data: str | None = None
 
+    def as_json(self) -> dict[str, str | None]:
+        """Forma gravada no resultado da checagem (e devolvida pela API)."""
+        return {
+            "agencia": self.agencia,
+            "titulo": self.titulo,
+            "veredito": self.veredito,
+            "url": self.url,
+            "data": self.data,
+        }
+
 
 class FactCheckClient(Protocol):
     async def search(self, queries: list[str]) -> list[AgencyCheck]: ...

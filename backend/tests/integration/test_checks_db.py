@@ -607,3 +607,60 @@ async def test_save_in_progress_sends_the_other_request_to_wait(session: AsyncSe
 
     fresh = await repo.find_fresh(started.subject, 24, VERSION)  # 1ª consulta da espera
     assert fresh is not None and fresh.public_id == public_id
+
+
+async def test_agencies_only_result_is_never_the_previous_analysis(session: AsyncSession) -> None:
+    # Modo "só agências" (12/10/2026): não é análise de IA, então não serve de "anterior".
+    from app.repositories.checks import AGENCIES_ONLY_VERSION
+
+    repo = SqlCheckRepository(session)
+    user_id = await new_user(session)
+    started = await repo.begin_check(user_id, link(), LIMITS)
+    assert isinstance(started, Started)
+    await repo.save_result(
+        NewCheck(
+            prompt_version=AGENCIES_ONLY_VERSION,
+            subject=started.subject,
+            user_id=user_id,
+            veredito="nao_verificavel",
+            confianca=0,
+            result={"modo": "agencias", "resumo": "Análise automática indisponível agora."},
+            model=AGENCIES_ONLY_VERSION,
+            listed=False,
+            claim_token=started.claim_token,
+        )
+    )
+
+    assert await repo.find_previous(started.subject, 24) is None
+    assert await repo.find_fresh(started.subject, 24, VERSION) is None
+
+
+async def test_gemini_unit_can_be_given_back(session: AsyncSession) -> None:
+    repo = SqlCheckRepository(session)
+    async with session.begin():
+        await session.execute(text("delete from public.gemini_usage"))
+    assert await repo.reserve_gemini("checagem", 1) is True
+    assert await repo.reserve_gemini("checagem", 1) is False
+
+    await repo.release_gemini("checagem")
+    await repo.release_gemini("checagem")  # nunca abaixo de zero
+
+    assert await repo.reserve_gemini("checagem", 1) is True
+
+
+async def test_request_becomes_a_lookup_only_under_the_lookup_limit(session: AsyncSession) -> None:
+    repo = SqlCheckRepository(session)
+    user_id = await new_user(session)
+    two_lookups = Limits(
+        cache_hours=24, checks_per_hour=10, lookups_per_hour=2, prompt_version=VERSION
+    )
+    request_ids = []
+    for _ in range(3):
+        started = await repo.begin_check(user_id, link(), two_lookups)
+        assert isinstance(started, Started)
+        request_ids.append(started.request_id)
+
+    assert await repo.convert_to_lookup(request_ids[0], user_id, 2) is None
+    assert await repo.convert_to_lookup(request_ids[1], user_id, 2) is None
+    retry = await repo.convert_to_lookup(request_ids[2], user_id, 2)
+    assert retry is not None and 0 < retry <= 3600

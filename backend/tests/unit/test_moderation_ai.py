@@ -309,3 +309,14 @@ async def test_second_model_still_gets_time_when_the_first_hangs(
 
     assert result == AiVerdict("ok", 0.97)
     assert calls == ["lento", "rapido"]
+
+
+async def test_moderation_does_not_reserve_when_every_model_is_rate_limited() -> None:
+    script = Script(answer())
+    script.rate_limited_now = lambda: True  # type: ignore[attr-defined]
+    quota = Quota()
+
+    result = await AiModerator(script).classify(COMMENT, quota)
+
+    assert result == AiUnavailable("indisponivel")
+    assert quota.reserved == 0 and script.prompts == []

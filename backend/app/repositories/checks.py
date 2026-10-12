@@ -19,6 +19,9 @@ GeminiPurpose = Literal["checagem", "moderacao"]
 PUBLIC_ID_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz"
 PUBLIC_ID_LENGTH = 12
 _PUBLIC_ID_ATTEMPTS = 3
+# Versão reservada do resultado "só agências" (Gemini sem cota ou no limite por minuto):
+# nunca é cache (a chave é a versão do prompt) nem "análise anterior" (não é análise de IA).
+AGENCIES_ONLY_VERSION = "agencias"
 # Validade do claim de single-flight: maior que a pior checagem (20 + 12 + 60 = 92 s).
 CLAIM_TTL_SECONDS = 120
 
@@ -139,6 +142,10 @@ class CheckRepository(Protocol):
     async def reserve_gemini(self, purpose: GeminiPurpose, daily_limit: int) -> bool: ...
     async def save_result(self, check: NewCheck) -> StoredCheck: ...
     async def mark_cache_hit(self, request_id: int) -> None: ...
+    async def convert_to_lookup(
+        self, request_id: int, user_id: UUID, lookups_per_hour: int
+    ) -> int | None: ...
+    async def release_gemini(self, purpose: GeminiPurpose) -> None: ...
     async def refund(self, request_id: int) -> None: ...
     async def get(self, public_id: str) -> StoredCheck | None: ...
     async def latest(
@@ -230,6 +237,30 @@ with r as (
 ),
 c as ({claim})
 select (select id from r) as request_id, (select checking_until from c) as token
+"""
+
+# Pedido vira consulta (modo "só agências"), dentro do limite de consultas por hora.
+_CONVERT_TO_LOOKUP = """
+with u as (
+  select count(*) as used,
+         ceil(extract(epoch from (
+           min(created_at) + interval '1 hour' - clock_timestamp()
+         )))::int as retry
+  from public.check_requests
+  where user_id = :uid and cache_hit and created_at > now() - interval '1 hour'
+),
+c as (
+  update public.check_requests set cache_hit = true
+  where id = :rid and (select used from u) < :limit
+  returning 1
+)
+select exists (select 1 from c) as converted, (select retry from u) as retry
+"""
+
+_RELEASE_GEMINI = """
+update public.gemini_usage set calls = calls - 1
+where day = (now() at time zone 'America/Los_Angeles')::date
+  and purpose = :purpose and calls > 0
 """
 
 _RESERVE_GEMINI = """
@@ -464,9 +495,14 @@ class SqlCheckRepository:
                         text(
                             _SELECT_CHECK + f"where c.{column} = :sid "
                             "and c.created_at > now() - make_interval(hours => :hours) "
+                            "and c.prompt_version is distinct from :agencies "
                             "order by c.created_at desc limit 1"
                         ),
-                        {"sid": subject.id, "hours": cache_hours},
+                        {
+                            "sid": subject.id,
+                            "hours": cache_hours,
+                            "agencies": AGENCIES_ONLY_VERSION,
+                        },
                     )
                 )
                 .mappings()
@@ -543,6 +579,34 @@ class SqlCheckRepository:
                 text("update public.check_requests set cache_hit = true where id = :id"),
                 {"id": request_id},
             )
+
+    async def convert_to_lookup(
+        self, request_id: int, user_id: UUID, lookups_per_hour: int
+    ) -> int | None:
+        """O pedido passa a contar como consulta. None = convertido; senão, os segundos até
+        vagar uma consulta (Retry-After). Sob o lock do usuário, como o begin_check."""
+        async with self._session.begin():
+            await self._session.execute(
+                text("select 1 from public.profiles where id = :uid for no key update"),
+                {"uid": user_id},
+            )
+            row = (
+                (
+                    await self._session.execute(
+                        text(_CONVERT_TO_LOOKUP),
+                        {"uid": user_id, "rid": request_id, "limit": lookups_per_hour},
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        if row["converted"]:
+            return None
+        return max(1, int(row["retry"] or 1))
+
+    async def release_gemini(self, purpose: GeminiPurpose) -> None:
+        async with self._session.begin():
+            await self._session.execute(text(_RELEASE_GEMINI), {"purpose": purpose})
 
     async def refund(self, request_id: int) -> None:
         async with self._session.begin():

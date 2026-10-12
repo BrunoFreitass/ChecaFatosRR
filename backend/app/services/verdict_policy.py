@@ -8,8 +8,9 @@ leitura corrige checagens salvas antes da regra, sem mexer no banco.
 
 import unicodedata
 from collections.abc import Iterable
-from typing import Literal
+from typing import Any, Literal
 
+from app.services.factcheck import AgencyCheck
 from app.services.url_guard import URL_IN_TEXT, is_social_host
 
 __all__ = ["corroborates", "is_open_platform", "neutral_summary", "read_verdict"]
@@ -89,3 +90,44 @@ def neutral_summary(
     about = f" sobre: {subject}" if subject else ""
     ending = ending or "Não encontramos checagens de agências sobre ele."
     return f"Conteúdo publicado em {where}{about}. {ending}"
+
+
+# ---------------------------------------------------------------------------------------
+# Modo "só agências" (Gemini sem cota ou no limite por minuto, 12/10/2026)
+# ---------------------------------------------------------------------------------------
+
+AGENCIES_ONLY_FOUND = (
+    "A análise automática está indisponível agora. Abaixo estão as checagens de agências "
+    "encontradas sobre o assunto: confira se tratam do mesmo conteúdo."
+)
+AGENCIES_ONLY_SEARCH_FAILED = (
+    "A análise automática está indisponível agora, e não conseguimos consultar as agências "
+    "de checagem neste momento. Tente de novo mais tarde."
+)
+AGENCIES_ONLY_NONE = (
+    "A análise automática está indisponível agora, e não encontramos checagens de agências "
+    "sobre este conteúdo. Tente de novo mais tarde."
+)
+
+
+def agencies_only_result(
+    checks: list[AgencyCheck], title: str | None, *, search_failed: bool = False
+) -> dict[str, Any]:
+    """Resultado sem IA: só o que a Fact Check API trouxe, com texto neutro. Busca que
+    falhou não é "não encontramos" (o link fica público e seria enganoso)."""
+    if checks:
+        resumo = AGENCIES_ONLY_FOUND
+    elif search_failed:
+        resumo = AGENCIES_ONLY_SEARCH_FAILED
+    else:
+        resumo = AGENCIES_ONLY_NONE
+    return {
+        "modo": "agencias",
+        "resumo": resumo,
+        "pontos_suspeitos": [],
+        "contexto_faltante": None,
+        "checagens_agencias": [c.as_json() for c in checks],
+        "checagens_relacionadas": [],
+        "fontes_sugeridas": [],
+        "title": title,
+    }
