@@ -601,21 +601,32 @@ MIN_ATTEMPT_SECONDS = 5.0
 # Repetir o mesmo prompt só gasta o orçamento, e a resposta tem de sair antes do corte do
 # Cloudflare (~100 s): já no primeiro, a cadeia passa ao próximo modelo.
 DEADLINE_FAILURES_TO_SWITCH = 1
-# Modelo lento fica no fim da fila por esse tempo: as checagens seguintes não pagam ~50 s nele.
+# 503 ("high demand", modelo sobrecarregado) seguidos no MESMO modelo: persistente, a cadeia
+# passa ao próximo (ensaio de 12/10/2026). Um 503 isolado ainda ganha uma nova tentativa,
+# salvo se ela comer o tempo que o próximo modelo precisaria (503 lento, ~22 s em 09/10).
+UNAVAILABLE_FAILURES_TO_SWITCH = 2
+# Modelo lento ou sobrecarregado fica no fim da fila por esse tempo: as checagens seguintes
+# não pagam ~50 s nele.
 SLOW_MODEL_COOLDOWN_SECONDS = 300.0
 _GOOGLE_KEY = re.compile(r"AIza[0-9A-Za-z_\-]{10,}")
 _MAX_ERROR_MESSAGE = 300
 # Prazo absoluto (time.monotonic) da checagem em andamento, definido pelo GeminiAnalyzer:
 # as novas tentativas de transporte respeitam o mesmo orçamento total.
 _DEADLINE: ContextVar[float | None] = ContextVar("gemini_deadline", default=None)
+# Definido pela ModelChain: há outro modelo (fora da espera de lento) depois deste? Sem
+# sucessor, um 503 persistente não troca nada (nem deixa o modelo no fim da fila): segue as
+# novas tentativas de sempre. Fora de uma cadeia, não há sucessor.
+_HAS_NEXT_MODEL: ContextVar[bool] = ContextVar("gemini_has_next_model", default=False)
 
 
 class GeminiModelSlowError(GeminiUnavailableError):
-    """Um modelo estourou o prazo seguidas vezes: a cadeia tenta o próximo."""
+    """Um modelo estourou o prazo ou ficou sobrecarregado (503 persistente): a cadeia tenta
+    o próximo e deixa este no fim da fila."""
 
-    def __init__(self, model: str | None) -> None:
-        super().__init__(f"modelo lento: {model}")
+    def __init__(self, model: str | None, reason: str = "prazo") -> None:
+        super().__init__(f"modelo lento ({reason}): {model}")
         self.model = model
+        self.reason = reason
 
 
 class GeminiCallError(Exception):
@@ -673,7 +684,7 @@ def with_retries(
         shared = _DEADLINE.get()
         if shared is not None:
             deadline = min(deadline, shared)
-        deadline_failures = 0
+        deadline_failures = unavailable_failures = 0
         for attempt in range(1, max_retries + 2):
             timeout = min(attempt_timeout, deadline - clock())
             # Tentativa curta demais seria cortada antes de responder (ex.: o 2º modelo da
@@ -710,9 +721,19 @@ def with_retries(
             deadline_failures = deadline_failures + 1 if deadline_hit else 0
             if deadline_failures >= min(DEADLINE_FAILURES_TO_SWITCH, max_retries + 1):
                 raise GeminiModelSlowError(model)
+            overloaded = status == 503 and _HAS_NEXT_MODEL.get()
+            unavailable_failures = unavailable_failures + 1 if overloaded else 0
+            if unavailable_failures >= UNAVAILABLE_FAILURES_TO_SWITCH or (
+                overloaded and attempt > max_retries
+            ):
+                raise GeminiModelSlowError(model, "503")
             if not retryable or attempt > max_retries:
                 raise GeminiUnavailableError(f"api {status}")
             delay = base_delay * 2 ** (attempt - 1) + jitter() * base_delay
+            # Nova tentativa no sobrecarregado só se, depois dela inteira, ainda sobrar uma
+            # tentativa útil para o próximo modelo da cadeia (o teto de 90 s vale para todos).
+            if overloaded and deadline - clock() < delay + attempt_timeout + MIN_ATTEMPT_SECONDS:
+                raise GeminiModelSlowError(model, "503")
             if deadline - clock() < delay + min(attempt_timeout, MIN_ATTEMPT_SECONDS):
                 raise GeminiUnavailableError("sem tempo para nova tentativa")
             await (sleep or asyncio.sleep)(delay)
@@ -733,10 +754,11 @@ def seconds_until_quota_reset(now: datetime | None = None) -> float:
 
 class ModelChain:
     """Tenta os modelos em ordem; passa ao próximo em cota diária esgotada ou em modelo lento
-    (prazo estourado seguidas vezes: GeminiModelSlowError).
+    (prazo estourado ou 503 persistente: GeminiModelSlowError).
 
-    Outros erros (503, 400, rede) sobem na hora: trocar de modelo não resolve instabilidade e
-    gastaria o orçamento de tempo. Um modelo lento vai para o fim da fila por
+    Outros erros (500, 400, rede) sobem na hora (with_retries já repetiu o que valia a
+    pena). O prazo total é compartilhado (_DEADLINE): o próximo modelo só é tentado se
+    ainda couber uma tentativa útil. Um modelo lento vai para o fim da fila por
     SLOW_MODEL_COOLDOWN_SECONDS (e ainda é tentado se todos estiverem lentos). Um modelo sem
     cota fica de fora até a cota zerar (no máximo EXHAUSTED_RECHECK_SECONDS), para não gastar
     uma chamada (e segundos) por checagem com quem já disse "acabou por hoje".
@@ -771,7 +793,9 @@ class ModelChain:
         # Os lentos por último (sort estável: entre iguais, a ordem da cadeia).
         usable.sort(key=lambda item: self._slow(item[0]))
         slow_seen = False
-        for model, call in usable:
+        for index, (model, call) in enumerate(usable):
+            successor = any(not self._slow(later) for later, _ in usable[index + 1 :])
+            token = _HAS_NEXT_MODEL.set(successor)
             try:
                 text = await call(prompt)
             except GeminiQuotaExhaustedError:
@@ -779,11 +803,13 @@ class ModelChain:
                 self._exhausted_until[model] = self._clock() + wait
                 logger.warning("gemini_model_quota_exhausted", extra={"model": model})
                 continue
-            except GeminiModelSlowError:
+            except GeminiModelSlowError as exc:
                 self._slow_until[model] = self._clock() + SLOW_MODEL_COOLDOWN_SECONDS
-                logger.warning("gemini_model_slow", extra={"model": model})
+                logger.warning("gemini_model_slow", extra={"model": model, "reason": exc.reason})
                 slow_seen = True
                 continue
+            finally:
+                _HAS_NEXT_MODEL.reset(token)
             logger.info("gemini_model_responded", extra={"model": model})
             return Generated(text, model)
         if slow_seen:  # instabilidade, não falta de cota: o usuário vê "tente de novo"

@@ -175,12 +175,12 @@ async def test_all_models_out_of_daily_quota_is_quota_exhausted(
 
 @pytest.mark.parametrize(
     "error",
-    [api_error(503, "high demand"), api_error(400, "invalid argument"), ConnectionResetError()],
+    [api_error(500, "internal"), api_error(400, "invalid argument"), ConnectionResetError()],
 )
 async def test_other_errors_do_not_fall_back(
     monkeypatch: pytest.MonkeyPatch, error: BaseException
 ) -> None:
-    # Só a cota diária troca de modelo: instabilidade e erro nosso seguem as regras de retry.
+    # Cota diária, prazo e 503 persistente trocam de modelo; o resto segue as regras de retry.
     models, _ = install(monkeypatch, {PRIMARY: [error], BACKUP: [text_response(ANSWER)]})
 
     with pytest.raises(GeminiUnavailableError):
@@ -503,3 +503,193 @@ async def test_single_model_chain_that_is_slow_is_unavailable(
         await google_generate(FAKE_KEY, [PRIMARY])("prompt")
     assert not isinstance(caught.value, GeminiQuotaExhaustedError)
     assert models.calls == [PRIMARY]
+
+
+# ---------- 503 persistente (ensaio em produção, 12/10/2026) ----------
+# "high demand" seguido no mesmo modelo: a cadeia passa ao próximo, e o sobrecarregado vai
+# para o fim da fila por SLOW_MODEL_COOLDOWN_SECONDS, sem passar do teto de 90 s.
+
+
+def overloaded() -> Exception:
+    return api_error(503, "The model is overloaded. Please try again later.")
+
+
+async def test_persistent_503_switches_to_the_next_model(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    models, _ = install(
+        monkeypatch,
+        {PRIMARY: [overloaded(), overloaded()], BACKUP: [text_response(ANSWER)]},
+    )
+    caplog.set_level(logging.INFO, logger=gemini.logger.name)
+
+    result = await google_generate(FAKE_KEY, [PRIMARY, BACKUP])("prompt")
+
+    assert result == Generated(ANSWER, BACKUP)
+    assert models.calls == [PRIMARY, PRIMARY, BACKUP]  # uma nova tentativa, depois troca
+    assert models_logged(caplog, "gemini_model_slow") == [PRIMARY]
+
+
+async def test_overloaded_model_goes_to_the_end_of_the_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    models, _ = install(
+        monkeypatch,
+        {
+            PRIMARY: [overloaded(), overloaded()],
+            BACKUP: [text_response(ANSWER), text_response(ANSWER)],
+        },
+    )
+    chain = google_generate(FAKE_KEY, [PRIMARY, BACKUP])
+
+    await chain("prompt")
+    assert await chain("prompt") == Generated(ANSWER, BACKUP)
+    assert models.calls == [PRIMARY, PRIMARY, BACKUP, BACKUP]  # 2ª checagem já vai ao reserva
+
+
+async def test_without_retries_the_first_503_already_switches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    models, _ = install(monkeypatch, {PRIMARY: [overloaded()], BACKUP: [text_response(ANSWER)]})
+
+    result = await google_generate(FAKE_KEY, [PRIMARY, BACKUP], max_retries=0)("prompt")
+
+    assert result == Generated(ANSWER, BACKUP)
+    assert models.calls == [PRIMARY, BACKUP]
+
+
+async def test_slow_503_switches_at_once_to_leave_time_for_the_next_model() -> None:
+    # 503 que demorou (~22 s no teste de 09/10): repetir no mesmo modelo comeria o tempo
+    # do próximo. Troca já, sem backoff.
+    now = [0.0]
+    calls: list[str] = []
+    sleeps: list[float] = []
+
+    async def primary(_: str) -> str:
+        calls.append("p")
+        now[0] += 22
+        raise gemini.GeminiCallError(503, "high demand")
+
+    async def backup(_: str) -> str:
+        calls.append("b")
+        return "do reserva"
+
+    async def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    def clock() -> float:
+        return now[0]
+
+    chain = with_model_fallback(
+        [
+            ("p", with_retries(primary, clock=clock, sleep=sleep, jitter=lambda: 0, model="p")),
+            ("b", with_retries(backup, clock=clock, sleep=sleep, jitter=lambda: 0, model="b")),
+        ],
+        clock=clock,
+    )
+    token = gemini._DEADLINE.set(48.0)
+    try:
+        assert await chain("x") == Generated("do reserva", "b")
+    finally:
+        gemini._DEADLINE.reset(token)
+    assert calls == ["p", "b"]
+    assert sleeps == []
+
+
+async def test_switch_after_503_respects_the_total_budget() -> None:
+    # Sem tempo útil para o próximo modelo: falha ("tente de novo") em vez de passar do teto.
+    now = [0.0]
+    calls: list[str] = []
+
+    async def primary(_: str) -> str:
+        calls.append("p")
+        now[0] += 44
+        raise gemini.GeminiCallError(503, "high demand")
+
+    async def backup(_: str) -> str:
+        calls.append("b")
+        return "do reserva"
+
+    def clock() -> float:
+        return now[0]
+
+    chain = with_model_fallback(
+        [
+            ("p", with_retries(primary, clock=clock, jitter=lambda: 0, model="p")),
+            ("b", with_retries(backup, clock=clock, jitter=lambda: 0, model="b")),
+        ],
+        clock=clock,
+    )
+    token = gemini._DEADLINE.set(48.0)
+    try:
+        with pytest.raises(GeminiUnavailableError) as caught:
+            await chain("x")
+    finally:
+        gemini._DEADLINE.reset(token)
+    assert not isinstance(caught.value, GeminiQuotaExhaustedError)
+    assert calls == ["p"]
+
+
+async def test_last_model_still_retries_a_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Sem próximo modelo, trocar não ajuda: o 503 volta a ser repetido no mesmo modelo
+    # (e o modelo não vai para o fim da fila).
+    models, _ = install(monkeypatch, {PRIMARY: [overloaded(), overloaded(), text_response(ANSWER)]})
+
+    result = await google_generate(FAKE_KEY, [PRIMARY])("prompt")
+
+    assert result == Generated(ANSWER, PRIMARY)
+    assert models.calls == [PRIMARY, PRIMARY, PRIMARY]
+
+
+async def test_backup_after_a_switch_retries_its_own_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    models, _ = install(
+        monkeypatch,
+        {
+            PRIMARY: [overloaded(), overloaded()],
+            BACKUP: [overloaded(), overloaded(), text_response(ANSWER)],
+        },
+    )
+
+    result = await google_generate(FAKE_KEY, [PRIMARY, BACKUP])("prompt")
+
+    assert result == Generated(ANSWER, BACKUP)
+    assert models.calls == [PRIMARY, PRIMARY, BACKUP, BACKUP, BACKUP]
+
+
+async def test_model_in_cooldown_is_not_a_successor_for_a_503() -> None:
+    # O primário está no fim da fila (lento). O reserva com 503 não deve desistir de si para
+    # cair num modelo já sabidamente lento: repete normalmente.
+    now = [0.0]
+    calls: list[str] = []
+    backup_script: list[object] = [
+        gemini.GeminiCallError(503, "a"),
+        gemini.GeminiCallError(503, "b"),
+        "do reserva",
+    ]
+
+    async def primary(_: str) -> str:
+        calls.append("p")
+        raise GeminiModelSlowError("p")
+
+    async def backup(_: str) -> str:
+        calls.append("b")
+        step = backup_script.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return str(step)
+
+    def clock() -> float:
+        return now[0]
+
+    chain = with_model_fallback(
+        [
+            ("p", primary),
+            ("b", with_retries(backup, clock=clock, sleep=_no_sleep, jitter=lambda: 0, model="b")),
+        ],
+        clock=clock,
+    )
+    backup_script.insert(0, "do reserva")  # 1ª checagem: o primário fica lento, o reserva responde
+    assert await chain("x") == Generated("do reserva", "b")
+
+    assert await chain("x") == Generated("do reserva", "b")
+    assert calls == ["p", "b", "b", "b", "b"]

@@ -73,7 +73,7 @@ def test_real_first_round_file() -> None:
     assert len(result.candidatos) == 12
 
 
-def test_candidates_follow_the_tse_order_with_votes_and_party() -> None:
+def test_candidates_are_ordered_by_votes_with_party() -> None:
     first, second = parse_result(raw()).candidatos[:2]
 
     assert (first.numero, first.nome, first.partido) == ("22", "FLAVIO BOLSONARO", "PL")
@@ -150,6 +150,33 @@ def test_candidates_without_order_fall_back_to_votes() -> None:
     for c in candidates(data):
         del c["seq"]
     assert [c.numero for c in parse_result(data).candidatos] == ["22", "13"]
+
+
+# ---------- ensaio em produção (12/10/2026) ----------
+
+
+def test_state_file_is_ordered_by_its_own_votes_not_by_the_national_seq() -> None:
+    # No arquivo de RR o "seq" segue a ordem nacional: a aba Roraima tem de seguir os votos de RR.
+    data = second_round("80,00")
+    for c in candidates(data):
+        lula = c["n"] == "13"
+        c["vap"], c["pvap"] = ("1200", "54,55") if lula else ("1000", "45,45")
+    assert [c.numero for c in parse_result(data).candidatos] == ["13", "22"]
+
+
+def test_vote_tie_is_broken_by_the_candidate_number() -> None:
+    data = second_round("0,00")
+    for c in candidates(data):
+        c["vap"], c["pvap"] = "0", "0,00"
+    assert [c.numero for c in parse_result(data).candidatos] == ["13", "22"]
+
+
+def test_tie_break_compares_numbers_as_numbers() -> None:
+    data = raw()
+    par = data["carg"][0]["agr"][0]["par"][0]
+    par["cand"] = [{"n": n, "nmu": f"C{n}", "vap": "5"} for n in ("100", "22", "9")]
+    data["carg"][0]["agr"] = [{"par": [par]}]
+    assert [c.numero for c in parse_result(data).candidatos] == ["9", "22", "100"]
 
 
 @pytest.mark.parametrize(
