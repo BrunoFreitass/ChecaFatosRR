@@ -806,8 +806,9 @@ def with_retries(
     model: str | None = None,  # só para o log
 ) -> RawCall:
     """Envolve uma chamada crua com teto por tentativa, novas tentativas em erro transitório
-    (backoff exponencial + jitter) e orçamento total. Novas tentativas NÃO reservam cota
-    diária: quem reserva é o GeminiAnalyzer, uma vez por resposta pedida ao modelo."""
+    (backoff exponencial + jitter) e orçamento total. A cota diária GLOBAL é reservada uma
+    vez por resposta (GeminiAnalyzer); o contador diário POR MODELO é reservado a cada
+    tentativa, dentro da chamada crua (google_generate), inclusive nas novas tentativas."""
 
     async def generate(prompt: str) -> str | None:
         deadline = clock() + budget_seconds
@@ -927,10 +928,15 @@ class ModelChain:
         self._seconds_until_reset = seconds_until_reset
         self._exhausted_until: dict[str, float] = {}
         self._slow_until: dict[str, float] = {}
+        # Em cooldown por 400/404: quebrado (config recusada, nome inexistente), não só lento.
+        self._broken: set[str] = set()
         self._limiter = limiter or RpmLimiter(0, clock=clock)
 
     def _slow(self, model: str) -> bool:
         return self._clock() < self._slow_until.get(model, float("-inf"))
+
+    def _broken_now(self, model: str) -> bool:
+        return model in self._broken and self._slow(model)
 
     def _available(self, model: str) -> bool:
         return self._clock() >= self._exhausted_until.get(model, float("-inf"))
@@ -945,12 +951,15 @@ class ModelChain:
         available = [model for model, _ in self._chain if self._available(model)]
         return bool(available) and not any(self._limiter.has_room(m) for m in available)
 
-    def _log_skipped(self, available: list[tuple[str, RawCall]]) -> None:
+    def _log_skipped(
+        self, available: list[tuple[str, RawCall]], usable: list[tuple[str, RawCall]]
+    ) -> None:
         """Todo modelo que não será chamado deixa rastro com o motivo (incidente de 13/10/2026:
         a fila não avançou e o log não dizia por quê)."""
         for model in self._disabled:
             logger.info("gemini_model_skipped", extra={"model": model, "reason": "desligado"})
         names = {model for model, _ in available}
+        usable_names = {model for model, _ in usable}
         for model, _ in self._chain:
             if model not in names:
                 left = int(self._exhausted_until[model] - self._clock())
@@ -958,7 +967,7 @@ class ModelChain:
                     "gemini_model_skipped",
                     extra={"model": model, "reason": "sem_cota", "seconds_left": left},
                 )
-            elif not self._limiter.has_room(model):
+            elif model not in usable_names:
                 logger.info(
                     "gemini_model_skipped", extra={"model": model, "reason": "limite_minuto"}
                 )
@@ -967,7 +976,7 @@ class ModelChain:
         available = [(model, call) for model, call in self._chain if self._available(model)]
         # Modelo no limite por minuto nem é chamado (RPM 5 no nível gratuito).
         usable = [(model, call) for model, call in available if self._limiter.has_room(model)]
-        self._log_skipped(available)
+        self._log_skipped(available, usable)
         rate_limited_seen = len(usable) < len(available)
         called = False  # alguma requisição chegou ao Google (gastou cota lá)?
         # Os lentos por último (sort estável: entre iguais, a ordem da cadeia).
@@ -976,8 +985,9 @@ class ModelChain:
         for index, (model, call) in enumerate(usable):
             # Qualquer modelo depois deste conta como próximo, inclusive o em cooldown de lento
             # (ele já está no fim da fila): um 503 troca de modelo em vez de encerrar a cadeia
-            # com tempo sobrando (incidente de 13/10/2026, 18:31 UTC).
-            successor = index + 1 < len(usable)
+            # com tempo sobrando (incidente de 13/10/2026, 18:31 UTC). O quebrado (400/404),
+            # não: trocar para ele só gastaria tempo.
+            successor = any(not self._broken_now(later) for later, _ in usable[index + 1 :])
             token = _HAS_NEXT_MODEL.set(successor)
             try:
                 text = await call(prompt)
@@ -996,6 +1006,10 @@ class ModelChain:
                     else SLOW_MODEL_COOLDOWN_SECONDS
                 )
                 self._slow_until[model] = self._clock() + cooldown
+                if exc.reason in ("400", "404"):
+                    self._broken.add(model)
+                else:
+                    self._broken.discard(model)
                 logger.warning("gemini_model_slow", extra={"model": model, "reason": exc.reason})
                 slow_seen = True
                 continue

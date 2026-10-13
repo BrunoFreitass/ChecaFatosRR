@@ -830,3 +830,34 @@ async def test_disabled_model_is_logged_as_skipped_on_every_check(
     await chain("prompt")
 
     assert _skipped(caplog) == [(BACKUP, "desligado"), (BACKUP, "desligado")]
+
+
+async def test_broken_model_is_not_a_successor_for_a_503() -> None:
+    """Modelo em cooldown por 400/404 está quebrado (config recusada ou nome inexistente), não
+    lento: não conta como próximo. O último modelo bom repete o próprio 503 em vez de trocar
+    para um modelo que certamente falha."""
+    calls: list[str] = []
+    backup_script: list[object] = ["do reserva", gemini.GeminiCallError(503, "a"), "de novo"]
+
+    async def primary(_: str) -> str:
+        calls.append("p")
+        raise GeminiModelSlowError("p", "404")
+
+    async def backup(_: str) -> str:
+        calls.append("b")
+        step = backup_script.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return str(step)
+
+    chain = with_model_fallback(
+        [
+            ("p", primary),
+            ("b", with_retries(backup, sleep=_no_sleep, jitter=lambda: 0, model="b")),
+        ],
+        clock=lambda: 0.0,
+    )
+    assert await chain("x") == Generated("do reserva", "b")  # o primário dá 404: quebrado
+
+    assert await chain("x") == Generated("de novo", "b")
+    assert calls == ["p", "b", "b", "b"]
