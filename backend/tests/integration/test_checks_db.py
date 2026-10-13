@@ -745,3 +745,150 @@ async def test_model_unit_is_refunded_on_the_reservation_day(session: AsyncSessi
     await repo.release_gemini_model("gemini-3.8-flash", day)
     await repo.release_gemini_model("gemini-3.8-flash", day)  # já em 0: fica em 0
     assert await _model_calls(session, day, "gemini-3.8-flash") == 0
+
+
+class _Begins:
+    """Conta as transações (BEGIN) abertas no engine real durante o bloco."""
+
+    def __enter__(self) -> list[object]:
+        from sqlalchemy import event
+
+        from app.db import get_engine
+
+        self.items: list[object] = []
+        self.engine = get_engine().sync_engine
+
+        def count(conn: object) -> None:
+            self.items.append(conn)
+
+        self.count = count
+        event.listen(self.engine, "begin", count)
+        return self.items
+
+    def __exit__(self, *_: object) -> None:
+        from sqlalchemy import event
+
+        event.remove(self.engine, "begin", self.count)
+
+
+async def _usage(session: AsyncSession) -> tuple[int, int]:
+    async with session.begin():
+        glob = await session.scalar(
+            text(
+                "select coalesce(sum(calls), 0) from public.gemini_usage where purpose = 'checagem'"
+            )
+        )
+        model = await session.scalar(
+            text("select coalesce(sum(calls), 0) from public.gemini_model_usage")
+        )
+    return int(glob), int(model)
+
+
+async def _reset_usage(session: AsyncSession) -> None:
+    async with session.begin():
+        await session.execute(text("delete from public.gemini_usage"))
+        await session.execute(text("delete from public.gemini_model_usage"))
+
+
+async def test_global_and_model_quota_in_one_transaction(session: AsyncSession) -> None:
+    """Cada transação custa ~0,7 s entre Virginia e São Paulo: as duas reservas vão juntas."""
+    from app.repositories.checks import GLOBAL_QUOTA_REFUSED
+
+    repo = SqlCheckRepository(session)
+    await _reset_usage(session)
+
+    with _Begins() as begins:
+        day = await repo.reserve_gemini_and_model("checagem", 10, "gemini-3.8-flash", 20)
+
+    assert day is not None and day is not GLOBAL_QUOTA_REFUSED
+    assert len(begins) == 1
+    assert await _usage(session) == (1, 1)
+
+
+async def test_global_quota_refused_spends_nothing(session: AsyncSession) -> None:
+    from app.repositories.checks import GLOBAL_QUOTA_REFUSED
+
+    repo = SqlCheckRepository(session)
+    await _reset_usage(session)
+    await repo.reserve_gemini_and_model("checagem", 1, "gemini-3.8-flash", 20)
+
+    refused = await repo.reserve_gemini_and_model("checagem", 1, "gemini-3.7-flash", 20)
+
+    assert refused is GLOBAL_QUOTA_REFUSED
+    assert await _usage(session) == (1, 1)  # o 3.7 não gastou nada
+
+
+async def test_model_quota_refused_rolls_back_the_global_unit(session: AsyncSession) -> None:
+    repo = SqlCheckRepository(session)
+    await _reset_usage(session)
+    await repo.reserve_gemini_and_model("checagem", 10, "gemini-3.8-flash", 1)
+
+    refused = await repo.reserve_gemini_and_model("checagem", 10, "gemini-3.8-flash", 1)
+
+    assert refused is None
+    assert await _usage(session) == (1, 1)  # a unidade global da 2ª tentativa voltou
+
+
+async def test_agencies_only_lookup_and_save_in_one_transaction(session: AsyncSession) -> None:
+    from app.repositories.checks import AGENCIES_ONLY_VERSION
+
+    repo = SqlCheckRepository(session)
+    user_id = await new_user(session)
+    started = await repo.begin_check(user_id, link(), LIMITS)
+    assert isinstance(started, Started)
+    check = NewCheck(
+        subject=started.subject,
+        user_id=user_id,
+        veredito="nao_verificavel",
+        confianca=0,
+        result={"resumo": "só agências"},
+        model=AGENCIES_ONLY_VERSION,
+        listed=False,
+        title="Título",
+        claim_token=started.claim_token,
+        prompt_version=AGENCIES_ONLY_VERSION,
+    )
+
+    with _Begins() as begins:
+        saved = await repo.save_lookup_result(started.request_id, user_id, 60, check)
+
+    assert len(begins) == 1
+    assert not isinstance(saved, int) and saved.prompt_version == AGENCIES_ONLY_VERSION
+    async with session.begin():
+        cache_hit = await session.scalar(
+            text("select cache_hit from public.check_requests where id = :id"),
+            {"id": started.request_id},
+        )
+    assert cache_hit is True  # virou consulta
+
+
+async def test_agencies_only_over_the_lookup_limit_saves_nothing(session: AsyncSession) -> None:
+    from app.repositories.checks import AGENCIES_ONLY_VERSION
+
+    repo = SqlCheckRepository(session)
+    user_id = await new_user(session)
+    started = await repo.begin_check(user_id, link(), LIMITS)
+    assert isinstance(started, Started)
+    check = NewCheck(
+        subject=started.subject,
+        user_id=user_id,
+        veredito="nao_verificavel",
+        confianca=0,
+        result={},
+        model=AGENCIES_ONLY_VERSION,
+        listed=False,
+        title=None,
+        claim_token=started.claim_token,
+        prompt_version=AGENCIES_ONLY_VERSION,
+    )
+
+    retry = await repo.save_lookup_result(started.request_id, user_id, 0, check)
+
+    assert isinstance(retry, int) and retry >= 1
+    assert await repo.find_previous(started.subject, 24) is None
+    async with session.begin():
+        saved = await session.scalar(
+            text("select count(*) from public.checks where link_id = :sid"),
+            {"sid": started.subject.id},
+        )
+    assert saved == 0  # nada gravado para este assunto

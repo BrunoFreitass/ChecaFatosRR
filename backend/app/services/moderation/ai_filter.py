@@ -21,6 +21,7 @@ from app.services.gemini import (
     GeminiUnavailableError,
     Generate,
     Generated,
+    GlobalQuotaRefusedError,
     ModelBudget,
     ModelRelease,
     Reserve,
@@ -164,6 +165,9 @@ class AiModerator:
                             return AiUnavailable("resposta_invalida")
                     else:
                         return AiUnavailable("resposta_invalida")
+        except GlobalQuotaRefusedError:
+            # Cota global da moderação acabou (reservada junto com a do modelo): fail-open.
+            return self._unavailable("sem_cota")
         except GeminiQuotaExhaustedError:
             return self._unavailable("sem_cota")
         except GeminiContentBlockedError:

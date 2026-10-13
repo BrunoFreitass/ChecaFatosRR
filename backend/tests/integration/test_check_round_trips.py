@@ -72,10 +72,11 @@ async def test_new_link_check_uses_few_round_trips(session: AsyncSession) -> Non
 
     assert not outcome.cached
     assert outcome.check.title == "Calendário do 2º turno é mantido em Roraima"
-    # begin_check (com o claim) + reserva da cota do Gemini + gravação: antes eram 5
-    # transações e 14 comandos.
+    # begin_check (com o claim) + cota global E do modelo numa transação (13/10/2026: antes
+    # eram duas) + gravação. Antes de 12/10 eram 5 transações e 14 comandos; o analisador
+    # falso agora reserva a cota do modelo, como o real (antes este teste não a via).
     assert trips.transactions <= 3, trips.statements
-    assert len(trips.statements) <= 5, trips.statements
+    assert len(trips.statements) <= 6, trips.statements
 
 
 async def test_cache_hit_uses_one_transaction(session: AsyncSession) -> None:

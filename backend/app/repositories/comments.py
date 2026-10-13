@@ -60,6 +60,31 @@ class Parent:
 
 
 @dataclass(frozen=True)
+class PostContext:
+    """O que o POST de comentário lê antes da IA (uma transação)."""
+
+    precheck: "Precheck | None"
+    check_found: bool
+    check_link_id: int | None
+    parent: Parent | None
+
+
+def _to_precheck(row: Any) -> "Precheck | None":
+    if row is None:
+        return None
+    return Precheck(
+        status=row["status"],
+        suspended_until=row["suspended_until"],
+        seconds_since_last=row["seconds_since_last"],
+        day_count=int(row["day_count"]),
+        day_retry=row["day_retry"],
+        offensive_blocks=int(row["offensive_blocks"]),
+        offensive_retry=row["offensive_retry"],
+        ai_blocks=int(row["ai_blocks"]),
+    )
+
+
+@dataclass(frozen=True)
 class Precheck:
     """Estado do usuário para os limites, lido antes da IA (sem lock): o insert confere de novo."""
 
@@ -292,19 +317,23 @@ class SqlCommentRepository:
 
     async def parent(self, public_id: str) -> Parent | None:
         async with self._session.begin():
-            row = (
-                (
-                    await self._session.execute(
-                        text(
-                            "select id, link_id, parent_id, status from public.comments "
-                            "where public_id = :pid"
-                        ),
-                        {"pid": public_id},
-                    )
+            return await self._parent(public_id)
+
+    async def _parent(self, public_id: str) -> Parent | None:
+        """Comentário-pai, dentro da transação de quem chama."""
+        row = (
+            (
+                await self._session.execute(
+                    text(
+                        "select id, link_id, parent_id, status from public.comments "
+                        "where public_id = :pid"
+                    ),
+                    {"pid": public_id},
                 )
-                .mappings()
-                .first()
             )
+            .mappings()
+            .first()
+        )
         if row is None:
             return None
         return Parent(
@@ -319,18 +348,34 @@ class SqlCommentRepository:
             row = (
                 (await self._session.execute(text(_PRECHECK), {"uid": user_id})).mappings().first()
             )
-        if row is None:
-            return None
-        return Precheck(
-            status=row["status"],
-            suspended_until=row["suspended_until"],
-            seconds_since_last=row["seconds_since_last"],
-            day_count=int(row["day_count"]),
-            day_retry=row["day_retry"],
-            offensive_blocks=int(row["offensive_blocks"]),
-            offensive_retry=row["offensive_retry"],
-            ai_blocks=int(row["ai_blocks"]),
-        )
+        return _to_precheck(row)
+
+    async def precheck_and_target(
+        self, user_id: UUID, check_public_id: str | None, parent_public_id: str | None
+    ) -> "PostContext":
+        """Limites do autor + checagem e/ou comentário-pai, numa transação só (cada uma custa
+        ~0,7 s entre a Virginia e São Paulo). Só leituras; quem grava (create) confere de novo
+        sob lock."""
+        check_found, link_id, parent = False, None, None
+        async with self._session.begin():
+            if check_public_id is not None:
+                found = (
+                    (
+                        await self._session.execute(
+                            text("select link_id from public.checks where public_id = :pid"),
+                            {"pid": check_public_id},
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                check_found, link_id = found is not None, (found["link_id"] if found else None)
+            if parent_public_id is not None:
+                parent = await self._parent(parent_public_id)
+            row = (
+                (await self._session.execute(text(_PRECHECK), {"uid": user_id})).mappings().first()
+            )
+        return PostContext(_to_precheck(row), check_found, link_id, parent)
 
     async def create(
         self,

@@ -22,6 +22,21 @@ _PUBLIC_ID_ATTEMPTS = 3
 # Versão reservada do resultado "só agências" (Gemini sem cota ou no limite por minuto):
 # nunca é cache (a chave é a versão do prompt) nem "análise anterior" (não é análise de IA).
 AGENCIES_ONLY_VERSION = "agencias"
+
+
+class _GlobalQuotaRefused:
+    def __repr__(self) -> str:
+        return "GLOBAL_QUOTA_REFUSED"
+
+
+# reserve_gemini_and_model: a cota GLOBAL do dia acabou (nada foi gasto).
+GLOBAL_QUOTA_REFUSED = _GlobalQuotaRefused()
+
+
+class _ModelQuotaRefused(Exception):
+    """Interno: desfaz a unidade global quando a do modelo é recusada (rollback)."""
+
+
 # Validade do claim de single-flight: maior que a pior checagem (20 + 12 + 60 = 92 s).
 CLAIM_TTL_SECONDS = 120
 
@@ -148,6 +163,12 @@ class CheckRepository(Protocol):
     async def release_gemini(self, purpose: GeminiPurpose) -> None: ...
     async def reserve_gemini_model(self, model: str, daily_limit: int) -> date | None: ...
     async def release_gemini_model(self, model: str, day: date) -> None: ...
+    async def reserve_gemini_and_model(
+        self, purpose: GeminiPurpose, purpose_limit: int, model: str, model_limit: int
+    ) -> date | _GlobalQuotaRefused | None: ...
+    async def save_lookup_result(
+        self, request_id: int, user_id: UUID, lookups_per_hour: int, check: NewCheck
+    ) -> StoredCheck | int: ...
     async def refund(self, request_id: int) -> None: ...
     async def get(self, public_id: str) -> StoredCheck | None: ...
     async def latest(
@@ -570,6 +591,13 @@ class SqlCheckRepository:
         raise AssertionError("inalcançável")
 
     async def _insert_check(self, check: NewCheck, public_id: str) -> StoredCheck:
+        sql, params = self._save_statement(check, public_id)
+        async with self._session.begin():
+            row = (await self._session.execute(text(sql), params)).mappings().one()
+        return _row_to_check(row)
+
+    @staticmethod
+    def _save_statement(check: NewCheck, public_id: str) -> tuple[str, dict[str, Any]]:
         kind = check.subject.kind
         sql = _SAVE_CHECK.format(subject=_SAVE_SUBJECT[kind], column=_SUBJECT_COLUMN[kind])
         params: dict[str, Any] = {
@@ -586,9 +614,7 @@ class SqlCheckRepository:
         }
         if kind == "link":
             params |= {"title": check.title, "published_at": check.published_at}
-        async with self._session.begin():
-            row = (await self._session.execute(text(sql), params)).mappings().one()
-        return _row_to_check(row)
+        return sql, params
 
     async def mark_cache_hit(self, request_id: int) -> None:
         """O resultado veio de outra checagem: vira consulta ao cache (limite de consultas)."""
@@ -631,6 +657,64 @@ class SqlCheckRepository:
                 text(_RESERVE_GEMINI_MODEL), {"model": model, "limit": daily_limit}
             )
         return day
+
+    async def reserve_gemini_and_model(
+        self, purpose: GeminiPurpose, purpose_limit: int, model: str, model_limit: int
+    ) -> date | _GlobalQuotaRefused | None:
+        """Cota global + do modelo numa transação (cada uma custa ~0,7 s entre a Virginia e
+        São Paulo). Global esgotada: GLOBAL_QUOTA_REFUSED, nada gasto. Modelo esgotado: None,
+        e a unidade global é desfeita (rollback). Senão, o dia (do Pacífico) da reserva."""
+        if model_limit <= 0:
+            return None
+        try:
+            async with self._session.begin():
+                taken = await self._session.scalar(
+                    text(_RESERVE_GEMINI), {"purpose": purpose, "limit": purpose_limit}
+                )
+                if taken is None:
+                    return GLOBAL_QUOTA_REFUSED
+                day: date | None = await self._session.scalar(
+                    text(_RESERVE_GEMINI_MODEL), {"model": model, "limit": model_limit}
+                )
+                if day is None:
+                    raise _ModelQuotaRefused
+                return day
+        except _ModelQuotaRefused:
+            return None
+
+    async def save_lookup_result(
+        self, request_id: int, user_id: UUID, lookups_per_hour: int, check: NewCheck
+    ) -> StoredCheck | int:
+        """Modo "só agências" numa transação: o pedido vira consulta (sob o lock do usuário,
+        como o begin_check) e o resultado é gravado. Sem vaga de consulta: os segundos até
+        vagar (Retry-After), sem gravar nada."""
+        for attempt in range(1, _PUBLIC_ID_ATTEMPTS + 1):
+            sql, params = self._save_statement(check, new_public_id())
+            try:
+                async with self._session.begin():
+                    await self._session.execute(
+                        text("select 1 from public.profiles where id = :uid for no key update"),
+                        {"uid": user_id},
+                    )
+                    converted = (
+                        (
+                            await self._session.execute(
+                                text(_CONVERT_TO_LOOKUP),
+                                {"uid": user_id, "rid": request_id, "limit": lookups_per_hour},
+                            )
+                        )
+                        .mappings()
+                        .one()
+                    )
+                    if not converted["converted"]:
+                        return max(1, int(converted["retry"] or 1))
+                    row = (await self._session.execute(text(sql), params)).mappings().one()
+                return _row_to_check(row)
+            except IntegrityError as exc:
+                # 60 bits aleatórios: colisão é rara; a transação inteira volta e tenta outro id.
+                if attempt == _PUBLIC_ID_ATTEMPTS or "checks_public_id_key" not in str(exc.orig):
+                    raise
+        raise AssertionError("inalcançável")
 
     async def release_gemini_model(self, model: str, day: date) -> None:
         async with self._session.begin():

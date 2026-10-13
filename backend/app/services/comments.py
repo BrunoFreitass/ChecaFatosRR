@@ -16,12 +16,15 @@ from uuid import UUID
 from app.errors import AppError
 from app.repositories.comments import (
     AccountRestrictedError,
+    PostContext,
+    Precheck,
     SqlCommentRepository,
     StoredComment,
 )
 from app.repositories.moderation import Block, SqlModerationRepository, StrikeOutcome
 from app.repositories.profiles import ProfileRepository
 from app.services.bans import ban_hash
+from app.services.gemini_quota import CombinedQuota
 from app.services.moderation.local_filter import check_text
 from app.services.moderation.pipeline import Decision, decide
 
@@ -60,12 +63,12 @@ def _too_many(code: str, message: str, retry: int | None) -> AppError:
     return AppError(429, code, message, {"retry_after": seconds}, {"Retry-After": str(seconds)})
 
 
-async def _target(
-    repos: CommentRepos, checagem: str | None, resposta_a: str | None
+def _target(
+    context: PostContext, checagem: str | None, resposta_a: str | None
 ) -> tuple[int | None, int | None]:
     link_id: int | None = None
     if checagem is not None:
-        found, link_id = await repos.comments.link_of_check(checagem)
+        found, link_id = context.check_found, context.check_link_id
         if not found:
             raise AppError(404, "checagem_nao_encontrada", "Checagem não encontrada.")
         if link_id is None:  # texto colado (decisão de 09/10/2026)
@@ -76,7 +79,7 @@ async def _target(
             )
     if resposta_a is None:
         return link_id, None
-    parent = await repos.comments.parent(resposta_a)
+    parent = context.parent
     if parent is None:
         raise AppError(404, "comentario_nao_encontrado", "Comentário não encontrado.")
     if parent.is_reply or not parent.visible or (checagem and parent.link_id != link_id):
@@ -84,8 +87,7 @@ async def _target(
     return parent.link_id, parent.id
 
 
-async def _check_limits(repos: CommentRepos, user_id: UUID, limits: CommentLimits) -> None:
-    state = await repos.comments.precheck(user_id)
+def _check_limits(state: Precheck | None, limits: CommentLimits) -> None:
     if state is None:
         raise AppError(404, "profile_not_found", "Escolha um apelido para continuar.")
     if state.status == "banned":
@@ -176,23 +178,23 @@ async def _post(
     limits: CommentLimits,
     ban_salt: str | None,
 ) -> StoredComment:
-    link_id, parent_id = await _target(repos, checagem, resposta_a)
-    await _check_limits(repos, user_id, limits)
+    # Alvo e limites numa transação (cada uma custa ~0,7 s entre a Virginia e São Paulo).
+    context = await repos.comments.precheck_and_target(user_id, checagem, resposta_a)
+    link_id, parent_id = _target(context, checagem, resposta_a)
+    _check_limits(context.precheck, limits)
     target = {"link_id": link_id, "parent_id": parent_id}
 
     local = check_text(body)
     if local.blocked:
         decision = decide(local, None)
     else:
-
-        async def reserve() -> bool:
-            return await repos.quota.reserve_gemini("moderacao", limits.gemini_daily_moderation)
-
+        # Cota global + do modelo numa transação (gemini_quota).
+        quota = CombinedQuota(repos.quota, "moderacao", limits.gemini_daily_moderation)
         ai = await moderator.classify(
             body,
-            reserve,
-            model_budget=repos.quota.reserve_gemini_model,
-            model_release=repos.quota.release_gemini_model,
+            quota.reserve,
+            model_budget=quota.model_budget,
+            model_release=quota.model_release,
         )
         decision = decide(local, ai)
 
