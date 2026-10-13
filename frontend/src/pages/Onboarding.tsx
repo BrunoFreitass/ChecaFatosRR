@@ -4,6 +4,7 @@ import { useNavigate } from "react-router";
 import { useAuth } from "../auth/AuthContext.ts";
 import { ViolationNotice } from "../components/ViolationNotice.tsx";
 import { ApiError, apiFetch } from "../lib/api.ts";
+import { useLegalVersion } from "../lib/legalVersion.ts";
 import { readReturnPath } from "../lib/returnPath.ts";
 import type { NicknameAvailability, NicknameRejection, Profile } from "../lib/types.ts";
 
@@ -27,11 +28,14 @@ type Check =
 type Remote = { value: string; result: NicknameAvailability | null };
 
 export function Onboarding() {
-  const { termsVersion, setProfile, reloadProfile } = useAuth();
+  const { setProfile } = useAuth();
+  // Versão dos Termos que a pessoa aceita: só a do servidor (sem ela, não dá para continuar).
+  const { legal, retry: retryLegal } = useLegalVersion();
   const navigate = useNavigate();
   const inputId = useId();
   const hintId = useId();
   const statusId = useId();
+  const legalHintId = useId();
 
   const [apelido, setApelido] = useState("");
   const [aceito, setAceito] = useState(false);
@@ -76,16 +80,12 @@ export function Onboarding() {
     event.preventDefault();
     setError(null);
     setViolation(null);
-    if (!termsVersion) {
-      setError("Estamos atualizando os dados da página. Tente de novo em alguns segundos.");
-      reloadProfile();
-      return;
-    }
+    if (legal.status !== "ready") return; // o botão já fica desabilitado
     setSubmitting(true);
     try {
       const profile = await apiFetch<Profile>("/me", {
         method: "POST",
-        body: { apelido: value, aceito_termos: true, terms_version: termsVersion },
+        body: { apelido: value, aceito_termos: true, terms_version: legal.version },
       });
       setProfile(profile);
       navigate(readReturnPath(), { replace: true });
@@ -99,8 +99,10 @@ export function Onboarding() {
         // Alguém pegou o apelido entre a verificação e o envio: marca o campo.
         setRemote({ value, result: { disponivel: false, motivo: "em_uso" } });
       } else if (err instanceof ApiError && err.code === "termos_desatualizados") {
-        setError(err.message);
-        reloadProfile();
+        // Deploy com Termos novos no meio do cadastro: busca a versão nova e pede o aceite de novo.
+        setError(`${err.message} Leia a versão nova e marque de novo o aceite.`);
+        setAceito(false);
+        retryLegal();
       } else {
         setError(err instanceof ApiError ? err.message : "Não foi possível concluir. Tente de novo.");
       }
@@ -109,7 +111,8 @@ export function Onboarding() {
     }
   }
 
-  const canSubmit = (check.state === "ok" || check.state === "unknown") && aceito && !submitting;
+  const canSubmit =
+    (check.state === "ok" || check.state === "unknown") && aceito && !submitting && legal.status === "ready";
 
   return (
     <section className="mx-auto max-w-md space-y-5">
@@ -172,6 +175,23 @@ export function Onboarding() {
           </span>
         </label>
 
+        {legal.status === "loading" && (
+          <p id={legalHintId} className="text-sm text-slate-600">
+            Carregando os Termos de Uso…
+          </p>
+        )}
+        {legal.status === "error" && (
+          <div role="alert" className="space-y-2 rounded-lg bg-red-50 p-3 text-red-900">
+            <p>Não foi possível carregar a versão dos Termos de Uso. Sem ela, não dá para continuar.</p>
+            <button
+              type="button"
+              onClick={retryLegal}
+              className="min-h-11 rounded-md border border-red-300 bg-white px-3 font-semibold"
+            >
+              Tentar de novo
+            </button>
+          </div>
+        )}
         {violation && <ViolationNotice rule={violation.rule} explanation={violation.explanation} />}
         {error && (
           <p role="alert" className="rounded-lg bg-red-50 p-3 text-red-900">
@@ -182,6 +202,7 @@ export function Onboarding() {
         <button
           type="submit"
           disabled={!canSubmit}
+          aria-describedby={legal.status === "loading" ? legalHintId : undefined}
           className="inline-flex min-h-12 w-full items-center justify-center rounded-lg bg-brand-700 px-4 font-semibold text-white hover:bg-brand-800 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {submitting ? "Salvando…" : "Continuar"}

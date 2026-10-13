@@ -14,7 +14,7 @@ from app.repositories.profiles import Profile, ProfileRepository, SqlProfileRepo
 from app.schemas.profiles import NicknameAvailabilityOut, ProfileCreate, ProfileOut
 from app.services.profiles import (
     create_profile,
-    keep_suspension_on_delete,
+    keep_moderation_on_delete,
     nickname_availability,
 )
 from app.services.rate_limit import SlidingWindowLimiter
@@ -120,7 +120,7 @@ async def delete_me(
     admin: Annotated[SupabaseAdmin, Depends(get_supabase_admin)],
 ) -> Response:
     """Exclusão de conta (LGPD). O trigger do banco apaga os textos do log de moderação.
-    Conta suspensa: a suspensão fica guardada pelo sub do Google antes (plano §10)."""
-    await keep_suspension_on_delete(user, repo, settings.ban_hash_salt)
+    Suspensão e advertências ficam guardadas pelo hash do sub do Google antes (plano §10)."""
+    await keep_moderation_on_delete(user, repo, settings.ban_hash_salt)
     await admin.delete_user(user.id)
     return Response(status_code=204)

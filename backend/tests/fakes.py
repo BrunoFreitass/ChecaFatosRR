@@ -85,6 +85,8 @@ class FakeProfileRepository:
         self.google_subs: dict[UUID, str] = {}
         self.banned_hashes: set[bytes] = set()
         self.kept_suspensions: dict[bytes, datetime] = {}
+        self.strikes: dict[UUID, int] = {}
+        self.kept_strikes: dict[bytes, int] = {}
         self.blocked_nicknames: list[tuple[str, str]] = []
 
     async def get(self, user_id: UUID) -> Profile | None:
@@ -107,6 +109,12 @@ class FakeProfileRepository:
         if sub_hash not in self.banned_hashes:
             self.kept_suspensions[sub_hash] = max(until, self.kept_suspensions.get(sub_hash, until))
 
+    async def active_strikes(self, user_id: UUID) -> int:
+        return self.strikes.get(user_id, 0)
+
+    async def keep_strikes(self, sub_hash: bytes, strikes: int) -> None:
+        self.kept_strikes[sub_hash] = max(strikes, self.kept_strikes.get(sub_hash, 0))
+
     async def create(
         self,
         user_id: UUID,
@@ -114,6 +122,7 @@ class FakeProfileRepository:
         terms_version: str,
         *,
         suspended_until: datetime | None = None,
+        sub_hash: bytes | None = None,
     ) -> Profile:
         if user_id in self.profiles:
             raise ProfileExistsError

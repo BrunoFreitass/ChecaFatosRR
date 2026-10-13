@@ -20,7 +20,15 @@ Os valores entre `<>` são seus; nunca faça commit de senhas ou chaves.
      1. `supabase/migrations/20261008000000_init.sql` (etapas 0 e 1);
      2. `supabase/migrations/20261009000000_checagem.sql` (etapa 2: checagem de links e textos);
      3. `supabase/migrations/20261010000000_prompt_version.sql` (etapa 2: versão do prompt no cache);
-     4. `supabase/migrations/20261010000001_checks_listed_link_idx.sql` (etapa 2: índice de "Últimas").
+     4. `supabase/migrations/20261010000001_checks_listed_link_idx.sql` (etapa 2: índice de "Últimas");
+     5. `supabase/migrations/20261013000000_comentarios.sql` (etapas 3+4: comentários e moderação);
+     6. `supabase/migrations/20261013000001_gemini_model_usage.sql` (contador diário por modelo);
+     7. `supabase/migrations/20261014000000_ajustes_moderacao.sql` (advertências guardadas por 30
+        dias, limite de denúncias, limpeza diária LGPD). **Antes**, ative a extensão `pg_cron`
+        (*Database → Extensions*); sem ela a migration avisa e a limpeza não fica agendada.
+   - Migration nova = aplicar **antes** do deploy do código que a usa. O `/health/ready` confere
+     uma marca de cada migration (`SCHEMA_MARKERS` em `backend/app/routers/health.py`) e dá 503
+     `schema_desatualizado` com a lista do que falta.
    - **CLI**:
      ```bash
      npx supabase init          # só na primeira vez (cria supabase/config.toml)
@@ -176,9 +184,11 @@ direto para o painel: nunca por chat, issue, print ou commit (`ADMIN_EMAIL` tamb
 ### 3.3 Conferir o deploy
 
 - `https://<servico>.onrender.com/health` → `{"status":"ok"}`
-- `/health/ready` → `{"status":"ok","database":"ok"}` (verify-full com o certificado do Supabase;
+- `/health/ready` → `{"status":"ok","database":"ok","schema":"ok"}` (verify-full com o certificado do Supabase;
   resultado em cache de 60 s; uma falha fica 10 s). Com o pool lotado (pico de checagens), ele
-  também pode dar 503: o site está de fato saturado naquele momento.
+  também pode dar 503: o site está de fato saturado naquele momento. Migration faltando → 503
+  `schema_desatualizado` com `migrations_pendentes`.
+- `/legal/version` → `{"version":"AAAA-MM-DD"}` (data vigente dos Termos e da Política).
 - `/docs`, `/redoc` e `/openapi.json` → 404
 - Logs (*Dashboard → Logs*): JSON, sem segredos; filtre por `request_id` ou `"severity": "WARNING"`.
 

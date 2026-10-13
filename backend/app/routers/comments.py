@@ -1,6 +1,7 @@
 """Rotas de comentários (públicas para ler; com login para comentar, denunciar e apagar) e da
 fila de moderação do admin (só ADMIN_EMAIL)."""
 
+import ipaddress
 from functools import lru_cache
 from typing import Annotated, Any
 
@@ -94,13 +95,33 @@ def _limit(request: Request, name: str, key: str) -> None:
         )
 
 
-# async: o limitador roda no event loop (uma thread), sem disputa no dict/deque.
-async def _read_limit(request: Request) -> None:
-    # Chave = a cadeia inteira do X-Forwarded-For (o proxy acrescenta o IP real ao fim): quem
-    # forja o IP de outra pessoa gera outra cadeia e não a bloqueia. Forjar valores novos
-    # ainda escapa do limite; ele só contém robôs simples.
+def _client_key(request: Request, settings: Settings) -> str:
+    """Chave do limite por cliente.
+
+    CLIENT_IP_HEADER configurado (só depois de confirmar em /admin/diagnostico/ip que a
+    plataforma sobrescreve o cabeçalho): usa o IP dele, se for um IP válido. Sem ele, a chave é
+    a cadeia inteira do X-Forwarded-For (o proxy acrescenta o IP real ao fim): quem forja o IP
+    de outra pessoa gera outra cadeia e não a bloqueia. Forjar valores novos ainda escapa do
+    limite; ele só contém robôs simples.
+    """
+    if settings.client_ip_header:
+        value = request.headers.get(settings.client_ip_header, "")[:64].strip()
+        try:
+            ip = ipaddress.ip_address(value)
+        except ValueError:
+            pass  # ausente ou lixo: cai no comportamento padrão
+        else:
+            # IPv6: um /64 é de uma pessoa só (trocar o fim do endereço não escapa do limite).
+            if ip.version == 6:
+                return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+            return str(ip)
     forwarded = request.headers.get("x-forwarded-for", "")[:200]
-    _limit(request, "comments_read", forwarded or (request.client.host if request.client else "?"))
+    return forwarded or (request.client.host if request.client else "?")
+
+
+# async: o limitador roda no event loop (uma thread), sem disputa no dict/deque.
+async def _read_limit(request: Request, settings: AppSettings) -> None:
+    _limit(request, "comments_read", _client_key(request, settings))
 
 
 async def _report_limit(request: Request, user: User) -> None:
@@ -164,7 +185,6 @@ async def create_comment(
         limits=CommentLimits(
             min_interval_seconds=settings.comment_min_interval_seconds,
             daily=settings.comments_daily_limit,
-            ai_daily_per_user=settings.moderation_ai_daily_per_user,
             gemini_daily_moderation=settings.gemini_daily_moderation,
         ),
         ban_salt=settings.ban_hash_salt,
@@ -186,6 +206,27 @@ async def report(public_id: PublicId, payload: ReportIn, user: User, repos: Repo
 async def delete(public_id: PublicId, user: User, repos: Repos) -> Response:
     await delete_comment(repos, public_id, user.id)
     return Response(status_code=204)
+
+
+# ---------- diagnóstico do IP (admin) ----------
+
+
+@router.get("/admin/diagnostico/ip", tags=["admin"])
+async def ip_diagnostics(
+    request: Request, _admin: Admin, settings: AppSettings, response: Response
+) -> dict[str, str | None]:
+    """Mostra os cabeçalhos de IP que chegam ao servidor, para decidir CLIENT_IP_HEADER: mande
+    um CF-Connecting-IP inventado; se ele voltar igual, o cabeçalho não é confiável."""
+    response.headers["Cache-Control"] = "no-store"
+    headers = request.headers
+    return {
+        "cf_connecting_ip": headers.get("cf-connecting-ip"),
+        "true_client_ip": headers.get("true-client-ip"),
+        "x_forwarded_for": headers.get("x-forwarded-for"),
+        "client_host": request.client.host if request.client else None,
+        "client_ip_header": settings.client_ip_header,
+        "chave_usada": _client_key(request, settings),
+    }
 
 
 # ---------- fila do admin ----------

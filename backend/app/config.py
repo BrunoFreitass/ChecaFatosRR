@@ -116,11 +116,13 @@ class Settings(BaseSettings):
     gemini_daily_moderation: int = Field(default=2000, ge=0)
     # Pool da MODERAÇÃO (o Gemma é a reserva do Flash-Lite; decisão de 12/10/2026).
     gemini_moderation_models: str = "gemini-3.1-flash-lite,gemma-4-26b-a4b-it"
-    # Moderações pela IA por usuário por dia: uma conta não gasta a cota de todos (etapa 4).
-    moderation_ai_daily_per_user: int = Field(default=20, ge=0)
-    # Comentários (etapa 3): 1 a cada 30 s e no máximo 50 por dia por usuário (12/10/2026).
+    # Comentários (etapa 3): 1 a cada 30 s e um limite só de 20 por dia por usuário, que conta
+    # também as tentativas bloqueadas pela IA (gastam a cota de moderação). Decisão de 13/10.
     comment_min_interval_seconds: int = Field(default=30, ge=0)
-    comments_daily_limit: int = Field(default=50, ge=1)
+    comments_daily_limit: int = Field(default=20, ge=1)
+    # Cabeçalho com o IP real do cliente, só se a plataforma o sobrescrever (ex.:
+    # cf-connecting-ip, conferido em /admin/diagnostico/ip). Vazio = cadeia do X-Forwarded-For.
+    client_ip_header: str | None = None
     # Chave restrita à Fact Check Tools API. Vazio = segue sem checagens de agências.
     google_factcheck_api_key: str | None = Field(default=None, repr=False)
     check_rate_limit_per_hour: int = Field(default=10, ge=1)
@@ -316,6 +318,16 @@ class Settings(BaseSettings):
     @classmethod
     def _strip_trailing_slash(cls, value: str | None) -> str | None:
         return value.rstrip("/") if value else None
+
+    @field_validator("client_ip_header")
+    @classmethod
+    def _header_name(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        name = value.strip().lower()
+        if not re.fullmatch("[a-z0-9-]{1,64}", name):
+            raise ValueError("CLIENT_IP_HEADER deve ser o nome de um cabeçalho HTTP")
+        return name
 
     @field_validator("admin_email")
     @classmethod

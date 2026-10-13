@@ -16,7 +16,6 @@ vi.mock("../lib/supabase.ts", () => ({ supabase: { auth } }));
 const READY: AuthContextValue = {
   status: "ready",
   profile: null,
-  termsVersion: null,
   errorMessage: null,
   signInWithGoogle: async () => undefined,
   signOut: async () => undefined,

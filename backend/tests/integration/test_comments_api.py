@@ -312,18 +312,29 @@ async def test_daily_comment_limit(api: Api, monkeypatch: pytest.MonkeyPatch) ->
     assert third.status_code == 429 and code(third) == "limite_diario_comentarios"
 
 
-async def test_daily_ai_moderation_limit_per_user(
+async def test_one_daily_limit_counts_ai_blocked_attempts(
     api: Api, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("MODERATION_AI_DAILY_PER_USER", "1")
+    # Decisão de 13/10/2026: um limite só (20/dia). Tentativa bloqueada pela IA também conta,
+    # porque gasta a cota de moderação.
+    monkeypatch.setenv("COMMENTS_DAILY_LIMIT", "2")
     get_settings.cache_clear()
     api.as_user(await member(api))
 
-    assert (await post(api, "Um.")).status_code == 201
-    second = await post(api, "Dois.")
+    api.moderator.answer = AiVerdict("crime", 0.5)
+    assert code(await post(api, "Bloqueado pela IA.")) == "violacao"
+    api.moderator.answer = AiVerdict("ok", 0.97)
+    assert (await post(api, "Publicado.")).status_code == 201
+    third = await post(api, "Terceiro.")
 
-    assert second.status_code == 429 and code(second) == "limite_moderacao"
-    assert len(api.moderator.calls) == 1  # o segundo nem chegou à IA
+    assert third.status_code == 429 and code(third) == "limite_diario_comentarios"
+    assert len(api.moderator.calls) == 2  # o terceiro nem chegou à IA
+
+
+def test_default_daily_limit_is_twenty() -> None:
+    get_settings.cache_clear()
+    assert get_settings().comments_daily_limit == 20
+    assert not hasattr(get_settings(), "moderation_ai_daily_per_user")
 
 
 # ---------- denúncias ----------
@@ -358,7 +369,7 @@ async def test_report_rules(api: Api) -> None:
 
     api.as_user(await member(api, days_old=0))
     new_account = await api.http.post(f"/comments/{comment_id}/denuncia", json={})
-    assert new_account.status_code == 403 and code(new_account) == "conta_nova"
+    assert new_account.status_code == 403 and code(new_account) == "conta_inelegivel_denuncia"
 
     api.as_user(await member(api))
     first = await api.http.post(f"/comments/{comment_id}/denuncia", json={})
@@ -781,14 +792,256 @@ async def test_reading_comments_is_rate_limited_per_ip(api: Api) -> None:
     assert response.status_code == 429 and response.headers["Retry-After"]
 
 
-async def test_reports_are_rate_limited_per_user(api: Api) -> None:
-    from app.services.rate_limit import SlidingWindowLimiter
+async def test_reports_daily_limit_per_person(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import comments as service
 
-    api.app.state.rate_limiters.comment_report = SlidingWindowLimiter(limit=1, window_seconds=600)
+    monkeypatch.setattr(service, "REPORT_DAILY_LIMIT", 1)
     ids = []
     for _ in range(2):
         api.as_user(await member(api))
         ids.append((await post(api, "Comentário para denunciar.")).json()["id"])
     api.as_user(await member(api))
     assert (await api.http.post(f"/comments/{ids[0]}/denuncia", json={})).status_code == 200
-    assert (await api.http.post(f"/comments/{ids[1]}/denuncia", json={})).status_code == 429
+    second = await api.http.post(f"/comments/{ids[1]}/denuncia", json={})
+    assert second.status_code == 429 and code(second) == "limite_denuncias_diario"
+    assert int(second.headers["Retry-After"]) > 0
+
+
+async def test_report_needs_a_comment_or_three_days(api: Api) -> None:
+    api.as_user(await member(api))
+    comment_id = (await post(api, "Comentário alvo.")).json()["id"]
+
+    # 2 dias de conta e nenhum comentário: ainda não pode.
+    api.as_user(await member(api, days_old=2))
+    blocked = await api.http.post(f"/comments/{comment_id}/denuncia", json={})
+    assert blocked.status_code == 403 and code(blocked) == "conta_inelegivel_denuncia"
+
+    # 2 dias de conta com 1 comentário publicado: pode.
+    api.as_user(await member(api, days_old=2))
+    assert (await post(api, "Meu primeiro comentário.")).status_code == 201
+    ok = await api.http.post(f"/comments/{comment_id}/denuncia", json={})
+    assert ok.status_code == 200
+
+    # 4 dias de conta sem comentário: pode.
+    api.as_user(await member(api, days_old=4))
+    assert (await api.http.post(f"/comments/{comment_id}/denuncia", json={})).status_code == 200
+
+
+# ---------- decisões de 13/10/2026: advertências sobrevivem à exclusão ----------
+
+
+class _DeletingAdmin:
+    def __init__(self, api: Api) -> None:
+        self._api = api
+
+    async def delete_user(self, uid: UUID) -> None:
+        async with self._api.session.begin():
+            await self._api.session.execute(
+                text("delete from auth.users where id = :id"), {"id": uid}
+            )
+
+
+async def _recreate(api: Api, sub: str) -> httpx.Response:
+    from app.legal import CURRENT_TERMS_VERSION
+
+    new_id = await create_auth_user(api.session, google_sub=sub)
+    api.as_user(new_id)
+    return await api.http.post(
+        "/me",
+        json={
+            "apelido": f"n_{new_id.hex[:12]}",
+            "aceito_termos": True,
+            "terms_version": CURRENT_TERMS_VERSION,
+        },
+    )
+
+
+async def _member_with_strikes(api: Api, strikes: int) -> tuple[UUID, str]:
+    sub = f"google-{uuid4().hex}"
+    user_id = await create_auth_user(api.session, google_sub=sub)
+    async with api.session.begin():
+        await api.session.execute(
+            text(
+                "insert into public.profiles (id, apelido, terms_version, created_at) "
+                "values (:id, :a, 'teste', now() - interval '5 days')"
+            ),
+            {"id": user_id, "a": f"k_{user_id.hex[:12]}"},
+        )
+        for _ in range(strikes):
+            await api.session.execute(
+                text("insert into public.strikes (user_id, category) values (:id, 'ofensivo')"),
+                {"id": user_id},
+            )
+    return user_id, sub
+
+
+async def test_strikes_survive_account_deletion_for_thirty_days(api: Api) -> None:
+    from app.services.supabase_admin import get_supabase_admin
+
+    user_id, sub = await _member_with_strikes(api, 2)
+    api.app.dependency_overrides[get_supabase_admin] = lambda: _DeletingAdmin(api)
+    api.as_user(user_id)
+    assert (await api.http.delete("/me")).status_code == 204
+
+    kept = await scalar(
+        api,
+        "select strikes from public.deleted_account_strikes where sub_hash = :h "
+        "and expires_at between now() + interval '29 days' and now() + interval '31 days'",
+        h=ban_hash(sub, salt=SALT),
+    )
+    assert kept == 2
+
+    created = await _recreate(api, sub)
+    assert created.status_code == 201
+    new_id = await scalar(
+        api, "select id from public.profiles where apelido = :a", a=created.json()["apelido"]
+    )
+    active = await scalar(
+        api,
+        "select count(*) from public.strikes where user_id = :u and revoked_at is null",
+        u=new_id,
+    )
+    assert active == 2
+    gone = await scalar(
+        api,
+        "select count(*) from public.deleted_account_strikes where sub_hash = :h",
+        h=ban_hash(sub, salt=SALT),
+    )
+    assert gone == 0
+
+
+async def test_expired_carried_strikes_are_not_restored(api: Api) -> None:
+    sub = f"google-{uuid4().hex}"
+    async with api.session.begin():
+        await api.session.execute(
+            text(
+                "insert into public.deleted_account_strikes (sub_hash, strikes, expires_at) "
+                "values (:h, 3, now() - interval '1 day')"
+            ),
+            {"h": ban_hash(sub, salt=SALT)},
+        )
+
+    created = await _recreate(api, sub)
+
+    assert created.status_code == 201
+    new_id = await scalar(
+        api, "select id from public.profiles where apelido = :a", a=created.json()["apelido"]
+    )
+    active = await scalar(api, "select count(*) from public.strikes where user_id = :u", u=new_id)
+    assert active == 0
+
+
+async def test_lgpd_cleanup_removes_only_expired_records(api: Api) -> None:
+    hashes = {name: ban_hash(f"google-{uuid4().hex}", salt=SALT) for name in "abcde"}
+    async with api.session.begin():
+        await api.session.execute(
+            text(
+                "insert into public.banned_identities (sub_hash, suspended_until) values "
+                "(:a, now() - interval '31 days'), (:b, now() - interval '5 days'), (:c, null)"
+            ),
+            hashes,
+        )
+        await api.session.execute(
+            text(
+                "insert into public.deleted_account_strikes (sub_hash, strikes, expires_at) "
+                "values (:d, 1, now() - interval '1 minute'), (:e, 1, now() + interval '1 day')"
+            ),
+            hashes,
+        )
+        await api.session.execute(text("select public.purge_expired_moderation_records()"))
+
+    async def exists(table: str, h: bytes) -> bool:
+        sql = f"select exists(select 1 from public.{table} where sub_hash = :h)"  # noqa: S608
+        return bool(await scalar(api, sql, h=h))
+
+    assert not await exists("banned_identities", hashes["a"])  # suspensão vencida há > 30 dias
+    assert await exists("banned_identities", hashes["b"])  # vencida há pouco: fica
+    assert await exists("banned_identities", hashes["c"])  # banimento: fica
+    assert not await exists("deleted_account_strikes", hashes["d"])
+    assert await exists("deleted_account_strikes", hashes["e"])
+
+
+# ---------- IP do cliente ----------
+
+
+async def test_client_ip_header_is_used_when_configured(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services.rate_limit import SlidingWindowLimiter
+
+    monkeypatch.setenv("CLIENT_IP_HEADER", "cf-connecting-ip")
+    get_settings.cache_clear()
+    api.app.state.rate_limiters.comments_read = SlidingWindowLimiter(limit=1, window_seconds=60)
+    first = {"cf-connecting-ip": "203.0.113.5", "x-forwarded-for": "1.1.1.1"}
+    rotated = {"cf-connecting-ip": "203.0.113.5", "x-forwarded-for": "2.2.2.2"}
+    other = {"cf-connecting-ip": "203.0.113.6", "x-forwarded-for": "1.1.1.1"}
+
+    assert (await api.http.get("/comments", headers=first)).status_code == 200
+    assert (await api.http.get("/comments", headers=rotated)).status_code == 429
+    assert (await api.http.get("/comments", headers=other)).status_code == 200
+
+
+async def test_client_ip_header_is_ignored_when_not_configured(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sem CLIENT_IP_HEADER, o CF-Connecting-IP é de quem chama: trocá-lo não escapa do limite."""
+    from app.services.rate_limit import SlidingWindowLimiter
+
+    monkeypatch.delenv("CLIENT_IP_HEADER", raising=False)
+    get_settings.cache_clear()
+    api.app.state.rate_limiters.comments_read = SlidingWindowLimiter(limit=1, window_seconds=60)
+    first = {"cf-connecting-ip": "203.0.113.5", "x-forwarded-for": "1.1.1.1"}
+    spoofed = {"cf-connecting-ip": "203.0.113.99", "x-forwarded-for": "1.1.1.1"}
+
+    assert (await api.http.get("/comments", headers=first)).status_code == 200
+    assert (await api.http.get("/comments", headers=spoofed)).status_code == 429
+
+
+async def test_invalid_client_ip_falls_back_to_forwarded_chain(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Valor que não é IP no cabeçalho configurado não vira chave (cada lixo seria um cliente)."""
+    from app.services.rate_limit import SlidingWindowLimiter
+
+    monkeypatch.setenv("CLIENT_IP_HEADER", "cf-connecting-ip")
+    get_settings.cache_clear()
+    api.app.state.rate_limiters.comments_read = SlidingWindowLimiter(limit=1, window_seconds=60)
+
+    junk = {"cf-connecting-ip": "nao-e-ip", "x-forwarded-for": "1.1.1.1"}
+    other_junk = {"cf-connecting-ip": "x" * 500, "x-forwarded-for": "1.1.1.1"}
+    assert (await api.http.get("/comments", headers=junk)).status_code == 200
+    assert (await api.http.get("/comments", headers=other_junk)).status_code == 429
+
+
+async def test_ipv6_clients_are_limited_per_64_prefix(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Um /64 IPv6 é de uma pessoa só: trocar de endereço dentro dele não escapa do limite."""
+    from app.services.rate_limit import SlidingWindowLimiter
+
+    monkeypatch.setenv("CLIENT_IP_HEADER", "cf-connecting-ip")
+    get_settings.cache_clear()
+    api.app.state.rate_limiters.comments_read = SlidingWindowLimiter(limit=1, window_seconds=60)
+
+    same_64 = {"cf-connecting-ip": "2001:db8:1:2::1"}
+    rotated = {"cf-connecting-ip": "2001:db8:1:2:ffff::9"}
+    other_64 = {"cf-connecting-ip": "2001:db8:1:3::1"}
+    assert (await api.http.get("/comments", headers=same_64)).status_code == 200
+    assert (await api.http.get("/comments", headers=rotated)).status_code == 429
+    assert (await api.http.get("/comments", headers=other_64)).status_code == 200
+
+
+async def test_ip_diagnostics_is_admin_only(api: Api) -> None:
+    api.as_user(await member(api))
+    assert (await api.http.get("/admin/diagnostico/ip")).status_code == 403
+
+    await admin(api)
+    response = await api.http.get(
+        "/admin/diagnostico/ip",
+        headers={"cf-connecting-ip": "203.0.113.5", "x-forwarded-for": "198.51.100.1"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cf_connecting_ip"] == "203.0.113.5"
+    assert body["x_forwarded_for"] == "198.51.100.1"
+    assert "chave_usada" in body

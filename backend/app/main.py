@@ -9,7 +9,7 @@ from app.db import dispose_engine
 from app.errors import register_error_handlers
 from app.logging_setup import configure_logging
 from app.middleware import BodySizeLimitMiddleware, RequestContextMiddleware
-from app.routers import checks, comments, health, profiles, tse
+from app.routers import checks, comments, health, legal, profiles, tse
 from app.services.rate_limit import RateLimiters
 from app.services.tse.service import TseCache
 
@@ -57,6 +57,7 @@ def create_app() -> FastAPI:
     app.state.ready_cache = health.ReadyCache()
     app.state.tse_cache = TseCache(ttl=5.0)
     app.include_router(health.router)
+    app.include_router(legal.router)
     app.include_router(profiles.router)
     app.include_router(checks.router)
     app.include_router(tse.router)

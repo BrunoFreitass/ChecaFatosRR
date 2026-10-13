@@ -40,7 +40,12 @@ export function Privacidade() {
             <li>o texto bloqueado, guardado por até 90 dias para revisão;</li>
             <li>
               para contas banidas, um código irreversível (hash) gerado a partir da conta Google,
-              que impede o retorno com a mesma conta.
+              que impede o retorno com a mesma conta;
+            </li>
+            <li>
+              para contas excluídas com advertências ou suspensas, o mesmo código com o número de
+              advertências e a data da suspensão, para que elas não sejam apagadas só criando uma
+              conta nova.
             </li>
           </ul>
         </li>
@@ -86,8 +91,11 @@ export function Privacidade() {
         <li>Os dados da conta ficam guardados enquanto ela existir.</li>
         <li>Textos bloqueados pela moderação são guardados por até 90 dias.</li>
         <li>
-          Quando você exclui sua conta, apagamos o apelido, os comentários e o histórico. A única
-          exceção é o código de banimento, no caso de contas banidas.
+          Quando você exclui sua conta, apagamos o apelido, os comentários e o histórico. As
+          exceções são o código de banimento (contas banidas, enquanto durar o banimento) e o
+          código com advertências e suspensão (contas excluídas com advertências ou suspensas):
+          as advertências são apagadas em 30 dias e a suspensão, 30 dias depois de terminar. A
+          limpeza é automática, todos os dias.
         </li>
         <li>
           Os resultados das checagens continuam no site depois da exclusão da conta, sem nenhuma

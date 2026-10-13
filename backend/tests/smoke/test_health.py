@@ -118,5 +118,6 @@ def test_ready_hits_the_database_once_per_minute(
 
     monkeypatch.setattr(health, "probe_database", probe)
     for _ in range(5):
-        assert client.get("/health/ready").json() == {"status": "ok", "database": "ok"}
+        body = client.get("/health/ready").json()
+        assert body == {"status": "ok", "database": "ok", "schema": "ok"}
     assert calls == [1]

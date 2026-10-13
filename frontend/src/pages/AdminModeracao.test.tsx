@@ -63,7 +63,6 @@ function auth(profile: Profile): AuthContextValue {
   return {
     status: "ready",
     profile,
-    termsVersion: null,
     errorMessage: null,
     signInWithGoogle: vi.fn(),
     signOut: vi.fn(),
