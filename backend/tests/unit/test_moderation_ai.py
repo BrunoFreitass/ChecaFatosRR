@@ -330,3 +330,30 @@ async def test_moderation_does_not_reserve_when_every_model_is_rate_limited() ->
 
     assert result == AiUnavailable("indisponivel")
     assert quota.reserved == 0 and script.prompts == []
+
+
+def _boom(*_: object) -> bool:
+    raise RuntimeError("bug antes da chamada")
+
+
+@pytest.mark.parametrize("where", ["all_exhausted", "rate_limited_now", "prompt"])
+async def test_errors_before_the_call_also_fail_open(
+    where: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Exceção nas checagens de cota/RPM ou ao montar o prompt: fail-open, nunca 500."""
+    script = Script(answer())
+    if where == "prompt":
+        from app.services.moderation import ai_filter
+
+        monkeypatch.setattr(ai_filter, "build_moderation_prompt", _boom)
+    else:
+        setattr(script, where, _boom)  # atributo da instância (sem self), como no ModelChain
+
+    quota = Quota()
+
+    result = await AiModerator(script).classify(COMMENT, quota)
+
+    assert result == AiUnavailable("indisponivel")
+    assert script.prompts == [] and quota.reserved == 0  # nem modelo, nem cota do dia
+    failures = [r for r in caplog.records if r.getMessage() == "moderation_ai_precheck_failed"]
+    assert failures and failures[0].exc_info is not None  # traceback no log

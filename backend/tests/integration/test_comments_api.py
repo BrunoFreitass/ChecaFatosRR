@@ -1045,3 +1045,40 @@ async def test_ip_diagnostics_is_admin_only(api: Api) -> None:
     assert body["cf_connecting_ip"] == "203.0.113.5"
     assert body["x_forwarded_for"] == "198.51.100.1"
     assert "chave_usada" in body
+
+
+async def test_moderator_bug_before_the_call_publishes_and_queues(api: Api) -> None:
+    """Regra do projeto: falha da IA = fail-open (publica + fila nao_moderado_ia), nunca 500."""
+    from app.routers import comments as comments_router
+    from app.services.moderation.ai_filter import AiModerator
+
+    class BrokenGenerate:
+        calls = 0  # o fail-open engoliria um erro lançado aqui: conta as chamadas
+
+        def all_exhausted(self) -> bool:
+            raise RuntimeError("bug no contador de cota")
+
+        async def __call__(self, prompt: str) -> str:
+            BrokenGenerate.calls += 1
+            return ""
+
+    api.app.dependency_overrides[comments_router.get_moderator] = lambda: AiModerator(
+        BrokenGenerate()
+    )
+    api.as_user(await member(api))
+
+    response = await post(api, "Comentário com a IA quebrada.")
+
+    assert response.status_code == 201
+    queued = await scalar(
+        api,
+        "select reason from public.moderation_queue q join public.comments c "
+        "on c.id = q.comment_id where c.public_id = :p",
+        p=response.json()["id"],
+    )
+    assert queued == "nao_moderado_ia"
+    status = await scalar(
+        api, "select status from public.comments where public_id = :p", p=response.json()["id"]
+    )
+    assert status == "visible"  # publicado (fail-open)
+    assert BrokenGenerate.calls == 0
