@@ -369,7 +369,11 @@ async def _analyze(
     try:
         with timer.stage("gemini"):
             result = await tools.analyzer.analyze(
-                data, reserve, release, model_budget=repo.reserve_gemini_model
+                data,
+                reserve,
+                release,
+                model_budget=repo.reserve_gemini_model,
+                model_release=repo.release_gemini_model,
             )
     except GeminiContentBlockedError as exc:
         # Recusa de segurança do modelo: tentar de novo dá no mesmo, e uma página pública

@@ -456,3 +456,82 @@ def test_moderation_primary_has_time_for_a_slow_answer() -> None:
     from app.services.moderation.ai_filter import ATTEMPT_SHARE, MODERATION_BUDGET_SECONDS
 
     assert MODERATION_BUDGET_SECONDS * ATTEMPT_SHARE >= 9
+
+
+@pytest.mark.parametrize(
+    ("error", "refunded"),
+    [
+        (api_error(503, "high demand"), True),
+        (api_error(500, "internal"), True),
+        (api_error(504, "deadline"), False),  # o Google pode ter processado
+    ],
+)
+async def test_overload_refunds_the_model_unit(
+    monkeypatch: pytest.MonkeyPatch, error: Exception, refunded: bool
+) -> None:
+    """503/500 = recusado sem processar: a unidade do contador diário do modelo volta, no dia
+    da reserva (13/10/2026: 503 em série esgotavam os 20/dia dos Flash sem nenhuma resposta)."""
+    from datetime import date
+
+    install(monkeypatch, {"gemini-3.8-flash": [error], "gemini-3.7-flash": [text_response(ANSWER)]})
+    day = date(2026, 10, 13)
+    released: list[tuple[str, date]] = []
+
+    async def budget(_: str, __: int) -> date:
+        return day
+
+    async def model_release(model: str, reserved_day: date) -> None:
+        released.append((model, reserved_day))
+
+    chain = google_generate(FAKE_KEY, ["gemini-3.8-flash", "gemini-3.7-flash"])
+    result = await GeminiAnalyzer(chain).analyze(
+        data(), model_budget=budget, model_release=model_release
+    )
+
+    assert result.model == "gemini-3.7-flash"  # o 3.8 falhou e a cadeia trocou
+    assert released == ([("gemini-3.8-flash", day)] if refunded else [])
+
+
+async def test_timeout_does_not_refund_the_model_unit(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    install(
+        monkeypatch,
+        {
+            "gemini-3.8-flash": [httpx.ReadTimeout("lento")],
+            "gemini-3.7-flash": [text_response(ANSWER)],
+        },
+    )
+    released: list[object] = []
+
+    async def budget(_: str, __: int) -> object:
+        from datetime import date
+
+        return date(2026, 10, 13)
+
+    async def model_release(*args: object) -> None:
+        released.append(args)
+
+    chain = google_generate(FAKE_KEY, ["gemini-3.8-flash", "gemini-3.7-flash"])
+    result = await GeminiAnalyzer(chain).analyze(
+        data(), model_budget=budget, model_release=model_release
+    )
+    assert result.model == "gemini-3.7-flash"
+    assert released == []  # o Google pode ter processado: a unidade fica
+
+
+async def test_refund_failure_does_not_break_the_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import date
+
+    install(monkeypatch, {"gemini-3.8-flash": [api_error(503, "x"), text_response(ANSWER)]})
+
+    async def budget(_: str, __: int) -> date:
+        return date(2026, 10, 13)
+
+    async def broken(*_: object) -> None:
+        raise ConnectionError("banco fora")
+
+    result = await GeminiAnalyzer(google_generate(FAKE_KEY, ["gemini-3.8-flash"])).analyze(
+        data(), model_budget=budget, model_release=broken
+    )
+    assert result.model == "gemini-3.8-flash"

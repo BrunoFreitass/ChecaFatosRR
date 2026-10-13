@@ -628,9 +628,18 @@ _DEADLINE: ContextVar[float | None] = ContextVar("gemini_deadline", default=None
 # novas tentativas de sempre. Fora de uma cadeia, não há sucessor.
 _HAS_NEXT_MODEL: ContextVar[bool] = ContextVar("gemini_has_next_model", default=False)
 # Contador DIÁRIO por modelo (no banco: o Render dorme e perderia um contador em memória).
-# Recebe (modelo, RPD) e devolve se ainda há cota hoje; modelo esgotado nem é chamado.
-ModelBudget = Callable[[str, int], Awaitable[bool]]
+# Recebe (modelo, RPD) e devolve o dia (do Pacífico) em que reservou a unidade, ou um valor
+# falso sem cota hoje; modelo esgotado nem é chamado. True = reservou sem dia conhecido.
+ModelBudget = Callable[[str, int], Awaitable[date | bool | None]]
 _MODEL_BUDGET: ContextVar[ModelBudget | None] = ContextVar("gemini_model_budget", default=None)
+# Devolve a unidade ao contador do dia da reserva (modelo, dia).
+ModelRelease = Callable[[str, date], Awaitable[None]]
+_MODEL_RELEASE: ContextVar[ModelRelease | None] = ContextVar("gemini_model_release", default=None)
+# 503/500: o Google recusou a requisição sem processá-la (sobrecarga). A unidade volta
+# (decisão de 13/10/2026: 503 em série esgotavam os 20/dia dos Flash sem nenhuma resposta).
+# Timeout e 504 não: o Google pode ter processado e cobrado. Se ele contar o 503 do lado
+# dele, o pior caso é um 429 diário real, que também troca de modelo.
+REFUNDED_STATUS = frozenset({500, 503})
 
 
 class GeminiRateLimitedError(GeminiUnavailableError):
@@ -730,12 +739,16 @@ class GeminiContentBlockedError(GeminiUnavailableError):
 
 
 @contextmanager
-def model_budget_scope(budget: "ModelBudget | None") -> Iterator[None]:
+def model_budget_scope(
+    budget: "ModelBudget | None", release: "ModelRelease | None" = None
+) -> Iterator[None]:
     """Contador diário por modelo (no banco) para as chamadas feitas dentro do bloco."""
     token = _MODEL_BUDGET.set(budget)
+    release_token = _MODEL_RELEASE.set(release)
     try:
         yield
     finally:
+        _MODEL_RELEASE.reset(release_token)
         _MODEL_BUDGET.reset(token)
 
 
@@ -1066,6 +1079,7 @@ class GeminiAnalyzer:
         reserve: Reserve = _always_allowed,
         release: Release = _nothing_to_release,
         model_budget: ModelBudget | None = None,
+        model_release: ModelRelease | None = None,
     ) -> CheckResult:
         now = self._now()
         prompt = build_prompt(data, now)
@@ -1092,6 +1106,7 @@ class GeminiAnalyzer:
                 raise GeminiQuotaExhaustedError
             token = _DEADLINE.set(deadline)
             budget_token = _MODEL_BUDGET.set(model_budget)
+            model_release_token = _MODEL_RELEASE.set(model_release)
             try:
                 async with asyncio.timeout(deadline - time.monotonic()):
                     raw = await self._generate(prompt)
@@ -1104,6 +1119,7 @@ class GeminiAnalyzer:
                     await release()
                 raise
             finally:
+                _MODEL_RELEASE.reset(model_release_token)
                 _MODEL_BUDGET.reset(budget_token)
                 _DEADLINE.reset(token)
             model = None
@@ -1161,9 +1177,10 @@ def build_generate_config(*, thinking_budget: int = 0, thinking_level: str = "")
     return build_task_config(task, "gemini-flash")
 
 
-async def _within_daily_budget(model: str, rpd: int) -> bool:
-    """Contador diário do modelo (no banco). Sem contador (eval, testes) ou com o banco fora:
-    deixa passar, e o 429 diário do Google continua tirando o modelo da fila."""
+async def _within_daily_budget(model: str, rpd: int) -> date | bool | None:
+    """Contador diário do modelo (no banco): o dia da reserva, ou falso sem cota. Sem contador
+    (eval, testes) ou com o banco fora: deixa passar (True, sem dia: nada a devolver depois),
+    e o 429 diário do Google continua tirando o modelo da fila."""
     budget = _MODEL_BUDGET.get()
     if budget is None:
         return True
@@ -1174,6 +1191,20 @@ async def _within_daily_budget(model: str, rpd: int) -> bool:
     except Exception:
         logger.warning("gemini_model_budget_failed", extra={"model": model}, exc_info=True)
         return True
+
+
+async def _release_model_unit(model: str, day: date) -> None:
+    """Devolve a unidade do contador do modelo no dia da reserva. Falha aqui só vai para o
+    log: a checagem segue (o pior caso é o contador ficar 1 acima do real)."""
+    release = _MODEL_RELEASE.get()
+    if release is None:
+        return
+    try:
+        # shield: o teto da tentativa não cancela a transação no meio (sessão compartilhada).
+        await asyncio.shield(release(model, day))
+        logger.info("gemini_model_unit_refunded", extra={"model": model})
+    except Exception:
+        logger.warning("gemini_model_refund_failed", extra={"model": model}, exc_info=True)
 
 
 def google_generate(
@@ -1236,7 +1267,10 @@ def google_generate(
             if not limiter.try_acquire(model, estimate_tokens(contents)):
                 raise GeminiCallError(429, "limite local por minuto", rate_limited=True, local=True)
             # RPD 0 na tabela = modelo desligado (sem deploy, via GEMINI_MODEL_LIMITS).
-            if (known and rpd <= 0) or (known and not await _within_daily_budget(model, rpd)):
+            reserved: date | bool | None = True
+            if known and rpd > 0:
+                reserved = await _within_daily_budget(model, rpd)
+            if (known and rpd <= 0) or not reserved:
                 raise GeminiCallError(
                     429, "cota diária do modelo (contador local)", quota_exhausted=True, local=True
                 )
@@ -1256,6 +1290,8 @@ def google_generate(
                 per_minute = exc.code == 429 and not daily
                 if per_minute:
                     limiter.saturate(model)
+                if exc.code in REFUNDED_STATUS and isinstance(reserved, date):
+                    await _release_model_unit(model, reserved)
                 raise GeminiCallError(
                     exc.code, message, quota_exhausted=daily, rate_limited=per_minute
                 ) from None

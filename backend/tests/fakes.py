@@ -2,7 +2,7 @@
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
@@ -32,6 +32,10 @@ from app.services.url_guard import NormalizedUrl
 
 TEST_SUPABASE_URL = "https://test-ref.supabase.co"
 TEST_ISSUER = f"{TEST_SUPABASE_URL}/auth/v1"
+
+
+# Dia (do Pacífico) que o contador falso devolve ao reservar uma unidade.
+FAKE_PACIFIC_DAY = date(2026, 10, 13)
 
 
 class StaticJwks:
@@ -321,12 +325,16 @@ class FakeCheckRepository:
         self.requests[request_id] = (user_id, True)
         return None
 
-    async def reserve_gemini_model(self, model: str, daily_limit: int) -> bool:
+    async def reserve_gemini_model(self, model: str, daily_limit: int) -> date | None:
         used = self.model_used.get(model, 0)
         if used >= daily_limit:
-            return False
+            return None
         self.model_used[model] = used + 1
-        return True
+        return FAKE_PACIFIC_DAY
+
+    async def release_gemini_model(self, model: str, day: date) -> None:
+        if day == FAKE_PACIFIC_DAY and self.model_used.get(model, 0) > 0:
+            self.model_used[model] -= 1
 
     async def release_gemini(self, purpose: str) -> None:
         self.gemini_used = max(0, self.gemini_used - 1)
@@ -417,7 +425,8 @@ class FakeAnalyzer:
         data: AnalysisInput,
         reserve: Callable[[], Awaitable[bool]] | None = None,
         release: Callable[[], Awaitable[None]] | None = None,
-        model_budget: Callable[[str, int], Awaitable[bool]] | None = None,
+        model_budget: Callable[[str, int], Awaitable[date | bool | None]] | None = None,
+        model_release: Callable[[str, date], Awaitable[None]] | None = None,
     ) -> CheckResult:
         if reserve is not None and not await reserve():
             raise GeminiQuotaExhaustedError

@@ -672,11 +672,11 @@ async def test_daily_counter_per_model(session: AsyncSession) -> None:
     async with session.begin():
         await session.execute(text("delete from public.gemini_model_usage"))
 
-    assert await repo.reserve_gemini_model("gemini-3.8-flash", 2) is True
-    assert await repo.reserve_gemini_model("gemini-3.8-flash", 2) is True
-    assert await repo.reserve_gemini_model("gemini-3.8-flash", 2) is False  # 2 do dia, fim
-    assert await repo.reserve_gemini_model("gemini-3.7-flash", 2) is True  # outro modelo
-    assert await repo.reserve_gemini_model("gemini-3.6-flash", 0) is False  # sem cota
+    assert await repo.reserve_gemini_model("gemini-3.8-flash", 2) is not None
+    assert await repo.reserve_gemini_model("gemini-3.8-flash", 2) is not None
+    assert await repo.reserve_gemini_model("gemini-3.8-flash", 2) is None  # 2 do dia, fim
+    assert await repo.reserve_gemini_model("gemini-3.7-flash", 2) is not None  # outro modelo
+    assert await repo.reserve_gemini_model("gemini-3.6-flash", 0) is None  # sem cota
 
 
 async def test_agencies_only_result_is_never_served_as_cache(session: AsyncSession) -> None:
@@ -708,3 +708,40 @@ async def test_agencies_only_result_is_never_served_as_cache(session: AsyncSessi
     assert isinstance(again, Started)  # análise nova, não cache
     assert await repo.find_fresh(started.subject, 24, VERSION) is None
     assert await repo.find_previous(started.subject, 24) is None
+
+
+async def _model_calls(session: AsyncSession, day: object, model: str) -> int | None:
+    async with session.begin():
+        return await session.scalar(
+            text("select calls from public.gemini_model_usage where day = :d and model = :m"),
+            {"d": day, "m": model},
+        )
+
+
+async def test_model_unit_is_refunded_on_the_reservation_day(session: AsyncSession) -> None:
+    """503/500: o Google recusou sem processar, a unidade volta (decisão de 13/10/2026). A
+    devolução vai para a linha do dia da RESERVA (dia do Pacífico), nunca abaixo de 0."""
+    from datetime import timedelta
+
+    repo = SqlCheckRepository(session)
+    async with session.begin():
+        await session.execute(text("delete from public.gemini_model_usage"))
+        pacific_today = await session.scalar(
+            text("select (now() at time zone 'America/Los_Angeles')::date")
+        )
+
+    day = await repo.reserve_gemini_model("gemini-3.8-flash", 20)
+    assert day == pacific_today
+    await repo.reserve_gemini_model("gemini-3.8-flash", 20)
+    assert await _model_calls(session, day, "gemini-3.8-flash") == 2
+
+    await repo.release_gemini_model("gemini-3.8-flash", day)
+    assert await _model_calls(session, day, "gemini-3.8-flash") == 1
+
+    # Outro dia (a chamada cruzou a meia-noite do Pacífico): não mexe no dia de hoje.
+    await repo.release_gemini_model("gemini-3.8-flash", day - timedelta(days=1))
+    assert await _model_calls(session, day, "gemini-3.8-flash") == 1
+
+    await repo.release_gemini_model("gemini-3.8-flash", day)
+    await repo.release_gemini_model("gemini-3.8-flash", day)  # já em 0: fica em 0
+    assert await _model_calls(session, day, "gemini-3.8-flash") == 0

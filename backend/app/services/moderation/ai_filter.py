@@ -22,6 +22,7 @@ from app.services.gemini import (
     Generate,
     Generated,
     ModelBudget,
+    ModelRelease,
     Reserve,
     deadline_scope,
     google_generate,
@@ -116,7 +117,11 @@ class AiModerator:
         self._budget = budget_seconds
 
     async def classify(
-        self, body: str, reserve: Reserve, model_budget: ModelBudget | None = None
+        self,
+        body: str,
+        reserve: Reserve,
+        model_budget: ModelBudget | None = None,
+        model_release: ModelRelease | None = None,
     ) -> AiVerdict | AiRefused | AiUnavailable:
         # Tudo antes da chamada também é fail-open: um bug aqui não pode virar 500.
         try:
@@ -138,7 +143,7 @@ class AiModerator:
             return self._unavailable("indisponivel")
         started = time.monotonic()
         try:
-            with deadline_scope(self._budget), model_budget_scope(model_budget):
+            with deadline_scope(self._budget), model_budget_scope(model_budget, model_release):
                 async with asyncio.timeout(self._budget):
                     # Resposta fora do schema (o Gemma não tem JSON nativo): uma nova tentativa.
                     for attempt in (1, 2):

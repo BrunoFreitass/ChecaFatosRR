@@ -38,7 +38,9 @@ class FakeModerator:
     answer: Any = field(default_factory=lambda: AiVerdict("ok", 0.97))
     calls: list[str] = field(default_factory=list)
 
-    async def classify(self, body: str, reserve: Any, model_budget: Any = None) -> Any:
+    async def classify(
+        self, body: str, reserve: Any, model_budget: Any = None, model_release: Any = None
+    ) -> Any:
         self.calls.append(body)
         if not await reserve():
             return AiUnavailable("sem_cota")
