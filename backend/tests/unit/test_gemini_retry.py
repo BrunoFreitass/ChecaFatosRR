@@ -137,12 +137,13 @@ def has_next_model() -> Iterator[None]:
         gemini._HAS_NEXT_MODEL.reset(token)
 
 
-async def test_two_503_in_a_row_hand_the_model_over() -> None:
-    # 503 persistente ("high demand"): a cadeia tenta o próximo modelo (test_gemini_fallback).
-    call = ScriptedCall(GeminiCallError(503, "a"), GeminiCallError(503, "b"), answer())
+async def test_first_503_hands_the_model_over() -> None:
+    # 503 "high demand" (13/10/2026: 3.8 deu 503 duas vezes, ~5 s jogados fora): havendo
+    # próximo modelo, a cadeia troca já na 1ª falha, sem nova tentativa no mesmo.
+    call = ScriptedCall(GeminiCallError(503, "a"), answer())
     with has_next_model(), pytest.raises(GeminiModelSlowError):
         await retrying(call, Recorder())("prompt")  # type: ignore[operator]
-    assert call.calls == 2
+    assert call.calls == 1
 
 
 async def test_without_a_next_model_503s_keep_retrying() -> None:
@@ -349,8 +350,24 @@ def test_google_message_never_carries_the_key() -> None:
     assert len(message) <= 300
 
 
-async def test_two_500_in_a_row_also_hand_the_model_over() -> None:
-    call = ScriptedCall(GeminiCallError(500, "a"), GeminiCallError(500, "b"), answer())
+async def test_first_500_also_hands_the_model_over() -> None:
+    call = ScriptedCall(GeminiCallError(500, "a"), answer())
     with has_next_model(), pytest.raises(GeminiModelSlowError):
         await retrying(call, Recorder())("prompt")  # type: ignore[operator]
-    assert call.calls == 2
+    assert call.calls == 1
+
+
+async def test_short_remaining_time_still_gets_an_attempt() -> None:
+    """Sobra menos que o teto por tentativa (18 s), mas ainda 12 s: o modelo é tentado com o
+    tempo que resta (13/10/2026: com 48 s gastos, o 3.5-flash-lite nem foi chamado)."""
+    call = ScriptedCall(answer())
+    generate = with_retries(call, attempt_timeout=18.0, budget_seconds=48.0)  # type: ignore[arg-type]
+    with gemini.deadline_scope(12.0):
+        assert await generate("prompt") == answer()
+    assert call.calls == 1
+
+
+def test_flash_attempt_cap_is_eighteen_seconds() -> None:
+    """Respostas boas medidas: 2 a 7 s. 18 s ainda sobra e deixa ~30 s do orçamento de 48 s
+    para os modelos seguintes (antes, 25 s num modelo travado comia metade)."""
+    assert Settings().gemini_attempt_timeout_seconds == 18

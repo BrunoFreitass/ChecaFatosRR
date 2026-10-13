@@ -103,10 +103,11 @@ class Settings(BaseSettings):
     # Saída de emergência sem deploy, se o log gemini_usage mostrar thoughts_tokens > 0.
     gemini_thinking_level: Literal["", "minimal", "low", "medium", "high"] = ""
     # Teto de cada tentativa, novas tentativas (só 429/500/503/504/rede) e orçamento total.
-    # 48 s: um modelo lento gasta 1 tentativa (25 s) e o próximo da cadeia ainda tem ~23 s
-    # (saudável responde em 7 a 13 s). A checagem inteira cabe em 90 s: o Render responde
-    # atrás do Cloudflare, que corta em ~100 s (524). Teto = padrão (ver check_service).
-    gemini_attempt_timeout_seconds: float = Field(default=25, gt=0, le=25)
+    # 48 s: um modelo lento gasta 1 tentativa (18 s) e os próximos da cadeia ainda têm ~30 s
+    # (respostas boas medidas: 2 a 7 s; 18 s desde 13/10/2026, antes 25). A checagem inteira
+    # cabe em 90 s: o Render responde atrás do Cloudflare, que corta em ~100 s (524).
+    # Teto = 25 (voltar via GEMINI_ATTEMPT_TIMEOUT_SECONDS sem deploy de código).
+    gemini_attempt_timeout_seconds: float = Field(default=18, gt=0, le=25)
     gemini_max_retries: int = Field(default=2, ge=0, le=2)
     gemini_budget_seconds: float = Field(default=48, gt=0, le=48)
     # Tetos de SEGURANÇA globais por dia (dia do Pacífico): quem limita de verdade é o RPD de
