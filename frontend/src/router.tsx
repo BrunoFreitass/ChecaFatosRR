@@ -2,7 +2,9 @@ import { createBrowserRouter } from "react-router";
 
 import { RequireProfile, RequireSessionWithoutProfile } from "./auth/guards.tsx";
 import { Layout } from "./components/Layout.tsx";
+import { AdminModeracao } from "./pages/AdminModeracao.tsx";
 import { AuthCallback } from "./pages/AuthCallback.tsx";
+import { Comunidade } from "./pages/Comunidade.tsx";
 import { Entrar } from "./pages/Entrar.tsx";
 import { ErrorPage } from "./pages/ErrorPage.tsx";
 import { Home } from "./pages/Home.tsx";
@@ -39,7 +41,16 @@ export const router = createBrowserRouter([
           </RequireProfile>
         ),
       },
+      {
+        path: "admin/moderacao",
+        element: (
+          <RequireProfile>
+            <AdminModeracao />
+          </RequireProfile>
+        ),
+      },
       { path: "checagem/:slug", element: <Resultado /> },
+      { path: "comunidade", element: <Comunidade /> },
       { path: "ultimas", element: <Ultimas /> },
       { path: "apuracao", element: <Apuracao /> },
       { path: "termos", element: <Termos /> },

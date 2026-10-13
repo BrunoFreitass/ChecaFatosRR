@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation, useParams } from "react-router";
 
+import { Comments } from "../components/Comments.tsx";
 import { Loading } from "../components/Loading.tsx";
 import { ShareButtons } from "../components/ShareButtons.tsx";
 import { VerdictBadge } from "../components/VerdictBadge.tsx";
@@ -311,6 +312,9 @@ function ResultadoDaChecagem({ slug }: { slug: string }) {
         </h2>
         <ShareButtons text={shareText} url={window.location.href} />
       </section>
+
+      {/* Comentários só em checagens de links (texto colado é privado de quem recebeu). */}
+      {check.tipo === "link" && <Comments checagem={check.id} title="Comentários" />}
 
       <p className="text-sm text-slate-600">
         Checado em {formatDateTime(check.created_at)} (horário de Boa Vista).{" "}

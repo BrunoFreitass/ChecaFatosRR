@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 
 import { useAuth } from "../auth/AuthContext.ts";
 import { ApiError, apiFetch } from "../lib/api.ts";
@@ -78,6 +78,15 @@ export function MinhaConta() {
         </p>
         <StatusLine profile={profile} />
       </div>
+
+      {profile.is_admin && (
+        <Link
+          to="/admin/moderacao"
+          className="inline-flex min-h-12 w-full items-center justify-center rounded-lg bg-brand-700 px-4 font-semibold text-white"
+        >
+          Fila de moderação
+        </Link>
+      )}
 
       <button
         type="button"

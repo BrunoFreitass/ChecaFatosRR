@@ -38,6 +38,12 @@ export function Layout() {
             >
               Últimas
             </Link>
+            <Link
+              to="/comunidade"
+              className="inline-flex min-h-11 items-center rounded-md px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand-700"
+            >
+              Comunidade
+            </Link>
             <UserMenu />
           </nav>
         </div>
