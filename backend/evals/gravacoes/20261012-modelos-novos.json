@@ -1,0 +1,55 @@
+{
+  "data": "2026-10-12",
+  "nota": "Sondagem autorizada (12/10/2026): 1 chamada por modelo novo, caso boato-votar-pela-internet. Gemma nativo: recusou system instruction + JSON schema.",
+  "medicoes": {
+    "gemini-3.6-flash": {
+      "ok": true,
+      "ms": 2655,
+      "in": 1064,
+      "out": 224,
+      "thoughts": null,
+      "schema_ok": true
+    },
+    "gemini-2.5-flash": {
+      "ok": false,
+      "status": 404,
+      "erro": "This model models/gemini-2.5-flash is no longer available to new users. Please update your code to use models/gemini-3.8-flash for the latest features and improvements. We recommend you to use the Interactions API (https://ai.google.dev/gemini-api/docs/get-started).",
+      "ms": 328,
+      "schema_ok": false
+    },
+    "gemini-3.5-flash-lite": {
+      "ok": false,
+      "status": 400,
+      "erro": "Request contains an invalid argument.",
+      "ms": 703,
+      "schema_ok": false
+    },
+    "gemma-4-31b-it (nativo)": {
+      "ok": false,
+      "status": 400,
+      "erro": "Thinking budget is not supported for this model.",
+      "ms": 358,
+      "schema_ok": false
+    },
+    "gemma-4-31b-it (adaptado)": {
+      "ok": false,
+      "status": 500,
+      "erro": "Internal error encountered.",
+      "ms": 656,
+      "schema_ok": false
+    },
+    "gemma-4-26b-a4b-it (adaptado)": {
+      "ok": true,
+      "ms": 11422,
+      "in": 657,
+      "out": null,
+      "thoughts": 509,
+      "schema_ok": false
+    }
+  },
+  "respostas_por_modelo": {
+    "gemini-3.6-flash": {
+      "boato-votar-pela-internet": "{\"veredito\":\"falso\",\"resumo\":\"A mensagem afirma que é possível votar para eleição diretamente pelo aplicativo e-Título, sem ir à seção eleitoral. Essa informação é falsa: o e-Título serve para apresentar o documento digital, consultar o local de votação ou justificar a ausência, mas não permite a votação online. O voto no Brasil é presencial e feito exclusivamente na urna eletrônica.\",\"pontos_suspeitos\":[\"Mensagem encaminhada sem indicação de fonte oficial ou autoridade eleitoral.\",\"Afirmação falsa sobre funcionalidade do aplicativo e-Título que não existe na legislação eleitoral brasileira.\"],\"contexto_faltante\":\"A Justiça Eleitoral não disponibiliza sistema de votação pela internet ou por aplicativos. O e-Título serve apenas como documento digital e para serviços como justificativa e consulta de dados.\",\"checagens_agencias\":[],\"fontes_sugeridas\":[\"Portal oficial do Tribunal Superior Eleitoral (TSE)\",\"Página oficial do aplicativo e-Título no site do TSE\"],\"confianca\":100}"
+    }
+  }
+}

@@ -664,3 +664,16 @@ async def test_request_becomes_a_lookup_only_under_the_lookup_limit(session: Asy
     assert await repo.convert_to_lookup(request_ids[1], user_id, 2) is None
     retry = await repo.convert_to_lookup(request_ids[2], user_id, 2)
     assert retry is not None and 0 < retry <= 3600
+
+
+async def test_daily_counter_per_model(session: AsyncSession) -> None:
+    # RPD por modelo (nível gratuito): o esgotado é pulado sem chamar o Google.
+    repo = SqlCheckRepository(session)
+    async with session.begin():
+        await session.execute(text("delete from public.gemini_model_usage"))
+
+    assert await repo.reserve_gemini_model("gemini-3.8-flash", 2) is True
+    assert await repo.reserve_gemini_model("gemini-3.8-flash", 2) is True
+    assert await repo.reserve_gemini_model("gemini-3.8-flash", 2) is False  # 2 do dia, fim
+    assert await repo.reserve_gemini_model("gemini-3.7-flash", 2) is True  # outro modelo
+    assert await repo.reserve_gemini_model("gemini-3.6-flash", 0) is False  # sem cota

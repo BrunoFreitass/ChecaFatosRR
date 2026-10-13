@@ -17,6 +17,7 @@ from evals.checagem import (
     load_cases,
     recording_day,
     replay,
+    replay_by_model,
     require_real_run,
     run_real,
 )
@@ -379,3 +380,68 @@ def test_no_case_without_agency_checks_accepts_true() -> None:
     for c in load_cases(CASES_FILE):
         if not c.checagens:
             assert "verdadeiro" not in c.aceitos, c.id
+
+
+# ---------- qualidade por modelo (pools de 12/10/2026) ----------
+
+
+def _answer(veredito: str, confianca: int) -> str:
+    return json.dumps(
+        {
+            "veredito": veredito,
+            "resumo": "Resumo.",
+            "pontos_suspeitos": [],
+            "contexto_faltante": None,
+            "checagens_agencias": [],
+            "fontes_sugeridas": [],
+            "confianca": confianca,
+        }
+    )
+
+
+async def test_replay_grades_each_model_of_the_pool_separately() -> None:
+    boato = Case(
+        id="boato",
+        categoria="boato_checado",
+        origem="sintético",
+        kind="texto",
+        url=None,
+        titulo=None,
+        conteudo="Dá para votar pela internet no 2º turno.",
+        publicado_em=None,
+        checagens=[],
+        aceitos=["falso"],
+    )
+    recording = {
+        "respostas_por_modelo": {
+            "gemini-3.6-flash": {"boato": _answer("falso", 95)},
+            "gemma-4-31b-it": {"boato": _answer("falso", 50)},  # rebaixado: confiança baixa
+        }
+    }
+
+    by_model = await replay_by_model([boato], recording, today=date(2026, 10, 12))
+
+    assert set(by_model) == {"gemini-3.6-flash", "gemma-4-31b-it"}
+    assert grade(by_model["gemini-3.6-flash"]).acertos == 1
+    assert grade(by_model["gemma-4-31b-it"]).acertos == 0
+
+
+async def test_old_recordings_without_the_model_still_replay() -> None:
+    case = Case(
+        id="x",
+        categoria="whatsapp",
+        origem="sintético",
+        kind="texto",
+        url=None,
+        titulo=None,
+        conteudo="Corrente sem fonte.",
+        publicado_em=None,
+        checagens=[],
+        aceitos=["nao_verificavel"],
+    )
+    recording = {"respostas": {"x": _answer("nao_verificavel", 30)}}
+
+    by_model = await replay_by_model([case], recording, today=date(2026, 10, 12))
+
+    assert list(by_model) == ["(modelo não gravado)"]
+    assert grade(by_model["(modelo não gravado)"]).acertos == 1

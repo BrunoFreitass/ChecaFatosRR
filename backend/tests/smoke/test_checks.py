@@ -1019,3 +1019,20 @@ def test_agencies_only_save_failure_gives_the_limit_back(api: TestClient, env: E
     assert response.status_code == 500
     assert env.checks.requests == {}  # o pedido não conta em limite nenhum
     assert env.checks.claimed == {}
+
+
+# ---------- pools de modelos (12/10/2026) ----------
+
+
+def test_the_model_that_answered_is_recorded_and_logged(
+    api: TestClient, env: Env, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="app.services.check_service")
+    env.analyzer.model = "gemini-3.6-flash"  # o 3º do pool respondeu
+    _, headers = env.login()
+
+    api.post("/checks", json={"url": LINK}, headers=headers)
+
+    assert env.checks.saved[0].model == "gemini-3.6-flash"
+    assert env.checks.saved[0].result["model"] == "gemini-3.6-flash"
+    assert _timing(caplog).model == "gemini-3.6-flash"

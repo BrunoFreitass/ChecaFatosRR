@@ -228,6 +228,25 @@ async def replay(cases: list[Case], recorded: dict[str, str], *, today: date) ->
     return results
 
 
+UNKNOWN_MODEL = "(modelo não gravado)"
+
+
+async def replay_by_model(
+    cases: list[Case], recording: dict[str, object], *, today: date
+) -> dict[str, list[CaseResult]]:
+    """Replay de cada modelo do pool em separado (gravações com "respostas_por_modelo",
+    12/10/2026). Gravações antigas (só "respostas") viram um grupo sem modelo."""
+    by_model = recording.get("respostas_por_modelo")
+    if not isinstance(by_model, dict):
+        answers = recording.get("respostas")
+        by_model = {UNKNOWN_MODEL: answers if isinstance(answers, dict) else {}}
+    return {
+        model: await replay(cases, answers, today=today)
+        for model, answers in by_model.items()
+        if isinstance(answers, dict)
+    }
+
+
 def require_real_run(case_ids: list[str]) -> None:
     if os.environ.get(REAL_RUN_FLAG) != "1":
         raise RealRunRefusedError(
@@ -327,6 +346,17 @@ def _print_report(results: list[CaseResult], report: Report) -> None:
     print(f"revisar à mão ('suposto' em link confirmado): {report.revisar_suposto}")
 
 
+def _print_model_table(by_model: dict[str, list[CaseResult]], today: date) -> None:
+    """Qualidade por modelo do pool, lado a lado."""
+    print(f"{'modelo':<26} {'casos':>5} {'acertos':>7} {'falso NV':>8} {'falso F':>7}")
+    for model, model_results in by_model.items():
+        report = grade(model_results, today)
+        print(
+            f"{model:<26} {report.total:>5} {report.acertos:>7} "
+            f"{len(report.falso_nao_verificavel):>8} {len(report.falso_falso):>7}"
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Eval dos vereditos da checagem.")
     parser.add_argument("--casos-arquivo", type=Path, default=HERE / "casos_checagem.json")
@@ -341,7 +371,13 @@ def main() -> None:
     if args.replay:
         recording = json.loads(args.replay.read_text(encoding="utf-8"))
         today = recording_day(recording, today)
-        results = asyncio.run(replay(cases, recording["respostas"], today=today))
+        by_model = asyncio.run(replay_by_model(cases, recording, today=today))
+        for model, model_results in by_model.items():
+            print(f"=== {model} ===")
+            _print_report(model_results, grade(model_results, today))
+            print()
+        _print_model_table(by_model, today)
+        return
     else:
         ids = [i.strip() for i in args.casos.split(",") if i.strip()]
         require_real_run(ids)

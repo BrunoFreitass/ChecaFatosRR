@@ -121,7 +121,7 @@ async def test_full_model_is_skipped_without_a_call(monkeypatch: pytest.MonkeyPa
         monkeypatch,
         {PRIMARY: [text_response(ANSWER)], BACKUP: [text_response(ANSWER)]},
     )
-    chain = google_generate(FAKE_KEY, [PRIMARY, BACKUP], rpm_per_model=1)
+    chain = google_generate(FAKE_KEY, [PRIMARY, BACKUP], rpm_per_model=1, limits={})
 
     assert await chain("prompt") == Generated(ANSWER, PRIMARY)
     assert await chain("prompt") == Generated(ANSWER, BACKUP)
@@ -145,7 +145,7 @@ async def test_analyzer_does_not_spend_the_daily_quota_when_every_model_is_full(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install(monkeypatch, {PRIMARY: [text_response(ANSWER)]})
-    chain = google_generate(FAKE_KEY, [PRIMARY], rpm_per_model=1)
+    chain = google_generate(FAKE_KEY, [PRIMARY], rpm_per_model=1, limits={})
     await chain("prompt")
     reserved: list[int] = []
 
@@ -161,15 +161,6 @@ async def test_analyzer_does_not_spend_the_daily_quota_when_every_model_is_full(
 def test_rate_limited_is_a_kind_of_unavailable() -> None:
     # Quem só conhece "indisponível" continua funcionando.
     assert issubclass(GeminiRateLimitedError, gemini.GeminiUnavailableError)
-
-
-def test_default_daily_checks_and_rpm_follow_the_free_tier() -> None:
-    from app.config import Settings
-
-    settings = Settings(_env_file=None)  # type: ignore[call-arg]
-    # RPD 20 por modelo, 2 modelos = 40: 36 deixa margem (12/10/2026).
-    assert settings.gemini_daily_checks == 36
-    assert settings.gemini_rpm_per_model == 5
 
 
 # ---------- revisão: cota diária devolvida quando nenhum modelo foi chamado ----------
@@ -214,7 +205,7 @@ async def test_daily_unit_is_kept_when_google_was_called(monkeypatch: pytest.Mon
 
 async def test_skipped_full_models_are_not_a_call(monkeypatch: pytest.MonkeyPatch) -> None:
     install(monkeypatch, {PRIMARY: [text_response(ANSWER)]})
-    chain = google_generate(FAKE_KEY, [PRIMARY], rpm_per_model=1)
+    chain = google_generate(FAKE_KEY, [PRIMARY], rpm_per_model=1, limits={})
     await chain("prompt")
 
     with pytest.raises(GeminiRateLimitedError) as caught:

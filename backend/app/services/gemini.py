@@ -15,7 +15,7 @@ import secrets
 import time
 import unicodedata
 from collections import deque
-from collections.abc import Awaitable, Callable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError
 
 from app.services.factcheck import AgencyCheck
+from app.services.model_limits import DEFAULT_MODEL_LIMITS, ModelLimits
 from app.services.url_guard import (
     URL_IN_TEXT,
     URL_TRAILING,
@@ -626,6 +627,10 @@ _DEADLINE: ContextVar[float | None] = ContextVar("gemini_deadline", default=None
 # sucessor, um 503 persistente não troca nada (nem deixa o modelo no fim da fila): segue as
 # novas tentativas de sempre. Fora de uma cadeia, não há sucessor.
 _HAS_NEXT_MODEL: ContextVar[bool] = ContextVar("gemini_has_next_model", default=False)
+# Contador DIÁRIO por modelo (no banco: o Render dorme e perderia um contador em memória).
+# Recebe (modelo, RPD) e devolve se ainda há cota hoje; modelo esgotado nem é chamado.
+ModelBudget = Callable[[str, int], Awaitable[bool]]
+_MODEL_BUDGET: ContextVar[ModelBudget | None] = ContextVar("gemini_model_budget", default=None)
 
 
 class GeminiRateLimitedError(GeminiUnavailableError):
@@ -654,36 +659,54 @@ RPM_WINDOW_SECONDS = 60.0
 
 
 class RpmLimiter:
-    """Requisições por minuto por modelo, neste processo (o Render roda uma instância só).
+    """Requisições (RPM) e tokens (TPM) por minuto por modelo, neste processo (o Render roda
+    uma instância só).
 
-    Nível gratuito (AI Studio, 12/10/2026): RPM 5 por modelo. Modelo cheio é pulado sem
-    chamar o Google. rpm 0 = sem limite local (o 429 do Google ainda bloqueia o modelo por
-    um minuto, via saturate). Estado num event loop só: sem corrida.
+    Nível gratuito (AI Studio, 12/10/2026): RPM 5 nos Flash, 15 nos Flash-Lite, 30 e TPM 16K
+    nos Gemma (ver model_limits). Modelo cheio é pulado sem chamar o Google. `rpm` vale para
+    modelo sem limite próprio em `per_model`; 0 = sem limite local (o 429 do Google ainda
+    bloqueia o modelo por um minuto, via saturate). Estado num event loop só: sem corrida.
     """
 
-    def __init__(self, rpm: int, *, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        rpm: int = 0,
+        *,
+        per_model: Mapping[str, ModelLimits] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._rpm = rpm
+        self._per_model = dict(per_model or {})
         self._clock = clock
-        self._calls: dict[str, deque[float]] = {}
+        self._calls: dict[str, deque[tuple[float, int]]] = {}
         self._blocked_until: dict[str, float] = {}
 
-    def _window(self, model: str) -> deque[float]:
+    def _limits(self, model: str) -> tuple[int, int | None]:
+        own = self._per_model.get(model)
+        return (own.rpm, own.tpm) if own else (self._rpm, None)
+
+    def _window(self, model: str) -> deque[tuple[float, int]]:
         calls = self._calls.setdefault(model, deque())
         cutoff = self._clock() - RPM_WINDOW_SECONDS
-        while calls and calls[0] <= cutoff:
+        while calls and calls[0][0] <= cutoff:
             calls.popleft()
         return calls
 
-    def has_room(self, model: str) -> bool:
+    def has_room(self, model: str, tokens: int = 0) -> bool:
         if self._clock() < self._blocked_until.get(model, float("-inf")):
             return False
-        return self._rpm <= 0 or len(self._window(model)) < self._rpm
-
-    def try_acquire(self, model: str) -> bool:
-        if not self.has_room(model):
+        rpm, tpm = self._limits(model)
+        calls = self._window(model)
+        if rpm > 0 and len(calls) >= rpm:
             return False
-        if self._rpm > 0:
-            self._window(model).append(self._clock())
+        return tpm is None or sum(t for _, t in calls) + tokens <= tpm
+
+    def try_acquire(self, model: str, tokens: int = 0) -> bool:
+        if not self.has_room(model, tokens):
+            return False
+        rpm, tpm = self._limits(model)
+        if rpm > 0 or tpm is not None:
+            self._window(model).append((self._clock(), tokens))
         return True
 
     def saturate(self, model: str) -> None:
@@ -704,6 +727,16 @@ class GeminiModelSlowError(GeminiUnavailableError):
 class GeminiContentBlockedError(GeminiUnavailableError):
     """O próprio Gemini recusou o conteúdo (resposta vazia por SAFETY e afins). Na checagem é
     só "indisponível"; na moderação de comentários é bloqueio (nunca fail-open)."""
+
+
+@contextmanager
+def model_budget_scope(budget: "ModelBudget | None") -> Iterator[None]:
+    """Contador diário por modelo (no banco) para as chamadas feitas dentro do bloco."""
+    token = _MODEL_BUDGET.set(budget)
+    try:
+        yield
+    finally:
+        _MODEL_BUDGET.reset(token)
 
 
 @contextmanager
@@ -814,7 +847,10 @@ def with_retries(
                 },
             )
             if quota_exhausted:
-                raise GeminiQuotaExhaustedError
+                exhausted = GeminiQuotaExhaustedError()
+                # Recusado pelo NOSSO contador: nada chegou ao Google.
+                exhausted.local = isinstance(exc_info, GeminiCallError) and exc_info.local
+                raise exhausted
             if isinstance(exc_info, GeminiCallError) and exc_info.blocked:
                 raise GeminiContentBlockedError(message)
             if isinstance(exc_info, GeminiCallError) and exc_info.rate_limited:
@@ -825,9 +861,12 @@ def with_retries(
             if deadline_failures >= min(DEADLINE_FAILURES_TO_SWITCH, max_retries + 1):
                 raise GeminiModelSlowError(model)
             has_next = _HAS_NEXT_MODEL.get()
-            # Modelo renomeado ou removido (404): o próximo da cadeia, na hora (12/10/2026).
-            if status == 404 and has_next:
-                raise GeminiModelSlowError(model, "404")
+            # Modelo renomeado ou removido (404), ou configuração que ele recusa (400, como o
+            # thinking_budget no Gemma): o próximo da cadeia, na hora (12/10/2026).
+            # Chave inválida também é 400, mas vale para todos os modelos: não anda a fila.
+            key_problem = status == 400 and "api key" in message.lower()
+            if status in (400, 404) and has_next and not key_problem:
+                raise GeminiModelSlowError(model, str(status))
             overloaded = status in OVERLOADED_STATUS and has_next
             unavailable_failures = unavailable_failures + 1 if overloaded else 0
             if unavailable_failures >= UNAVAILABLE_FAILURES_TO_SWITCH or (
@@ -917,15 +956,21 @@ class ModelChain:
             token = _HAS_NEXT_MODEL.set(successor)
             try:
                 text = await call(prompt)
-            except GeminiQuotaExhaustedError:
-                called = True
+            except GeminiQuotaExhaustedError as exc:
+                called = called or not getattr(exc, "local", False)
                 wait = min(self._seconds_until_reset(), EXHAUSTED_RECHECK_SECONDS)
                 self._exhausted_until[model] = self._clock() + wait
                 logger.warning("gemini_model_quota_exhausted", extra={"model": model})
                 continue
             except GeminiModelSlowError as exc:
                 called = True
-                self._slow_until[model] = self._clock() + SLOW_MODEL_COOLDOWN_SECONDS
+                # Modelo que recusa a configuração (400) ou sumiu (404) não melhora em minutos.
+                cooldown = (
+                    EXHAUSTED_RECHECK_SECONDS
+                    if exc.reason in ("400", "404")
+                    else SLOW_MODEL_COOLDOWN_SECONDS
+                )
+                self._slow_until[model] = self._clock() + cooldown
                 logger.warning("gemini_model_slow", extra={"model": model, "reason": exc.reason})
                 slow_seen = True
                 continue
@@ -974,6 +1019,7 @@ class GeminiAnalyzer:
         data: AnalysisInput,
         reserve: Reserve = _always_allowed,
         release: Release = _nothing_to_release,
+        model_budget: ModelBudget | None = None,
     ) -> CheckResult:
         now = self._now()
         prompt = build_prompt(data, now)
@@ -999,6 +1045,7 @@ class GeminiAnalyzer:
                     logger.warning("gemini_quota_ended_before_retry", extra={"attempt": attempt})
                 raise GeminiQuotaExhaustedError
             token = _DEADLINE.set(deadline)
+            budget_token = _MODEL_BUDGET.set(model_budget)
             try:
                 async with asyncio.timeout(deadline - time.monotonic()):
                     raw = await self._generate(prompt)
@@ -1011,6 +1058,7 @@ class GeminiAnalyzer:
                     await release()
                 raise
             finally:
+                _MODEL_BUDGET.reset(budget_token)
                 _DEADLINE.reset(token)
             model = None
             if isinstance(raw, Generated):
@@ -1061,22 +1109,25 @@ def build_generate_config(*, thinking_budget: int = 0, thinking_level: str = "")
     dos 3.x) substitui o budget quando definido: mandar os dois dá 400. O 3.8-flash recusa
     "minimal" (400, 10/10/2026). O log gemini_usage mostra os thoughts_tokens de cada resposta.
     """
-    from google.genai import types
+    from app.services.llm_models import CHECK_TASK, build_task_config
 
-    if thinking_level:
-        level = types.ThinkingLevel(thinking_level.upper())
-        thinking = types.ThinkingConfig(thinking_level=level)
-    else:
-        thinking = types.ThinkingConfig(thinking_budget=thinking_budget)
+    task = replace(CHECK_TASK, thinking_budget=thinking_budget, thinking_level=thinking_level)
+    return build_task_config(task, "gemini-flash")
 
-    return types.GenerateContentConfig(
-        system_instruction=SYSTEM_INSTRUCTION,
-        response_mime_type="application/json",
-        response_schema=GeminiVerdict,
-        temperature=0.2,
-        max_output_tokens=4096,
-        thinking_config=thinking,
-    )
+
+async def _within_daily_budget(model: str, rpd: int) -> bool:
+    """Contador diário do modelo (no banco). Sem contador (eval, testes) ou com o banco fora:
+    deixa passar, e o 429 diário do Google continua tirando o modelo da fila."""
+    budget = _MODEL_BUDGET.get()
+    if budget is None:
+        return True
+    try:
+        # shield: o teto da tentativa não cancela a transação no meio (a sessão do banco é a
+        # mesma das gravações seguintes da checagem).
+        return await asyncio.shield(budget(model, rpd))
+    except Exception:
+        logger.warning("gemini_model_budget_failed", extra={"model": model}, exc_info=True)
+        return True
 
 
 def google_generate(
@@ -1088,38 +1139,65 @@ def google_generate(
     attempt_timeout: float = 25.0,
     max_retries: int = 2,
     budget_seconds: float = 48.0,
-    config: Any = None,
+    task: Any = None,
+    limits: Mapping[str, ModelLimits] | None = None,
     rpm_per_model: int = 0,
+    gemma_attempt_timeout: float | None = None,
 ) -> ModelChain:
     """`generate` real: SDK google-genai (chave no cabeçalho x-goog-api-key, sem os retries
     do próprio SDK) + `with_retries` por modelo + `with_model_fallback` na cadeia `models`.
 
-    `config` None = a da checagem (build_generate_config); a moderação passa a dela."""
+    `task` (llm_models.TaskSpec) None = a checagem; a moderação passa a dela. Cada modelo
+    recebe a configuração da sua família (Flash, Flash-Lite, Gemma) e respeita os seus
+    limites (`limits`, padrão: a tabela do nível gratuito): RPM e TPM em memória, RPD pelo
+    contador no banco (`model_budget` do analisador)."""
     if isinstance(models, str) or not models:
         raise ValueError("models deve ser uma lista não vazia de nomes de modelo")
     import httpx
     from google import genai
     from google.genai import errors, types
 
+    # O Gemma pensa antes de responder (11 s num comentário curto, 12/10/2026): tentativa
+    # própria, mais longa; o prazo total compartilhado continua mandando.
+    gemma_timeout = gemma_attempt_timeout or attempt_timeout
     client = genai.Client(
-        api_key=api_key, http_options=types.HttpOptions(timeout=int(attempt_timeout * 1000))
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=int(max(attempt_timeout, gemma_timeout) * 1000)),
     )
-    if config is None:
-        config = build_generate_config(
-            thinking_budget=thinking_budget, thinking_level=thinking_level
-        )
+    from app.services.llm_models import (
+        CHECK_TASK,
+        build_task_config,
+        build_task_contents,
+        estimate_tokens,
+        extract_json,
+        family,
+    )
 
-    limiter = RpmLimiter(rpm_per_model)
+    if task is None:
+        task = replace(CHECK_TASK, thinking_budget=thinking_budget, thinking_level=thinking_level)
+    model_limits = dict(DEFAULT_MODEL_LIMITS if limits is None else limits)
+    limiter = RpmLimiter(rpm_per_model, per_model=model_limits)
 
     def raw_call(model: str) -> RawCall:
+        config = build_task_config(task, model)
+        gemma = family(model) == "gemma"
+        known = model in model_limits
+        rpd = model_limits[model].rpd if known else 0
+
         async def call(prompt: str) -> str | None:
-            # Cada requisição (inclusive novas tentativas) conta no RPM do modelo.
-            if not limiter.try_acquire(model):
+            contents = build_task_contents(task, model, prompt)
+            # Cada requisição (inclusive novas tentativas) conta no RPM/TPM do modelo.
+            if not limiter.try_acquire(model, estimate_tokens(contents)):
                 raise GeminiCallError(429, "limite local por minuto", rate_limited=True, local=True)
+            # RPD 0 na tabela = modelo desligado (sem deploy, via GEMINI_MODEL_LIMITS).
+            if (known and rpd <= 0) or (known and not await _within_daily_budget(model, rpd)):
+                raise GeminiCallError(
+                    429, "cota diária do modelo (contador local)", quota_exhausted=True, local=True
+                )
             started = time.monotonic()
             try:
                 response = await client.aio.models.generate_content(
-                    model=model, contents=prompt, config=config
+                    model=model, contents=contents, config=config
                 )
             except errors.APIError as exc:
                 # "from None": a exceção original carrega a resposta HTTP inteira; o log só
@@ -1145,8 +1223,10 @@ def google_generate(
                 # Bloqueio de segurança, MAX_TOKENS etc.: o mesmo prompt teria o mesmo fim.
                 reason, refused = _empty_reason(response)
                 raise GeminiCallError(None, reason, retryable=False, blocked=refused)
-            _log_usage(model, prompt, response, started)
-            return response.text
+            _log_usage(model, contents, response, started)
+            # Gemma sem JSON nativo: só o objeto (```json e texto em volta saem); o Pydantic
+            # de quem chamou valida, e a resposta fora do schema pede uma nova tentativa.
+            return extract_json(response.text) if gemma else response.text
 
         return call
 
@@ -1156,7 +1236,7 @@ def google_generate(
             with_retries(
                 raw_call(model),
                 max_retries=max_retries,
-                attempt_timeout=attempt_timeout,
+                attempt_timeout=gemma_timeout if family(model) == "gemma" else attempt_timeout,
                 budget_seconds=budget_seconds,
                 model=model,
             ),

@@ -172,6 +172,7 @@ class FakeCheckRepository:
         self.claimed: dict[SubjectRef, datetime] = {}
         self.busy = False  # simula outra instância checando o mesmo conteúdo
         self.gemini_used = 0
+        self.model_used: dict[str, int] = {}
         self.saved: list[NewCheck] = []
         self._next_id = 0
         self._clock = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
@@ -295,6 +296,13 @@ class FakeCheckRepository:
         self.requests[request_id] = (user_id, True)
         return None
 
+    async def reserve_gemini_model(self, model: str, daily_limit: int) -> bool:
+        used = self.model_used.get(model, 0)
+        if used >= daily_limit:
+            return False
+        self.model_used[model] = used + 1
+        return True
+
     async def release_gemini(self, purpose: str) -> None:
         self.gemini_used = max(0, self.gemini_used - 1)
 
@@ -384,6 +392,7 @@ class FakeAnalyzer:
         data: AnalysisInput,
         reserve: Callable[[], Awaitable[bool]] | None = None,
         release: Callable[[], Awaitable[None]] | None = None,
+        model_budget: Callable[[str, int], Awaitable[bool]] | None = None,
     ) -> CheckResult:
         if reserve is not None and not await reserve():
             raise GeminiQuotaExhaustedError

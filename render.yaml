@@ -40,10 +40,6 @@ services:
         sync: false
       - key: CORS_ORIGINS # URL do Cloudflare Pages (provisório: http://localhost:5173)
         sync: false
-      - key: GEMINI_DAILY_CHECKS # pelo RPD do Gemini
-        sync: false
-      - key: GEMINI_DAILY_MODERATION
-        sync: false
       # ---- configuração ----
       - key: APP_ENV
         value: production
@@ -51,10 +47,17 @@ services:
         value: INFO
       - key: DATABASE_SSL_ROOT_CERT
         value: /srv/certs/supabase-ca.crt
+      # Pools separados por função (12/10/2026); limites por modelo em app/services/model_limits.py
+      # (GEMINI_MODEL_LIMITS no painel muda um modelo sem deploy).
       - key: GEMINI_MODEL_FALLBACKS
-        value: gemini-3.8-flash,gemini-3.7-flash
+        value: gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash-lite,gemma-4-31b-it
       - key: GEMINI_MODERATION_MODELS
-        value: gemini-3.5-flash-lite,gemini-3.1-flash-lite
+        value: gemini-3.1-flash-lite,gemma-4-26b-a4b-it
+      # Só tetos de segurança globais por dia: quem limita é o RPD de cada modelo.
+      - key: GEMINI_DAILY_CHECKS
+        value: "1000"
+      - key: GEMINI_DAILY_MODERATION
+        value: "2000"
       - key: DB_POOL_SIZE
         value: "3"
       - key: DB_POOL_MAX_OVERFLOW

@@ -146,6 +146,7 @@ class CheckRepository(Protocol):
         self, request_id: int, user_id: UUID, lookups_per_hour: int
     ) -> int | None: ...
     async def release_gemini(self, purpose: GeminiPurpose) -> None: ...
+    async def reserve_gemini_model(self, model: str, daily_limit: int) -> bool: ...
     async def refund(self, request_id: int) -> None: ...
     async def get(self, public_id: str) -> StoredCheck | None: ...
     async def latest(
@@ -255,6 +256,15 @@ c as (
   returning 1
 )
 select exists (select 1 from c) as converted, (select retry from u) as retry
+"""
+
+# Contador diário POR MODELO (RPD do nível gratuito): modelo esgotado nem é chamado.
+_RESERVE_GEMINI_MODEL = """
+insert into public.gemini_model_usage as u (day, model, calls)
+values ((now() at time zone 'America/Los_Angeles')::date, :model, 1)
+on conflict (day, model) do update set calls = u.calls + 1
+where u.calls < :limit
+returning calls
 """
 
 _RELEASE_GEMINI = """
@@ -603,6 +613,15 @@ class SqlCheckRepository:
         if row["converted"]:
             return None
         return max(1, int(row["retry"] or 1))
+
+    async def reserve_gemini_model(self, model: str, daily_limit: int) -> bool:
+        if daily_limit <= 0:
+            return False
+        async with self._session.begin():
+            calls = await self._session.scalar(
+                text(_RESERVE_GEMINI_MODEL), {"model": model, "limit": daily_limit}
+            )
+        return calls is not None
 
     async def release_gemini(self, purpose: GeminiPurpose) -> None:
         async with self._session.begin():
