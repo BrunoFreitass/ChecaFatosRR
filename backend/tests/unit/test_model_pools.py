@@ -392,38 +392,28 @@ def test_pool_model_without_limits_is_rejected() -> None:
         Settings(_env_file=None, gemini_model_fallbacks="gemini-3.8-flash,modelo-sem-tabela")  # type: ignore[call-arg]
 
 
-async def test_gemma_gets_a_longer_attempt_than_the_flash(monkeypatch: pytest.MonkeyPatch) -> None:
-    import asyncio
+def test_gemma_gets_a_longer_attempt_than_the_flash(monkeypatch: pytest.MonkeyPatch) -> None:
+    # O Gemma pensa antes de responder: tentativa própria, mais longa que a do Flash-Lite.
+    seen: dict[str, float] = {}
+    real_with_retries = gemini.with_retries
 
-    calls: list[str] = []
+    def spy(call: Any, **kwargs: Any) -> Any:
+        seen[kwargs["model"]] = kwargs["attempt_timeout"]
+        return real_with_retries(call, **kwargs)
 
-    class SlowModels:
-        async def generate_content(self, *, model: str, **_: Any) -> Any:
-            calls.append(model)
-            if model == "gemini-3.1-flash-lite":
-                await asyncio.sleep(10)  # trava: estoura a fatia dele
-            await asyncio.sleep(0.4)  # o Gemma pensa mais que a fatia do Flash-Lite
-            return text_response('{"categoria": "ok", "confianca": 0.9}')
-
-    class FakeClient:
-        def __init__(self, **_: Any) -> None:
-            self.aio = SimpleNamespace(models=SlowModels())
-
-    monkeypatch.setattr("google.genai.Client", FakeClient)
-    from app.services.moderation.ai_filter import google_moderator
-    from app.services.moderation.pipeline import AiVerdict
-
-    moderator = google_moderator(
-        FAKE_KEY, ["gemini-3.1-flash-lite", "gemma-4-26b-a4b-it"], budget_seconds=0.8
+    monkeypatch.setattr(gemini, "with_retries", spy)
+    monkeypatch.setattr("google.genai.Client", lambda **_: SimpleNamespace(aio=None))
+    from app.services.moderation.ai_filter import (
+        ATTEMPT_SHARE,
+        GEMMA_ATTEMPT_SHARE,
+        google_moderator,
     )
 
-    async def quota() -> bool:
-        return True
+    google_moderator(FAKE_KEY, ["gemini-3.1-flash-lite", "gemma-4-26b-a4b-it"], budget_seconds=18)
 
-    result = await moderator.classify("comentário", quota)
-
-    assert result == AiVerdict("ok", 0.9)
-    assert calls == ["gemini-3.1-flash-lite", "gemma-4-26b-a4b-it"]
+    assert seen["gemini-3.1-flash-lite"] == pytest.approx(18 * ATTEMPT_SHARE)
+    assert seen["gemma-4-26b-a4b-it"] == pytest.approx(18 * GEMMA_ATTEMPT_SHARE)
+    assert seen["gemma-4-26b-a4b-it"] > seen["gemini-3.1-flash-lite"]
 
 
 async def test_moderation_retries_only_when_gemma_answered_out_of_schema() -> None:
@@ -444,3 +434,25 @@ async def test_moderation_retries_only_when_gemma_answered_out_of_schema() -> No
 
     assert result == AiUnavailable("resposta_invalida")
     assert calls == [1]  # Flash-Lite tem JSON nativo: repetir não ajuda
+
+
+# ---------- validação real de 13/10/2026 (4 chamadas autorizadas) ----------
+
+
+def test_render_turns_off_both_gemma_models() -> None:
+    # gemma-4-31b-it: 149 s e 3.596 tokens de raciocínio numa checagem (nunca cabe nos 48 s);
+    # gemma-4-26b-a4b-it: 500 interno nas duas chamadas. Ficam na cadeia, desligados (RPD 0).
+    from tests.unit.test_deploy_files import render_service
+
+    env = {item["key"]: item.get("value") for item in render_service()["envVars"]}  # type: ignore[index]
+    limits = parse_model_limits(str(env["GEMINI_MODEL_LIMITS"]))
+    assert limits["gemma-4-31b-it"].rpd == 0
+    assert limits["gemma-4-26b-a4b-it"].rpd == 0
+    assert limits["gemini-3.5-flash-lite"].rpd == 500  # validado: 2,2 s, "falso" 95%
+
+
+def test_moderation_primary_has_time_for_a_slow_answer() -> None:
+    # 3.1-flash-lite levou 6,8 s num comentário (13/10/2026): a fatia dele era de 4,5 s.
+    from app.services.moderation.ai_filter import ATTEMPT_SHARE, MODERATION_BUDGET_SECONDS
+
+    assert MODERATION_BUDGET_SECONDS * ATTEMPT_SHARE >= 9

@@ -1,0 +1,56 @@
+{
+  "data": "2026-10-13",
+  "nota": "Validação da configuração por família (13/10/2026, 4 chamadas autorizadas): checagem no caso boato-votar-pela-internet; moderação num insulto pessoal.",
+  "medicoes": {
+    "gemini-3.5-flash-lite": {
+      "ok": true,
+      "ms": 2187,
+      "finish": "FinishReason.STOP",
+      "in": 1056,
+      "out": 220,
+      "thoughts": null,
+      "schema_ok": true,
+      "veredito": "falso",
+      "confianca": 95
+    },
+    "gemma-4-31b-it": {
+      "ok": true,
+      "ms": 149344,
+      "finish": "FinishReason.STOP",
+      "in": 1490,
+      "out": 232,
+      "thoughts": 3596,
+      "schema_ok": true,
+      "veredito": "nao_verificavel",
+      "confianca": 100
+    },
+    "gemini-3.1-flash-lite": {
+      "ok": true,
+      "ms": 6827,
+      "finish": "FinishReason.STOP",
+      "in": 509,
+      "out": 25,
+      "thoughts": null,
+      "schema_ok": true,
+      "moderacao": {
+        "categoria": "ofensivo",
+        "confianca": 0.95
+      }
+    },
+    "gemma-4-26b-a4b-it": {
+      "ok": false,
+      "status": 500,
+      "erro": "Internal error encountered.",
+      "ms": 407,
+      "schema_ok": false
+    }
+  },
+  "respostas_por_modelo": {
+    "gemini-3.5-flash-lite": {
+      "boato-votar-pela-internet": "{\n  \"veredito\": \"falso\",\n  \"resumo\": \"A mensagem afirma incorretamente que é possível votar pelo celular utilizando o aplicativo e-Título no dia da eleição, o que não corresponde ao procedimento oficial da Justiça Eleitoral.\",\n  \"pontos_suspeitos\": [\n    \"Mensagem encaminhada sem autoria ou fonte oficial comprovada\",\n    \"Promessa de votação online pelo celular que diverge das regras do Tribunal Superior Eleitoral\"\n  ],\n  \"contexto_faltante\": \"O aplicativo e-Título serve para identificação do eleitor e emissão de documentos como a certidão de quitação eleitoral, mas o voto é presencial na urna eletrônica da seção eleitoral correspondente.\",\n  \"checagens_agencias\": [],\n  \"fontes_sugeridas\": [\n    \"site oficial do TSE\",\n    \"Tribunal Regional Eleitoral de Roraima (TRE-RR)\"\n  ],\n  \"confianca\": 95\n}"
+    },
+    "gemma-4-31b-it": {
+      "boato-votar-pela-internet": "{\n\"veredito\": \"nao_verificavel\",\n\"resumo\": \"A mensagem afirma que, nas eleições de 2026, será possível votar pelo celular através do aplicativo e-Título, dispensando a ida à seção eleitoral. Como não foram fornecidas checagens de agências para analisar a afirmação, não há evidências suficientes para confirmar ou negar a informação.\",\n\"pontos_suspeitos\": [\n\"A mensagem é um texto colado, sem autoria, data ou fonte identificável\",\n\"A alegação de que o voto pode ser realizado inteiramente por aplicativo contraria o funcionamento tradicional do sistema eleitoral brasileiro\"\n],\n\"contexto_faltante\": \"Informações oficiais do Tribunal Superior Eleitoral (TSE) sobre as modalidades de votação permitidas para o pleito de 2026.\",\n\"checagens_agencias\": [],\n\"fontes_sugeridas\": [\n\"site oficial do TSE\",\n\"agências de checagem\"\n],\n\"confianca\": 100\n}"
+    }
+  }
+}
