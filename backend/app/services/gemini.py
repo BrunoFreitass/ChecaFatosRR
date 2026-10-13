@@ -608,10 +608,10 @@ MIN_ATTEMPT_SECONDS = 5.0
 # Repetir o mesmo prompt só gasta o orçamento, e a resposta tem de sair antes do corte do
 # Cloudflare (~100 s): já no primeiro, a cadeia passa ao próximo modelo.
 DEADLINE_FAILURES_TO_SWITCH = 1
-# 503 ("high demand", modelo sobrecarregado) seguidos no MESMO modelo: persistente, a cadeia
-# passa ao próximo (ensaio de 12/10/2026). Um 503 isolado ainda ganha uma nova tentativa,
-# salvo se ela comer o tempo que o próximo modelo precisaria (503 lento, ~22 s em 09/10).
-UNAVAILABLE_FAILURES_TO_SWITCH = 2
+# 503 ("high demand", modelo sobrecarregado) no MESMO modelo: havendo próximo, a cadeia passa
+# a ele já na 1ª falha (13/10/2026: dois 503 seguidos no 3.8 gastaram ~5 s e, somados a um
+# modelo lento, deixaram o último da cadeia sem tempo). Sem próximo, o 503 é repetido.
+UNAVAILABLE_FAILURES_TO_SWITCH = 1
 # Erros do lado do Google tratados como "modelo sobrecarregado" (o 500 entrou com a moderação,
 # que roda sem novas tentativas: um 500 no 1º Flash-Lite não pode desligar a cadeia inteira).
 OVERLOADED_STATUS = frozenset({500, 503})
@@ -1230,6 +1230,10 @@ def google_generate(
 
         return call
 
+    # RPD 0 = modelo desligado (sem deploy, via GEMINI_MODEL_LIMITS): fora da cadeia, para não
+    # contar como "próximo modelo" (o último de verdade desistiria do 503 por causa dele).
+    # Todos desligados: a cadeia fica como está e falha pelo contador local (sem chamar o Google).
+    enabled = [m for m in models if m not in model_limits or model_limits[m].rpd > 0]
     chain = [
         (
             model,
@@ -1241,6 +1245,6 @@ def google_generate(
                 model=model,
             ),
         )
-        for model in models
+        for model in (enabled or models)
     ]
     return with_model_fallback(chain, limiter=limiter)

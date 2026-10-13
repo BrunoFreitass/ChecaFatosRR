@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
@@ -415,7 +416,9 @@ async def test_other_transient_errors_still_retry_the_same_model(
 ) -> None:
     models, _ = install(
         monkeypatch,
-        {PRIMARY: [api_error(503, "high demand"), text_response(ANSWER)], BACKUP: []},
+        # Erro de rede (sem status): transitório, repete no mesmo modelo. O 503 troca de
+        # modelo já na 1ª falha (13/10/2026).
+        {PRIMARY: [httpx.ConnectError("rede"), text_response(ANSWER)], BACKUP: []},
     )
 
     result = await google_generate(FAKE_KEY, [PRIMARY, BACKUP])("prompt")
@@ -539,7 +542,7 @@ async def test_persistent_503_switches_to_the_next_model(
     result = await google_generate(FAKE_KEY, [PRIMARY, BACKUP])("prompt")
 
     assert result == Generated(ANSWER, BACKUP)
-    assert models.calls == [PRIMARY, PRIMARY, BACKUP]  # uma nova tentativa, depois troca
+    assert models.calls == [PRIMARY, BACKUP]  # troca já no 1º 503 (13/10/2026)
     assert models_logged(caplog, "gemini_model_slow") == [PRIMARY]
 
 
@@ -549,7 +552,7 @@ async def test_overloaded_model_goes_to_the_end_of_the_queue(
     models, _ = install(
         monkeypatch,
         {
-            PRIMARY: [overloaded(), overloaded()],
+            PRIMARY: [overloaded()],
             BACKUP: [text_response(ANSWER), text_response(ANSWER)],
         },
     )
@@ -557,7 +560,7 @@ async def test_overloaded_model_goes_to_the_end_of_the_queue(
 
     await chain("prompt")
     assert await chain("prompt") == Generated(ANSWER, BACKUP)
-    assert models.calls == [PRIMARY, PRIMARY, BACKUP, BACKUP]  # 2ª checagem já vai ao reserva
+    assert models.calls == [PRIMARY, BACKUP, BACKUP]  # 2ª checagem já vai ao reserva
 
 
 async def test_without_retries_the_first_503_already_switches(
@@ -675,7 +678,7 @@ async def test_backup_after_a_switch_retries_its_own_503(monkeypatch: pytest.Mon
     models, _ = install(
         monkeypatch,
         {
-            PRIMARY: [overloaded(), overloaded()],
+            PRIMARY: [overloaded()],
             BACKUP: [overloaded(), overloaded(), text_response(ANSWER)],
         },
     )
@@ -683,7 +686,7 @@ async def test_backup_after_a_switch_retries_its_own_503(monkeypatch: pytest.Mon
     result = await google_generate(FAKE_KEY, [PRIMARY, BACKUP])("prompt")
 
     assert result == Generated(ANSWER, BACKUP)
-    assert models.calls == [PRIMARY, PRIMARY, BACKUP, BACKUP, BACKUP]
+    assert models.calls == [PRIMARY, BACKUP, BACKUP, BACKUP]  # o último repete o próprio 503
 
 
 async def test_model_in_cooldown_is_not_a_successor_for_a_503() -> None:
@@ -730,3 +733,33 @@ async def test_missing_model_alone_is_still_unavailable(monkeypatch: pytest.Monk
     with pytest.raises(GeminiUnavailableError) as caught:
         await google_generate(FAKE_KEY, [PRIMARY])("prompt")
     assert not isinstance(caught.value, GeminiQuotaExhaustedError)
+
+
+async def test_disabled_model_is_not_a_successor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RPD 0 = modelo desligado (os Gemma, 13/10/2026). Ele não conta como "próximo": o
+    último modelo de verdade não desiste de si por causa dele e repete o 503."""
+    from app.services.model_limits import ModelLimits
+
+    models, _ = install(monkeypatch, {PRIMARY: [overloaded(), text_response(ANSWER)], BACKUP: []})
+    limits = {PRIMARY: ModelLimits(rpm=60, rpd=1000), BACKUP: ModelLimits(rpm=60, rpd=0)}
+
+    result = await google_generate(FAKE_KEY, [PRIMARY, BACKUP], limits=limits)("prompt")
+
+    assert result == Generated(ANSWER, PRIMARY)
+    assert models.calls == [PRIMARY, PRIMARY]  # o desligado nunca é chamado
+
+
+async def test_chain_with_every_model_disabled_still_builds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Todos desligados: a cadeia existe e falha como "sem cota" (o pedido vira só agências),
+    sem chamar o Google."""
+    from app.services.gemini import GeminiQuotaExhaustedError
+    from app.services.model_limits import ModelLimits
+
+    models, _ = install(monkeypatch, {PRIMARY: [], BACKUP: []})
+    limits = {PRIMARY: ModelLimits(rpm=60, rpd=0), BACKUP: ModelLimits(rpm=60, rpd=0)}
+
+    with pytest.raises(GeminiQuotaExhaustedError):
+        await google_generate(FAKE_KEY, [PRIMARY, BACKUP], limits=limits)("prompt")
+    assert models.calls == []
