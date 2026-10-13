@@ -17,7 +17,6 @@ from app.services.gemini import (
     GeminiQuotaExhaustedError,
     GeminiUnavailableError,
     Generated,
-    google_generate,
 )
 from app.services.moderation.ai_filter import (
     MODERATION_INSTRUCTION,
@@ -91,8 +90,20 @@ async def test_answer_from_the_model_chain_is_unwrapped() -> None:
     ],
 )
 async def test_answer_out_of_the_schema_fails_open(raw: str | None) -> None:
-    result = await AiModerator(Script(raw)).classify(COMMENT, Quota())
+    # Fora do schema e não é o Gemma: sem nova tentativa (só o Gemma não tem JSON nativo).
+    script = Script(raw)
+    result = await AiModerator(script).classify(COMMENT, Quota())
     assert result == AiUnavailable("resposta_invalida")
+    assert len(script.prompts) == 1
+
+
+async def test_gemma_out_of_schema_gets_one_more_try() -> None:
+    script = Script(
+        Generated("não é json", "gemma-4-26b-a4b-it"),
+        Generated(answer("spam", 0.9), "gemma-4-26b-a4b-it"),
+    )
+    assert await AiModerator(script).classify(COMMENT, Quota()) == AiVerdict("spam", 0.9)
+    assert len(script.prompts) == 2
 
 
 # ---------- fail-open ----------
@@ -174,7 +185,7 @@ def test_default_models_are_stable_flash_lite_with_fixed_names() -> None:
     from app.config import Settings
 
     models = Settings(_env_file=None).gemini_moderation_models_list  # type: ignore[call-arg]
-    assert models == ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite")
+    assert models == ("gemini-3.1-flash-lite", "gemma-4-26b-a4b-it")
     assert all("preview" not in m and "latest" not in m for m in models)
 
 
@@ -191,14 +202,13 @@ async def test_google_generate_sends_the_given_config(monkeypatch: pytest.Monkey
             self.aio = SimpleNamespace(models=FakeModels())
 
     monkeypatch.setattr("google.genai.Client", FakeClient)
-    config = build_moderation_config()
-
-    chain = google_generate(FAKE_KEY, ["gemini-3.5-flash-lite"], config=config, max_retries=0)
-    result = await AiModerator(chain).classify(COMMENT, Quota())
+    moderator = google_moderator(FAKE_KEY, ["gemini-3.1-flash-lite"])
+    result = await moderator.classify(COMMENT, Quota())
 
     assert result == AiVerdict("ok", 0.97)
-    assert seen[0]["config"] is config
-    assert seen[0]["model"] == "gemini-3.5-flash-lite"
+    assert seen[0]["config"].response_schema is ModerationAnswer
+    assert seen[0]["config"].system_instruction == MODERATION_INSTRUCTION
+    assert seen[0]["model"] == "gemini-3.1-flash-lite"
 
 
 def test_check_config_is_still_the_default() -> None:
@@ -213,8 +223,8 @@ def test_moderation_settings_defaults() -> None:
     from app.config import Settings
 
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
-    assert settings.gemini_moderation_models_list[0] == "gemini-3.5-flash-lite"
-    assert settings.gemini_daily_moderation == 100  # provisória até o RPD real (12/10/2026)
+    assert settings.gemini_moderation_models_list[0] == "gemini-3.1-flash-lite"
+    assert settings.gemini_daily_moderation == 2000  # só teto de segurança (12/10/2026)
 
 
 @pytest.mark.parametrize("raw", ["", " , ", "gemini 3.5", "../x"])
@@ -265,11 +275,9 @@ async def test_google_safety_block_reaches_the_moderator(monkeypatch: pytest.Mon
             self.aio = SimpleNamespace(models=FakeModels())
 
     monkeypatch.setattr("google.genai.Client", FakeClient)
-    chain = google_generate(
-        FAKE_KEY, ["gemini-3.5-flash-lite"], config=build_moderation_config(), max_retries=0
-    )
+    moderator = google_moderator(FAKE_KEY, ["gemini-3.1-flash-lite"])
 
-    assert await AiModerator(chain).classify(COMMENT, Quota()) == AiRefused()
+    assert await moderator.classify(COMMENT, Quota()) == AiRefused()
 
 
 async def test_unexpected_bug_is_logged_with_traceback(caplog: pytest.LogCaptureFixture) -> None:
@@ -303,7 +311,7 @@ async def test_second_model_still_gets_time_when_the_first_hangs(
             self.aio = SimpleNamespace(models=FakeModels())
 
     monkeypatch.setattr("google.genai.Client", FakeClient)
-    moderator = google_moderator(FAKE_KEY, ["lento", "rapido"], budget_seconds=0.4)
+    moderator = google_moderator(FAKE_KEY, ["lento", "rapido"], budget_seconds=0.4, limits={})
 
     result = await moderator.classify(COMMENT, Quota())
 

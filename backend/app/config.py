@@ -9,6 +9,8 @@ from urllib.parse import urlsplit
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.services.model_limits import ModelLimits, parse_model_limits
+
 # Domínios onde qualquer pessoa publica (blogs, newsletters, sites gratuitos): um link deles
 # não é "origem confirmada" (OPEN_PLATFORM_DOMAINS; redes sociais entram sempre).
 DEFAULT_OPEN_PLATFORMS: tuple[str, ...] = (
@@ -84,10 +86,16 @@ class Settings(BaseSettings):
     # ---- Checagem (etapa 2) ----
     # Chave do Google AI Studio. Vazio = checagem indisponível (503).
     gemini_api_key: str | None = Field(default=None, repr=False)
-    # Cadeia de modelos, separados por vírgula: o primeiro é o principal; em 429 de cota DIÁRIA
-    # de um modelo, a checagem tenta o próximo. Só nomes fixos (sem "latest"/"preview"): o 3.8
-    # foi escolhido em 09/10/2026 pela lista de modelos da chave (models.list).
-    gemini_model_fallbacks: str = "gemini-3.8-flash,gemini-3.7-flash"
+    # Pool da CHECAGEM, em ordem (o primeiro com cota e vaga no minuto responde); depois dele,
+    # o modo "só agências". Só nomes fixos (sem "latest"/"preview"), pela models.list de
+    # 12/10/2026: 2.5-flash deu 404 (indisponível para contas novas) e 3-flash só existe como
+    # preview, então ficam de fora. Pools separados: nenhum modelo da moderação aqui.
+    gemini_model_fallbacks: str = (
+        "gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash-lite,gemma-4-31b-it"
+    )
+    # Limites por modelo por cima da tabela do nível gratuito (model_limits.py):
+    # "modelo=rpm/rpd[/tpm],...". Vazio = a tabela.
+    gemini_model_limits: str = ""
     # 0 = sem "thinking": com o padrão o Flash 3.x passou de 60 s; com 0, de 7 a 13 s.
     # Vale para a checagem e (etapa 4) para a moderação.
     gemini_thinking_budget: int = Field(default=0, ge=0)
@@ -101,19 +109,15 @@ class Settings(BaseSettings):
     gemini_attempt_timeout_seconds: float = Field(default=25, gt=0, le=25)
     gemini_max_retries: int = Field(default=2, ge=0, le=2)
     gemini_budget_seconds: float = Field(default=48, gt=0, le=48)
-    # Cotas diárias (dia do Pacífico, quando a cota gratuita zera). A de moderação (etapa 4)
-    # é provisória (decisão de 12/10/2026) até o RPD real do Flash-Lite; esgotada, o
-    # comentário é publicado e vai para a fila do admin (fail-open).
-    # Nível gratuito (AI Studio, 12/10/2026): RPD 20 por modelo, 2 modelos = 40; 36 deixa
-    # margem. Esgotada, a checagem responde no modo "só agências".
-    gemini_daily_checks: int = Field(default=36, ge=0)
-    # RPM 5 por modelo no nível gratuito: modelo cheio é pulado sem chamar o Google, e com
-    # todos cheios a checagem responde na hora no modo "só agências". 0 = sem limite local.
-    gemini_rpm_per_model: int = Field(default=5, ge=0)
-    gemini_daily_moderation: int = Field(default=100, ge=0)
-    # Moderação de comentários (etapa 4): Flash-Lite estáveis de nome fixo, pela models.list
-    # de 12/10/2026. Uma tentativa por modelo, dentro do teto curto da moderação.
-    gemini_moderation_models: str = "gemini-3.5-flash-lite,gemini-3.1-flash-lite"
+    # Tetos de SEGURANÇA globais por dia (dia do Pacífico): quem limita de verdade é o RPD de
+    # cada modelo (contador por modelo no banco). Esgotado: checagem no modo "só agências";
+    # moderação publica e manda para a fila do admin (fail-open). Decisão de 12/10/2026.
+    gemini_daily_checks: int = Field(default=1000, ge=0)
+    gemini_daily_moderation: int = Field(default=2000, ge=0)
+    # Pool da MODERAÇÃO (o Gemma é a reserva do Flash-Lite; decisão de 12/10/2026).
+    gemini_moderation_models: str = "gemini-3.1-flash-lite,gemma-4-26b-a4b-it"
+    # Moderações pela IA por usuário por dia: uma conta não gasta a cota de todos (etapa 4).
+    moderation_ai_daily_per_user: int = Field(default=20, ge=0)
     # Chave restrita à Fact Check Tools API. Vazio = segue sem checagens de agências.
     google_factcheck_api_key: str | None = Field(default=None, repr=False)
     check_rate_limit_per_hour: int = Field(default=10, ge=1)
@@ -222,6 +226,31 @@ class Settings(BaseSettings):
         # Sem fuso no painel: horário de Boa Vista (o público do site).
         return value if value.tzinfo else value.replace(tzinfo=_BOA_VISTA)
 
+    @field_validator("gemini_model_limits")
+    @classmethod
+    def _model_limits_are_valid(cls, value: str) -> str:
+        parse_model_limits(value)  # ValueError com a mensagem certa
+        return value
+
+    @model_validator(mode="after")
+    def _pools_are_separate(self) -> "Settings":
+        limits = self.model_limits
+        missing = [
+            m for m in (*self.gemini_models, *self.gemini_moderation_models_list) if m not in limits
+        ]
+        if missing:
+            raise ValueError(
+                f"modelos sem limites conhecidos: {missing}. Informe em GEMINI_MODEL_LIMITS "
+                "(modelo=rpm/rpd[/tpm]) os limites do AI Studio."
+            )
+        shared = set(self.gemini_models) & set(self.gemini_moderation_models_list)
+        if shared:
+            raise ValueError(
+                "GEMINI_MODEL_FALLBACKS e GEMINI_MODERATION_MODELS não podem dividir modelos "
+                f"(as cotas são por modelo): {sorted(shared)}"
+            )
+        return self
+
     @model_validator(mode="after")
     def _banner_window_is_valid(self) -> "Settings":
         if self.tse_banner_fim <= self.tse_banner_inicio:
@@ -242,6 +271,11 @@ class Settings(BaseSettings):
     def gemini_models(self) -> tuple[str, ...]:
         """A cadeia de GEMINI_MODEL_FALLBACKS, em ordem e sem repetição."""
         return tuple(self.gemini_model_fallbacks.split(","))
+
+    @property
+    def model_limits(self) -> dict[str, ModelLimits]:
+        """Tabela do nível gratuito com GEMINI_MODEL_LIMITS por cima."""
+        return parse_model_limits(self.gemini_model_limits)
 
     @property
     def gemini_moderation_models_list(self) -> tuple[str, ...]:

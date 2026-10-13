@@ -94,10 +94,13 @@ class StageTimer:
             elapsed = int((self._clock() - started) * 1000)
             self.ms[name] = self.ms.get(name, 0) + elapsed
 
-    def log(self, outcome: str) -> None:
+    def log(self, outcome: str, model: str | None = None) -> None:
         stages = {f"{name}_ms": self.ms.get(name, 0) for name in TIMED_STAGES}
         total = int((self._clock() - self.started) * 1000)
-        logger.info("check_timing", extra={**stages, "total_ms": total, "outcome": outcome})
+        logger.info(
+            "check_timing",
+            extra={**stages, "total_ms": total, "outcome": outcome, "model": model},
+        )
 
 
 @dataclass(frozen=True)
@@ -206,15 +209,18 @@ async def run_check(
 ) -> CheckOutcome:
     timer = StageTimer(tools.clock)
     outcome = "erro"
+    model: str | None = None
     try:
         result = await _run_check(user_id, url, texto, repo, tools, settings, timer)
         outcome = "agencias" if result.agencies_only else "cache" if result.cached else "nova"
+        if outcome == "nova":
+            model = result.check.result.get("model")  # qual modelo do pool respondeu
         return result
     except AppError as exc:
         outcome = f"erro:{exc.code}"
         raise
     finally:
-        timer.log(outcome)
+        timer.log(outcome, model)
 
 
 async def _run_check(
@@ -362,7 +368,9 @@ async def _analyze(
 
     try:
         with timer.stage("gemini"):
-            result = await tools.analyzer.analyze(data, reserve, release)
+            result = await tools.analyzer.analyze(
+                data, reserve, release, model_budget=repo.reserve_gemini_model
+            )
     except GeminiContentBlockedError as exc:
         # Recusa de segurança do modelo: tentar de novo dá no mesmo, e uma página pública
         # "tente mais tarde" seria enganosa. Devolve o limite do usuário (como antes).
@@ -397,7 +405,8 @@ async def _analyze(
                 veredito=result.veredito,
                 confianca=result.confianca,
                 # O título vai junto no result: é o desta checagem, mesmo se ela não for listada.
-                result={**result.to_json(), "title": data.title},
+                # O modelo também: o eval e o log mostram a qualidade por modelo do pool.
+                result={**result.to_json(), "title": data.title, "model": result.model},
                 model=result.model or settings.model,
                 listed=listed,
                 title=data.title,

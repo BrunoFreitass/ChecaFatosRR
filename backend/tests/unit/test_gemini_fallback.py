@@ -83,12 +83,17 @@ def models_logged(caplog: pytest.LogCaptureFixture, message: str) -> list[str]:
 # ---------- configuração ----------
 
 
-def test_default_chain_is_38_then_37() -> None:
-    settings = Settings()
-    assert settings.gemini_models == (PRIMARY, BACKUP)
+def test_default_chain_starts_with_38_then_37() -> None:
+    # Pool completo em test_model_pools; aqui, a ordem do topo e só nomes fixos.
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert settings.gemini_models[:2] == (PRIMARY, BACKUP)
     assert not any(
         tag in model for model in settings.gemini_models for tag in ("latest", "preview", "exp")
     )
+
+
+# Modelos fictícios precisam de limites (pool sem limites conhecidos não sobe).
+FICTIONAL_LIMITS = "a-1=5/20,b-2=5/20,so-um=5/20,x-1=5/20,y-2=5/20"
 
 
 @pytest.mark.parametrize(
@@ -96,7 +101,8 @@ def test_default_chain_is_38_then_37() -> None:
     [(" a-1 , b-2,,a-1 ", ("a-1", "b-2")), ("so-um", ("so-um",))],
 )
 def test_chain_parsing(raw: str, expected: tuple[str, ...]) -> None:
-    assert Settings(gemini_model_fallbacks=raw).gemini_models == expected
+    settings = Settings(gemini_model_fallbacks=raw, gemini_model_limits=FICTIONAL_LIMITS)
+    assert settings.gemini_models == expected
 
 
 @pytest.mark.parametrize("raw", ["", " , ", "modelo com espaco", "a;b", "models/../x"])
@@ -107,6 +113,7 @@ def test_invalid_chain_is_rejected(raw: str) -> None:
 
 def test_chain_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GEMINI_MODEL_FALLBACKS", "x-1,y-2")
+    monkeypatch.setenv("GEMINI_MODEL_LIMITS", FICTIONAL_LIMITS)
     assert Settings().gemini_models == ("x-1", "y-2")
 
 
@@ -120,7 +127,11 @@ def test_router_builds_the_chain_from_settings(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(checks_router, "google_generate", fake_google_generate)
     checks_router._analyzer.cache_clear()
     try:
-        settings = Settings(gemini_api_key="k", gemini_model_fallbacks="a-1,b-2")
+        settings = Settings(
+            gemini_api_key="k",
+            gemini_model_fallbacks="a-1,b-2",
+            gemini_model_limits=FICTIONAL_LIMITS,
+        )
         checks_router.get_check_tools(settings)
         assert seen == [("a-1", "b-2")]
         # Sem modelo informado pelo analisador, a checagem grava o primeiro da cadeia.
@@ -175,12 +186,13 @@ async def test_all_models_out_of_daily_quota_is_quota_exhausted(
 
 @pytest.mark.parametrize(
     "error",
-    [api_error(400, "invalid argument"), api_error(401, "key"), ConnectionResetError()],
+    [api_error(401, "key"), api_error(403, "forbidden"), ConnectionResetError()],
 )
 async def test_other_errors_do_not_fall_back(
     monkeypatch: pytest.MonkeyPatch, error: BaseException
 ) -> None:
-    # Cota diária, prazo, 404 e 500/503 persistentes trocam de modelo; o resto segue o retry.
+    # Cota diária, prazo, 400, 404 e 500/503 persistentes trocam de modelo; o resto segue o
+    # retry.
     models, _ = install(monkeypatch, {PRIMARY: [error], BACKUP: [text_response(ANSWER)]})
 
     with pytest.raises(GeminiUnavailableError):

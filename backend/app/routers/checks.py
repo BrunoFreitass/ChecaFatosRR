@@ -35,6 +35,7 @@ from app.services.check_service import CheckSettings, CheckTools, run_check
 from app.services.factcheck import AgencyCheck, HttpFactCheckClient
 from app.services.fetcher import HttpPageFetcher
 from app.services.gemini import PROMPT_VERSION, GeminiAnalyzer, google_generate
+from app.services.model_limits import ModelLimits
 from app.services.verdict_policy import neutral_summary, read_verdict
 
 logger = logging.getLogger(__name__)
@@ -66,7 +67,7 @@ def _analyzer(
     attempt_timeout: float,
     max_retries: int,
     budget_seconds: float,
-    rpm_per_model: int,
+    limits: tuple[tuple[str, ModelLimits], ...],
 ) -> GeminiAnalyzer:
     # Um cliente do SDK por processo (reaproveita conexões).
     generate = google_generate(
@@ -77,7 +78,7 @@ def _analyzer(
         attempt_timeout=attempt_timeout,
         max_retries=max_retries,
         budget_seconds=budget_seconds,
-        rpm_per_model=rpm_per_model,
+        limits=dict(limits),
     )
     return GeminiAnalyzer(generate, budget_seconds=budget_seconds)
 
@@ -106,7 +107,7 @@ def get_check_tools(settings: Annotated[Settings, Depends(get_settings)]) -> Che
             settings.gemini_attempt_timeout_seconds,
             settings.gemini_max_retries,
             settings.gemini_budget_seconds,
-            settings.gemini_rpm_per_model,
+            tuple(sorted(settings.model_limits.items())),  # hashable para o lru_cache
         ),
     )
 
