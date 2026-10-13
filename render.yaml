@@ -53,6 +53,11 @@ services:
         value: gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash-lite,gemma-4-31b-it
       - key: GEMINI_MODERATION_MODELS
         value: gemini-3.1-flash-lite,gemma-4-26b-a4b-it
+      # Validação real de 13/10/2026: gemma-4-31b-it levou 149 s numa checagem (nunca cabe nos
+      # 48 s) e gemma-4-26b-a4b-it deu 500 nas duas chamadas. Desligados com RPD 0; para
+      # religar sem deploy, mude o valor no painel (modelo=rpm/rpd/tpm).
+      - key: GEMINI_MODEL_LIMITS
+        value: gemma-4-31b-it=30/0/16000,gemma-4-26b-a4b-it=30/0/16000
       # Só tetos de segurança globais por dia: quem limita é o RPD de cada modelo.
       - key: GEMINI_DAILY_CHECKS
         value: "1000"

@@ -40,10 +40,9 @@ from app.services.moderation.pipeline import (
 logger = logging.getLogger(__name__)
 
 MODERATION_BUDGET_SECONDS = 18.0
-# Fração do teto por modelo: se o 1º travar, o 2º da cadeia ainda tem mais que uma tentativa
-# inteira (with_retries recusa começar com menos que isso). Com metade, sobrava 3,99 s para
-# uma tentativa de 4 s e o 2º nunca era chamado. O Flash-Lite saudável responde em 1 a 2 s.
-ATTEMPT_SHARE = 0.25
+# Fatia do teto para o 1º modelo (o 3.1-flash-lite levou 6,8 s num comentário em 13/10/2026:
+# ~9,9 s em 18); o que sobra vai para o próximo da cadeia, se ele estiver ligado.
+ATTEMPT_SHARE = 0.55
 GEMMA_ATTEMPT_SHARE = 0.7
 MAX_COMMENT_CHARS = 1000
 

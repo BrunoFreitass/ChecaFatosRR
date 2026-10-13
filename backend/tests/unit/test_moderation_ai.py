@@ -311,6 +311,8 @@ async def test_second_model_still_gets_time_when_the_first_hangs(
             self.aio = SimpleNamespace(models=FakeModels())
 
     monkeypatch.setattr("google.genai.Client", FakeClient)
+    # Escala do teste (frações de segundo): o mínimo útil de uma tentativa vale 5 s em produção.
+    monkeypatch.setattr(gemini, "MIN_ATTEMPT_SECONDS", 0.05)
     moderator = google_moderator(FAKE_KEY, ["lento", "rapido"], budget_seconds=0.4, limits={})
 
     result = await moderator.classify(COMMENT, Quota())
