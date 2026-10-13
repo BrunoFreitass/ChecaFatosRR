@@ -49,7 +49,16 @@ class ProfileRepository(Protocol):
     async def nickname_taken(self, apelido: str) -> bool: ...
     async def google_sub(self, user_id: UUID) -> str | None: ...
     async def is_banned(self, sub_hash: bytes) -> bool: ...
-    async def create(self, user_id: UUID, apelido: str, terms_version: str) -> Profile: ...
+    async def suspension_until(self, sub_hash: bytes) -> datetime | None: ...
+    async def keep_suspension(self, sub_hash: bytes, until: datetime) -> None: ...
+    async def create(
+        self,
+        user_id: UUID,
+        apelido: str,
+        terms_version: str,
+        *,
+        suspended_until: datetime | None = None,
+    ) -> Profile: ...
     async def log_nickname_blocked(self, apelido: str, category: str, rule: str) -> None: ...
 
 
@@ -58,8 +67,9 @@ _SELECT_PROFILE = (
     "from public.profiles where id = :id"
 )
 _INSERT_PROFILE = (
-    "insert into public.profiles (id, apelido, terms_version) "
-    "values (:id, :apelido, :terms_version) "
+    "insert into public.profiles (id, apelido, terms_version, status, suspended_until) "
+    "values (:id, :apelido, :terms_version, "
+    "case when cast(:until as timestamptz) is null then 'active' else 'suspended' end, :until) "
     "on conflict (id) do nothing "
     "returning id, apelido::text as apelido, status, suspended_until, terms_version, created_at"
 )
@@ -103,13 +113,56 @@ class SqlProfileRepository:
     async def is_banned(self, sub_hash: bytes) -> bool:
         async with self._session.begin():
             banned = await self._session.scalar(
-                text("select exists(select 1 from public.banned_identities where sub_hash = :h)"),
+                # Só o banimento permanente (suspended_until nulo); a suspensão guardada na
+                # exclusão da conta é lida por suspension_until.
+                text(
+                    "select exists(select 1 from public.banned_identities "
+                    "where sub_hash = :h and suspended_until is null)"
+                ),
                 {"h": sub_hash},
             )
         return bool(banned)
 
-    async def create(self, user_id: UUID, apelido: str, terms_version: str) -> Profile:
-        params = {"id": user_id, "apelido": apelido, "terms_version": terms_version}
+    async def suspension_until(self, sub_hash: bytes) -> datetime | None:
+        """Fim da suspensão guardada quando a conta suspensa foi excluída (None = nenhuma)."""
+        async with self._session.begin():
+            return await self._session.scalar(
+                text(
+                    "select suspended_until from public.banned_identities "
+                    "where sub_hash = :h and suspended_until > now()"
+                ),
+                {"h": sub_hash},
+            )
+
+    async def keep_suspension(self, sub_hash: bytes, until: datetime) -> None:
+        """Conta suspensa vai ser excluída: guarda o hash do sub com o fim da suspensão.
+        Banimento permanente (data nula) nunca vira suspensão; duas datas, fica a maior."""
+        async with self._session.begin():
+            await self._session.execute(
+                text(
+                    "insert into public.banned_identities (sub_hash, suspended_until) "
+                    "values (:h, :until) on conflict (sub_hash) do update set "
+                    "suspended_until = greatest(banned_identities.suspended_until, "
+                    "excluded.suspended_until) "
+                    "where banned_identities.suspended_until is not null"
+                ),
+                {"h": sub_hash, "until": until},
+            )
+
+    async def create(
+        self,
+        user_id: UUID,
+        apelido: str,
+        terms_version: str,
+        *,
+        suspended_until: datetime | None = None,
+    ) -> Profile:
+        params = {
+            "id": user_id,
+            "apelido": apelido,
+            "terms_version": terms_version,
+            "until": suspended_until,
+        }
         try:
             async with self._session.begin():
                 result = await self._session.execute(text(_INSERT_PROFILE), params)

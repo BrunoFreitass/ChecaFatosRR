@@ -118,6 +118,9 @@ class Settings(BaseSettings):
     gemini_moderation_models: str = "gemini-3.1-flash-lite,gemma-4-26b-a4b-it"
     # Moderações pela IA por usuário por dia: uma conta não gasta a cota de todos (etapa 4).
     moderation_ai_daily_per_user: int = Field(default=20, ge=0)
+    # Comentários (etapa 3): 1 a cada 30 s e no máximo 50 por dia por usuário (12/10/2026).
+    comment_min_interval_seconds: int = Field(default=30, ge=0)
+    comments_daily_limit: int = Field(default=50, ge=1)
     # Chave restrita à Fact Check Tools API. Vazio = segue sem checagens de agências.
     google_factcheck_api_key: str | None = Field(default=None, repr=False)
     check_rate_limit_per_hour: int = Field(default=10, ge=1)

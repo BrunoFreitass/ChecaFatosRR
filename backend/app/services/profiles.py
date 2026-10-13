@@ -1,6 +1,7 @@
 """Regras de criação de perfil (apelido + aceite dos termos) e de disponibilidade do apelido."""
 
 import logging
+from datetime import UTC, datetime
 from typing import Literal
 
 from app.auth import CurrentUser
@@ -68,10 +69,11 @@ async def create_profile(
             {"regra": result.rule, "explicacao": result.explanation},
         )
 
-    await _ensure_not_banned(user, repo, ban_salt)
+    suspended_until = await _ensure_not_banned(user, repo, ban_salt)
 
     try:
-        return await repo.create(user.id, apelido, terms_version)
+        # Conta suspensa excluída e recriada com o mesmo Google: nasce suspensa até a data.
+        return await repo.create(user.id, apelido, terms_version, suspended_until=suspended_until)
     except NicknameTakenError as exc:
         raise _nickname_taken() from exc
     except ProfileExistsError as exc:
@@ -87,7 +89,8 @@ async def create_profile(
 
 async def _ensure_not_banned(
     user: CurrentUser, repo: ProfileRepository, ban_salt: str | None
-) -> None:
+) -> datetime | None:
+    """Recusa a identidade banida; devolve o fim de uma suspensão guardada (ou None)."""
     if not ban_salt:
         logger.error("ban_hash_salt_missing")
         raise AppError(503, "cadastro_indisponivel", "Cadastro indisponível no momento.")
@@ -96,13 +99,32 @@ async def _ensure_not_banned(
         raise AppError(
             403, "login_google_obrigatorio", "Entre com uma conta Google para participar."
         )
-    if await repo.is_banned(ban_hash(google_sub, salt=ban_salt)):
+    sub_hash = ban_hash(google_sub, salt=ban_salt)
+    if await repo.is_banned(sub_hash):
         logger.info("banned_identity_blocked")
         raise AppError(
             403,
             "conta_banida",
             "Esta conta Google foi banida por violar as regras do ChecaFatosRR.",
         )
+    return await repo.suspension_until(sub_hash)
+
+
+async def keep_suspension_on_delete(
+    user: CurrentUser, repo: ProfileRepository, ban_salt: str | None
+) -> None:
+    """Antes de excluir a conta: se está suspensa, a suspensão fica guardada pelo sub do
+    Google (plano §10). Banida já está em banned_identities."""
+    profile = await repo.get(user.id)
+    if profile is None or profile.effective_status(datetime.now(UTC)) != "suspended":
+        return
+    if not ban_salt:
+        logger.error("ban_hash_salt_missing")
+        raise AppError(503, "exclusao_indisponivel", "Exclusão de conta indisponível no momento.")
+    google_sub = await repo.google_sub(user.id)
+    if google_sub is None or profile.suspended_until is None:
+        return
+    await repo.keep_suspension(ban_hash(google_sub, salt=ban_salt), profile.suspended_until)
 
 
 async def nickname_availability(

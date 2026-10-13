@@ -12,7 +12,11 @@ from app.errors import AppError
 from app.legal import CURRENT_TERMS_VERSION
 from app.repositories.profiles import Profile, ProfileRepository, SqlProfileRepository
 from app.schemas.profiles import NicknameAvailabilityOut, ProfileCreate, ProfileOut
-from app.services.profiles import create_profile, nickname_availability
+from app.services.profiles import (
+    create_profile,
+    keep_suspension_on_delete,
+    nickname_availability,
+)
 from app.services.rate_limit import SlidingWindowLimiter
 from app.services.supabase_admin import SupabaseAdmin, get_supabase_admin
 
@@ -110,8 +114,13 @@ async def check_nickname(
 
 @router.delete("/me", status_code=204)
 async def delete_me(
-    user: User, admin: Annotated[SupabaseAdmin, Depends(get_supabase_admin)]
+    user: User,
+    repo: Repo,
+    settings: AppSettings,
+    admin: Annotated[SupabaseAdmin, Depends(get_supabase_admin)],
 ) -> Response:
-    """Exclusão de conta (LGPD). O trigger do banco apaga os textos do log de moderação."""
+    """Exclusão de conta (LGPD). O trigger do banco apaga os textos do log de moderação.
+    Conta suspensa: a suspensão fica guardada pelo sub do Google antes (plano §10)."""
+    await keep_suspension_on_delete(user, repo, settings.ban_hash_salt)
     await admin.delete_user(user.id)
     return Response(status_code=204)
