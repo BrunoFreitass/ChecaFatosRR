@@ -67,3 +67,72 @@ def test_extract_concurrency_sizes_the_parser_semaphore(monkeypatch: pytest.Monk
         assert extractor._parser_slots() is slots  # um semáforo por processo
     finally:
         get_settings.cache_clear()
+
+
+class _FakeAsyncpg:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.queries: list[str] = []
+        self.error = error
+
+    async def execute(self, query: str) -> str:
+        self.queries.append(query)
+        if self.error is not None:
+            raise self.error
+        return "SELECT 1"
+
+
+class _FakeAdapter:
+    """O adaptador do SQLAlchemy em volta da conexão asyncpg (só o que o ping usa)."""
+
+    def __init__(self, driver: _FakeAsyncpg) -> None:
+        self._connection = driver
+        self.handled: list[Exception] = []
+
+    def _handle_exception(self, error: Exception) -> None:
+        self.handled.append(error)
+        raise RuntimeError("traduzido") from error
+
+
+@pytest.mark.anyio
+async def test_pre_ping_is_one_simple_query() -> None:
+    """O ping padrão do asyncpg abre transação + prepare + execute + rollback (~4,5 viagens,
+    ~540 ms entre Virginia e São Paulo); este faz 1 consulta no protocolo simples."""
+    from sqlalchemy.util.concurrency import greenlet_spawn
+
+    from app.db import ping_one_round_trip
+
+    driver = _FakeAsyncpg()
+    assert await greenlet_spawn(ping_one_round_trip, _FakeAdapter(driver)) is True
+    assert driver.queries == ["select 1"]
+
+
+@pytest.mark.anyio
+async def test_pre_ping_failure_goes_through_the_driver_translation() -> None:
+    """Erro no ping passa pela tradução do adaptador: o SQLAlchemy reconhece a desconexão,
+    invalida a conexão e abre outra (em vez de devolver erro à requisição)."""
+    from sqlalchemy.util.concurrency import greenlet_spawn
+
+    from app.db import ping_one_round_trip
+
+    boom = ConnectionResetError("conexão caiu")
+    adapter = _FakeAdapter(_FakeAsyncpg(error=boom))
+    with pytest.raises(RuntimeError, match="traduzido"):
+        await greenlet_spawn(ping_one_round_trip, adapter)
+    assert adapter.handled == [boom]
+
+
+def test_engine_installs_the_one_round_trip_ping(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app import db
+    from app.config import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", URL)
+    monkeypatch.setenv("DATABASE_SSL", "false")
+    get_settings.cache_clear()
+    db._engine = None
+    try:
+        engine = db.get_engine()  # não conecta: só monta o engine
+        assert engine.sync_engine.dialect.do_ping == db.ping_one_round_trip
+    finally:
+        db._engine = None
+        db._sessionmaker = None
+        get_settings.cache_clear()

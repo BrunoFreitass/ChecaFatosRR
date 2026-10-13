@@ -382,6 +382,27 @@ class SqlCommentRepository:
     async def threads(
         self, link_id: int | None, cursor: tuple[datetime, str] | None, limit: int
     ) -> list[Thread]:
+        async with self._session.begin():
+            return await self._threads(link_id, cursor, limit)
+
+    async def threads_of_check(
+        self, check_public_id: str, cursor: tuple[datetime, str] | None, limit: int
+    ) -> list[Thread] | None:
+        """Comentários de uma checagem numa transação só: cada transação custa ~1 s entre o
+        Render (Virginia) e o Supabase (São Paulo). None = checagem inexistente ou de texto
+        colado (sem comentários)."""
+        async with self._session.begin():
+            link_id = await self._session.scalar(
+                text("select link_id from public.checks where public_id = :pid"),
+                {"pid": check_public_id},
+            )
+            if link_id is None:
+                return None
+            return await self._threads(link_id, cursor, limit)
+
+    async def _threads(
+        self, link_id: int | None, cursor: tuple[datetime, str] | None, limit: int
+    ) -> list[Thread]:
         """Raízes (mais novas primeiro) com as respostas (mais antigas primeiro). A raiz
         removida pelo autor só aparece se tiver resposta visível; oculta ou removida pelo
         admin some com as respostas."""
@@ -400,28 +421,27 @@ class SqlCommentRepository:
             sql += "and (c.created_at, c.public_id) < (:cursor_at, :cursor_id) "
             params |= {"cursor_at": cursor[0], "cursor_id": cursor[1]}
         sql += "order by c.created_at desc, c.public_id desc limit :limit"
-        async with self._session.begin():
-            roots = (await self._session.execute(text(sql), params)).mappings().all()
-            replies = (
-                (
-                    await self._session.execute(
-                        text(
-                            f"select * from (select {_COLUMNS}, c.parent_id, "  # noqa: S608
-                            "row_number() over (partition by c.parent_id "
-                            "order by c.created_at, c.public_id) as n "
-                            "from public.comments c join public.profiles p on p.id = c.user_id "
-                            "where c.parent_id = any(:ids) "
-                            "and c.status in ('visible', 'removed_by_author')) r "
-                            "where r.n <= :max_replies order by r.created_at, r.public_id"
-                        ),
-                        {"ids": [r["id"] for r in roots], "max_replies": MAX_REPLIES},
-                    )
+        roots = (await self._session.execute(text(sql), params)).mappings().all()
+        replies = (
+            (
+                await self._session.execute(
+                    text(
+                        f"select * from (select {_COLUMNS}, c.parent_id, "  # noqa: S608
+                        "row_number() over (partition by c.parent_id "
+                        "order by c.created_at, c.public_id) as n "
+                        "from public.comments c join public.profiles p on p.id = c.user_id "
+                        "where c.parent_id = any(:ids) "
+                        "and c.status in ('visible', 'removed_by_author')) r "
+                        "where r.n <= :max_replies order by r.created_at, r.public_id"
+                    ),
+                    {"ids": [r["id"] for r in roots], "max_replies": MAX_REPLIES},
                 )
-                .mappings()
-                .all()
-                if roots
-                else []
             )
+            .mappings()
+            .all()
+            if roots
+            else []
+        )
         by_parent: dict[int, list[StoredComment]] = {}
         for reply in replies:
             by_parent.setdefault(reply["parent_id"], []).append(_comment(reply))
