@@ -4,7 +4,7 @@ fila de moderação do admin (só ADMIN_EMAIL)."""
 from functools import lru_cache
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Path, Query, Response
+from fastapi import APIRouter, Depends, Path, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser, current_user, require_admin
@@ -82,6 +82,31 @@ Admin = Annotated[CurrentUser, Depends(require_admin)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
 
 
+def _limit(request: Request, name: str, key: str) -> None:
+    retry_after = getattr(request.app.state.rate_limiters, name).hit(key)
+    if retry_after is not None:
+        raise AppError(
+            429,
+            "rate_limited",
+            "Muitas tentativas. Aguarde um pouco e tente de novo.",
+            {"retry_after": retry_after},
+            {"Retry-After": str(retry_after)},
+        )
+
+
+# async: o limitador roda no event loop (uma thread), sem disputa no dict/deque.
+async def _read_limit(request: Request) -> None:
+    # Chave = a cadeia inteira do X-Forwarded-For (o proxy acrescenta o IP real ao fim): quem
+    # forja o IP de outra pessoa gera outra cadeia e não a bloqueia. Forjar valores novos
+    # ainda escapa do limite; ele só contém robôs simples.
+    forwarded = request.headers.get("x-forwarded-for", "")[:200]
+    _limit(request, "comments_read", forwarded or (request.client.host if request.client else "?"))
+
+
+async def _report_limit(request: Request, user: User) -> None:
+    _limit(request, "comment_report", str(user.id))
+
+
 def _out(comment: StoredComment, replies: list[StoredComment] | None = None) -> CommentOut:
     return CommentOut(
         id=comment.public_id,
@@ -97,7 +122,7 @@ def _thread_out(thread: Thread) -> CommentOut:
     return _out(thread.root, thread.replies)
 
 
-@router.get("/comments", response_model=CommentListOut)
+@router.get("/comments", response_model=CommentListOut, dependencies=[Depends(_read_limit)])
 async def list_comments(
     repos: Repos,
     response: Response,
@@ -147,7 +172,11 @@ async def create_comment(
     return _out(created)
 
 
-@router.post("/comments/{public_id}/denuncia", response_model=ReportOut)
+@router.post(
+    "/comments/{public_id}/denuncia",
+    response_model=ReportOut,
+    dependencies=[Depends(_report_limit)],
+)
 async def report(public_id: PublicId, payload: ReportIn, user: User, repos: Repos) -> ReportOut:
     status = await report_comment(repos, public_id, user.id, payload.motivo)
     return ReportOut(status=status)  # type: ignore[arg-type]

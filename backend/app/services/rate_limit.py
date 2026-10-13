@@ -52,3 +52,8 @@ class RateLimiters:
     def __init__(self) -> None:
         self.profile_create = SlidingWindowLimiter(limit=10, window_seconds=600)
         self.nickname_check = SlidingWindowLimiter(limit=30, window_seconds=60)
+        # Leitura pública de comentários, por IP: contém robôs simples (o IP vem do
+        # X-Forwarded-For e pode ser forjado; não é a única defesa).
+        self.comments_read = SlidingWindowLimiter(limit=120, window_seconds=60)
+        # Denúncias por usuário: uma conta não inunda a fila do admin.
+        self.comment_report = SlidingWindowLimiter(limit=20, window_seconds=600)

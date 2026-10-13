@@ -1,20 +1,37 @@
 import re
+import unicodedata
 from datetime import datetime
 from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
-# Controle (menos quebra de linha e tab) quebra o Postgres (NUL) ou esconde texto; os
-# caracteres de direção (bidi) disfarçam o que se lê. Recusa os primeiros, remove os outros.
+# Controle (menos quebra de linha e tab) quebra o Postgres (NUL) ou esconde texto: recusa.
+# Invisíveis (formatação Unicode "Cf": largura zero, direção/bidi, BOM, hífen suave, tags; e
+# os preenchedores Hangul) disfarçam o que se lê e burlam o filtro de palavras: remove. O ZWJ
+# fica, porque compõe emojis, mas ele e os seletores de variação não contam como conteúdo.
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
-_BIDI = re.compile(r"[\u202a-\u202e\u2066-\u2069]")
+_ZWJ = chr(0x200D)
+_FILLERS = frozenset(map(chr, (0x115F, 0x1160, 0x3164, 0xFFA0)))
+_NOT_CONTENT = frozenset({_ZWJ, *map(chr, range(0xFE00, 0xFE10))})
+
+
+def _reject_control(value: str) -> str:
+    if _CONTROL.search(value):
+        raise ValueError("o texto tem caracteres de controle")
+    return value
+
+
+def _strip_invisible(value: str) -> str:
+    return "".join(
+        c
+        for c in _reject_control(value)
+        if c == _ZWJ or (unicodedata.category(c) != "Cf" and c not in _FILLERS)
+    ).strip()
 
 
 def _clean_text(value: str) -> str:
-    if _CONTROL.search(value):
-        raise ValueError("o texto tem caracteres de controle")
-    cleaned = _BIDI.sub("", value).strip()
-    if not cleaned:
+    cleaned = _strip_invisible(value)
+    if not "".join(c for c in cleaned if c not in _NOT_CONTENT).strip():
         raise ValueError("o texto está vazio")
     return cleaned
 
@@ -53,7 +70,14 @@ class CommentListOut(BaseModel):
 class ReportIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    motivo: Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)] | None = None
+    motivo: (
+        Annotated[
+            str,
+            StringConstraints(strip_whitespace=True, max_length=200),
+            AfterValidator(_strip_invisible),
+        ]
+        | None
+    ) = None
 
 
 class ReportOut(BaseModel):

@@ -728,3 +728,67 @@ async def test_author_delete_does_not_override_an_admin_removal(api: Api) -> Non
         api, "select status from public.comments where public_id = :p", p=comment_id
     )
     assert status == "removed"
+
+
+# ---------- revisão de segurança do M3 ----------
+
+
+async def test_invisible_only_text_is_rejected(api: Api) -> None:
+    api.as_user(await member(api))
+    response = await post(api, "\u200b\u2060\ufeff\u200e")
+    assert response.status_code == 422
+
+
+async def test_invisible_characters_are_removed(api: Api) -> None:
+    api.as_user(await member(api))
+    response = await post(api, "vo\u200bto\u2060 se\u00adguro")
+    assert response.status_code == 201
+    assert response.json()["texto"] == "voto seguro"
+
+
+async def test_hangul_filler_only_text_is_rejected(api: Api) -> None:
+    api.as_user(await member(api))
+    response = await post(api, chr(0x3164) * 3 + chr(0xFE0F))
+    assert response.status_code == 422
+
+
+async def test_forged_ip_of_someone_else_does_not_block_them(api: Api) -> None:
+    from app.services.rate_limit import SlidingWindowLimiter
+
+    api.app.state.rate_limiters.comments_read = SlidingWindowLimiter(limit=1, window_seconds=60)
+    victim = {"x-forwarded-for": "198.51.100.7"}
+    attacker = {"x-forwarded-for": "198.51.100.7, 203.0.113.9"}
+    assert (await api.http.get("/comments", headers=attacker)).status_code == 200
+    assert (await api.http.get("/comments", headers=attacker)).status_code == 429
+    assert (await api.http.get("/comments", headers=victim)).status_code == 200
+
+
+async def test_report_reason_rejects_control_characters(api: Api) -> None:
+    api.as_user(await member(api))
+    comment_id = (await post(api, "Comentário qualquer.")).json()["id"]
+    api.as_user(await member(api))
+    response = await api.http.post(f"/comments/{comment_id}/denuncia", json={"motivo": "a\x00b"})
+    assert response.status_code == 422
+
+
+async def test_reading_comments_is_rate_limited_per_ip(api: Api) -> None:
+    from app.services.rate_limit import SlidingWindowLimiter
+
+    api.app.state.rate_limiters.comments_read = SlidingWindowLimiter(limit=2, window_seconds=60)
+    assert (await api.http.get("/comments")).status_code == 200
+    assert (await api.http.get("/comments")).status_code == 200
+    response = await api.http.get("/comments")
+    assert response.status_code == 429 and response.headers["Retry-After"]
+
+
+async def test_reports_are_rate_limited_per_user(api: Api) -> None:
+    from app.services.rate_limit import SlidingWindowLimiter
+
+    api.app.state.rate_limiters.comment_report = SlidingWindowLimiter(limit=1, window_seconds=600)
+    ids = []
+    for _ in range(2):
+        api.as_user(await member(api))
+        ids.append((await post(api, "Comentário para denunciar.")).json()["id"])
+    api.as_user(await member(api))
+    assert (await api.http.post(f"/comments/{ids[0]}/denuncia", json={})).status_code == 200
+    assert (await api.http.post(f"/comments/{ids[1]}/denuncia", json={})).status_code == 429

@@ -14,6 +14,10 @@ vi.mock("../lib/api.ts", () => ({
   },
   apiFetch: vi.fn(),
 }));
+// Comentários têm teste próprio (components/Comments.test.tsx): aqui só onde aparecem.
+vi.mock("../components/Comments.tsx", () => ({
+  Comments: ({ checagem }: { checagem: string | null }) => <p>comentários de {checagem}</p>,
+}));
 
 const AGENCY: AgencyCheck = {
   agencia: "Aos Fatos",
@@ -152,3 +156,15 @@ describe("modo só agências (Gemini indisponível)", () => {
   });
 });
 
+
+describe("comentários", () => {
+  it("aparecem em checagens de link", () => {
+    renderResult(check());
+    expect(screen.getByText("comentários de k7mqp9xwvrzt")).toBeTruthy();
+  });
+
+  it("não aparecem em texto colado", () => {
+    renderResult(check({ tipo: "texto", url: null, domain: null, title: null, texto: "Mensagem." }));
+    expect(screen.queryByText(/comentários de/)).toBeNull();
+  });
+});
