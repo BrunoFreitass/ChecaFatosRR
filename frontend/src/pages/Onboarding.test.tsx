@@ -8,10 +8,20 @@ import { ApiError } from "../lib/api.ts";
 import { Onboarding } from "./Onboarding.tsx";
 
 const api = vi.hoisted(() => ({ apiFetch: vi.fn() }));
-vi.mock("../lib/api.ts", async () => {
-  const actual = await vi.importActual<typeof import("../lib/api.ts")>("../lib/api.ts");
-  return { ApiError: actual.ApiError, apiFetch: api.apiFetch };
-});
+// Sem importActual: o api.ts real lê VITE_* (ausentes na CI).
+vi.mock("../lib/api.ts", () => ({
+  ApiError: class ApiError extends Error {
+    constructor(
+      readonly status: number,
+      readonly code: string,
+      message: string,
+      readonly details: Record<string, unknown> = {},
+    ) {
+      super(message);
+    }
+  },
+  apiFetch: api.apiFetch,
+}));
 
 const NEEDS_PROFILE: AuthContextValue = {
   status: "needs_profile",
@@ -127,7 +137,7 @@ describe("Onboarding: versão dos termos", () => {
     expect(await screen.findByText(/Os Termos de Uso mudaram/)).toBeTruthy();
     expect(screen.getByText(/marque de novo o aceite/)).toBeTruthy();
     expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(false);
-    expect(calls).toBe(2);
+    await vi.waitFor(() => expect(calls).toBe(2)); // a busca nova sai no efeito seguinte
   });
 
   it("enquanto a versão carrega, o botão desabilitado explica o motivo", () => {
