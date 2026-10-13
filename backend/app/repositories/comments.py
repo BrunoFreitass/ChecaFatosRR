@@ -300,25 +300,6 @@ class SqlCommentRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def link_of_check(self, check_public_id: str) -> tuple[bool, int | None]:
-        """(existe, link_id). Checagem de texto colado: (True, None) — sem comentários."""
-        async with self._session.begin():
-            row = (
-                (
-                    await self._session.execute(
-                        text("select link_id from public.checks where public_id = :pid"),
-                        {"pid": check_public_id},
-                    )
-                )
-                .mappings()
-                .first()
-            )
-        return (row is not None, row["link_id"] if row else None)
-
-    async def parent(self, public_id: str) -> Parent | None:
-        async with self._session.begin():
-            return await self._parent(public_id)
-
     async def _parent(self, public_id: str) -> Parent | None:
         """Comentário-pai, dentro da transação de quem chama."""
         row = (
@@ -342,13 +323,6 @@ class SqlCommentRepository:
             is_reply=row["parent_id"] is not None,
             visible=row["status"] == "visible",
         )
-
-    async def precheck(self, user_id: UUID) -> Precheck | None:
-        async with self._session.begin():
-            row = (
-                (await self._session.execute(text(_PRECHECK), {"uid": user_id})).mappings().first()
-            )
-        return _to_precheck(row)
 
     async def precheck_and_target(
         self, user_id: UUID, check_public_id: str | None, parent_public_id: str | None

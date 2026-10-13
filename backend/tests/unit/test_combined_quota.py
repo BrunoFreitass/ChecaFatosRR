@@ -132,3 +132,49 @@ async def test_moderation_without_global_quota_is_unavailable_out_of_quota(
 
     assert result == AiUnavailable("sem_cota")
     assert models.models_called == []
+
+
+class BrokenRepo(Repo):
+    async def reserve_gemini_and_model(self, *args: Any) -> Any:
+        raise ConnectionError("banco fora")
+
+
+async def test_database_down_on_the_combined_reservation_does_not_call_gemini(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Banco fora na reserva: a cota global não pode ser furada. Checagem cai em "sem cota"
+    (análise anterior ou só agências), sem chamar o Google."""
+    models = install(monkeypatch, {"gemini-3.8-flash": [text_response(ANSWER)]})
+    quota = CombinedQuota(BrokenRepo(), "checagem", 1000)
+
+    with pytest.raises(GeminiQuotaExhaustedError):
+        await GeminiAnalyzer(google_generate(FAKE_KEY, ["gemini-3.8-flash"])).analyze(
+            data(), quota.reserve, quota.release, model_budget=quota.model_budget
+        )
+    assert models.models_called == []
+
+
+async def test_database_down_on_moderation_is_unavailable_without_calling_gemini(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    models = install(monkeypatch, {"gemini-3.1-flash-lite": [text_response(ANSWER)]})
+    quota = CombinedQuota(BrokenRepo(), "moderacao", 2000)
+
+    result = await google_moderator(FAKE_KEY, ["gemini-3.1-flash-lite"]).classify(
+        "Comentário.", quota.reserve, model_budget=quota.model_budget
+    )
+
+    assert result == AiUnavailable("indisponivel")  # fail-open: publica e vai para a fila
+    assert models.models_called == []
+
+
+async def test_model_without_quota_keeps_the_global_unit_pending() -> None:
+    repo = Repo(combined=None)
+    quota = CombinedQuota(repo, "checagem", 1000)
+    await quota.reserve()
+    assert await quota.model_budget("gemini-3.8-flash", 20) is None  # 3.8 sem cota hoje
+
+    repo.combined_answer = DAY
+    assert await quota.model_budget("gemini-3.7-flash", 20) == DAY
+
+    assert [c[0] for c in repo.calls] == ["ambas", "ambas"]  # a global foi junto com o 3.7

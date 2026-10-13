@@ -892,3 +892,17 @@ async def test_agencies_only_over_the_lookup_limit_saves_nothing(session: AsyncS
             {"sid": started.subject.id},
         )
     assert saved == 0  # nada gravado para este assunto
+
+
+async def test_global_limit_zero_refuses_even_the_first_unit(session: AsyncSession) -> None:
+    """GEMINI_DAILY_* = 0 desliga a IA: nem a 1ª chamada do dia passa (o upsert inseriria
+    sem conferir o limite)."""
+    from app.repositories.checks import GLOBAL_QUOTA_REFUSED
+
+    repo = SqlCheckRepository(session)
+    await _reset_usage(session)
+
+    assert await repo.reserve_gemini_and_model("checagem", 0, "gemini-3.8-flash", 20) is (
+        GLOBAL_QUOTA_REFUSED
+    )
+    assert await _usage(session) == (0, 0)

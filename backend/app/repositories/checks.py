@@ -24,13 +24,15 @@ _PUBLIC_ID_ATTEMPTS = 3
 AGENCIES_ONLY_VERSION = "agencias"
 
 
-class _GlobalQuotaRefused:
+class GlobalQuotaRefused:
+    """Tipo do sentinela GLOBAL_QUOTA_REFUSED (instância única)."""
+
     def __repr__(self) -> str:
         return "GLOBAL_QUOTA_REFUSED"
 
 
 # reserve_gemini_and_model: a cota GLOBAL do dia acabou (nada foi gasto).
-GLOBAL_QUOTA_REFUSED = _GlobalQuotaRefused()
+GLOBAL_QUOTA_REFUSED = GlobalQuotaRefused()
 
 
 class _ModelQuotaRefused(Exception):
@@ -165,7 +167,7 @@ class CheckRepository(Protocol):
     async def release_gemini_model(self, model: str, day: date) -> None: ...
     async def reserve_gemini_and_model(
         self, purpose: GeminiPurpose, purpose_limit: int, model: str, model_limit: int
-    ) -> date | _GlobalQuotaRefused | None: ...
+    ) -> date | GlobalQuotaRefused | None: ...
     async def save_lookup_result(
         self, request_id: int, user_id: UUID, lookups_per_hour: int, check: NewCheck
     ) -> StoredCheck | int: ...
@@ -660,10 +662,12 @@ class SqlCheckRepository:
 
     async def reserve_gemini_and_model(
         self, purpose: GeminiPurpose, purpose_limit: int, model: str, model_limit: int
-    ) -> date | _GlobalQuotaRefused | None:
+    ) -> date | GlobalQuotaRefused | None:
         """Cota global + do modelo numa transação (cada uma custa ~0,7 s entre a Virginia e
         São Paulo). Global esgotada: GLOBAL_QUOTA_REFUSED, nada gasto. Modelo esgotado: None,
         e a unidade global é desfeita (rollback). Senão, o dia (do Pacífico) da reserva."""
+        if purpose_limit <= 0:  # o upsert inseriria a 1ª unidade do dia sem conferir o limite
+            return GLOBAL_QUOTA_REFUSED
         if model_limit <= 0:
             return None
         try:

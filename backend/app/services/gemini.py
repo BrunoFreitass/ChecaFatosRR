@@ -648,6 +648,11 @@ class GlobalQuotaRefusedError(Exception):
     cota" (ModelChain não a trata) e vira "sem cota" para quem chamou."""
 
 
+class GlobalQuotaUnavailableError(GlobalQuotaRefusedError):
+    """O banco falhou na reserva da cota global: sem poder contar, a IA não é chamada (a cota
+    global nunca é furada). Checagem: "sem cota"; moderação: fail-open "indisponivel"."""
+
+
 class GeminiRateLimitedError(GeminiUnavailableError):
     """Todos os modelos no limite por minuto (RPM): a checagem responde na hora no modo
     "só agências", sem esperar o minuto virar. called=False: nenhuma requisição chegou ao
