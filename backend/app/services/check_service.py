@@ -59,7 +59,7 @@ REQUEST_LIMIT_SECONDS = 90
 # reserva da cota, gravação; Supabase Free pode demorar).
 DB_MARGIN_SECONDS = 8
 # Tetos das etapas externas. O Gemini tem o próprio orçamento (GEMINI_BUDGET_SECONDS, 48 s:
-# tentativa de 25 s no modelo lento e o resto no próximo). Pior caso: 20 + 12 + 48 = 80 s.
+# tentativa de 18 s no modelo lento e o resto nos próximos). Pior caso: 20 + 12 + 48 = 80 s.
 READ_LINK_TIMEOUT_SECONDS = 20  # download (10 s) + extração (fila do semáforo)
 AGENCIES_TIMEOUT_SECONDS = 12  # até 2 buscas de 5 s
 WORST_CHECK_SECONDS = 80
