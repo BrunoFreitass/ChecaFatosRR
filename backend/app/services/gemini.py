@@ -918,8 +918,11 @@ class ModelChain:
         clock: Callable[[], float] = time.monotonic,
         seconds_until_reset: Callable[[], float] = seconds_until_quota_reset,
         limiter: RpmLimiter | None = None,
+        disabled: Sequence[str] = (),
     ) -> None:
         self._chain = list(chain)
+        # Fora da cadeia (RPD 0), mas logados a cada checagem: o pulo nunca é silencioso.
+        self._disabled = tuple(disabled)
         self._clock = clock
         self._seconds_until_reset = seconds_until_reset
         self._exhausted_until: dict[str, float] = {}
@@ -942,17 +945,39 @@ class ModelChain:
         available = [model for model, _ in self._chain if self._available(model)]
         return bool(available) and not any(self._limiter.has_room(m) for m in available)
 
+    def _log_skipped(self, available: list[tuple[str, RawCall]]) -> None:
+        """Todo modelo que não será chamado deixa rastro com o motivo (incidente de 13/10/2026:
+        a fila não avançou e o log não dizia por quê)."""
+        for model in self._disabled:
+            logger.info("gemini_model_skipped", extra={"model": model, "reason": "desligado"})
+        names = {model for model, _ in available}
+        for model, _ in self._chain:
+            if model not in names:
+                left = int(self._exhausted_until[model] - self._clock())
+                logger.info(
+                    "gemini_model_skipped",
+                    extra={"model": model, "reason": "sem_cota", "seconds_left": left},
+                )
+            elif not self._limiter.has_room(model):
+                logger.info(
+                    "gemini_model_skipped", extra={"model": model, "reason": "limite_minuto"}
+                )
+
     async def __call__(self, prompt: str) -> Generated:
         available = [(model, call) for model, call in self._chain if self._available(model)]
         # Modelo no limite por minuto nem é chamado (RPM 5 no nível gratuito).
         usable = [(model, call) for model, call in available if self._limiter.has_room(model)]
+        self._log_skipped(available)
         rate_limited_seen = len(usable) < len(available)
         called = False  # alguma requisição chegou ao Google (gastou cota lá)?
         # Os lentos por último (sort estável: entre iguais, a ordem da cadeia).
         usable.sort(key=lambda item: self._slow(item[0]))
         slow_seen = False
         for index, (model, call) in enumerate(usable):
-            successor = any(not self._slow(later) for later, _ in usable[index + 1 :])
+            # Qualquer modelo depois deste conta como próximo, inclusive o em cooldown de lento
+            # (ele já está no fim da fila): um 503 troca de modelo em vez de encerrar a cadeia
+            # com tempo sobrando (incidente de 13/10/2026, 18:31 UTC).
+            successor = index + 1 < len(usable)
             token = _HAS_NEXT_MODEL.set(successor)
             try:
                 text = await call(prompt)
@@ -996,8 +1021,15 @@ def with_model_fallback(
     clock: Callable[[], float] = time.monotonic,
     seconds_until_reset: Callable[[], float] = seconds_until_quota_reset,
     limiter: RpmLimiter | None = None,
+    disabled: Sequence[str] = (),
 ) -> ModelChain:
-    return ModelChain(chain, clock=clock, seconds_until_reset=seconds_until_reset, limiter=limiter)
+    return ModelChain(
+        chain,
+        clock=clock,
+        seconds_until_reset=seconds_until_reset,
+        limiter=limiter,
+        disabled=disabled,
+    )
 
 
 class GeminiAnalyzer:
@@ -1247,4 +1279,5 @@ def google_generate(
         )
         for model in (enabled or models)
     ]
-    return with_model_fallback(chain, limiter=limiter)
+    disabled = [m for m in models if m not in enabled] if enabled else []
+    return with_model_fallback(chain, limiter=limiter, disabled=disabled)

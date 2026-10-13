@@ -689,20 +689,19 @@ async def test_backup_after_a_switch_retries_its_own_503(monkeypatch: pytest.Mon
     assert models.calls == [PRIMARY, BACKUP, BACKUP, BACKUP]  # o último repete o próprio 503
 
 
-async def test_model_in_cooldown_is_not_a_successor_for_a_503() -> None:
-    # O primário está no fim da fila (lento). O reserva com 503 não deve desistir de si para
-    # cair num modelo já sabidamente lento: repete normalmente.
+async def test_slow_models_are_still_tried_after_a_503() -> None:
+    """Incidente de 13/10/2026 (18:31 UTC): os outros modelos estavam em cooldown, o 3.8 não
+    via "próximo", repetiu o 503 três vezes e a checagem caiu em "só agências" com ~38 s
+    sobrando. Modelo em cooldown continua na fila (por último) e conta como próximo."""
     now = [0.0]
     calls: list[str] = []
-    backup_script: list[object] = [
-        gemini.GeminiCallError(503, "a"),
-        gemini.GeminiCallError(503, "b"),
-        "do reserva",
-    ]
+    backup_script: list[object] = [gemini.GeminiCallError(503, "a"), "nunca"]
 
     async def primary(_: str) -> str:
         calls.append("p")
-        raise GeminiModelSlowError("p")
+        if len(calls) == 1:  # 1ª checagem: fica lento (vai para o fim da fila)
+            raise GeminiModelSlowError("p")
+        return "do primário, que se recuperou"
 
     async def backup(_: str) -> str:
         calls.append("b")
@@ -724,8 +723,10 @@ async def test_model_in_cooldown_is_not_a_successor_for_a_503() -> None:
     backup_script.insert(0, "do reserva")  # 1ª checagem: o primário fica lento, o reserva responde
     assert await chain("x") == Generated("do reserva", "b")
 
-    assert await chain("x") == Generated("do reserva", "b")
-    assert calls == ["p", "b", "b", "b", "b"]
+    # 2ª: o reserva vem antes (o primário está em cooldown) e dá 503 uma vez: troca na hora
+    # para o primário, em vez de repetir até desistir da checagem.
+    assert await chain("x") == Generated("do primário, que se recuperou", "p")
+    assert calls == ["p", "b", "b", "p"]
 
 
 async def test_missing_model_alone_is_still_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -763,3 +764,69 @@ async def test_chain_with_every_model_disabled_still_builds(
     with pytest.raises(GeminiQuotaExhaustedError):
         await google_generate(FAKE_KEY, [PRIMARY, BACKUP], limits=limits)("prompt")
     assert models.calls == []
+
+
+def _skipped(caplog: pytest.LogCaptureFixture) -> list[tuple[str, str]]:
+    return [
+        (getattr(r, "model", ""), getattr(r, "reason", ""))
+        for r in caplog.records
+        if r.getMessage() == "gemini_model_skipped"
+    ]
+
+
+async def test_model_out_of_quota_is_skipped_with_a_log(caplog: pytest.LogCaptureFixture) -> None:
+    """Todo modelo pulado deixa rastro (antes, só o momento em que ficava sem cota)."""
+    caplog.set_level(logging.INFO, logger=gemini.logger.name)
+    now = [0.0]
+
+    async def exhausted(_: str) -> str:
+        raise gemini.GeminiQuotaExhaustedError
+
+    async def ok(_: str) -> str:
+        return "ok"
+
+    chain = with_model_fallback(
+        [("a", exhausted), ("b", ok)], clock=lambda: now[0], seconds_until_reset=lambda: 600
+    )
+    await chain("x")  # "a" fica sem cota por 600 s
+    caplog.clear()
+    now[0] = 100.0
+
+    assert await chain("x") == Generated("ok", "b")
+    assert _skipped(caplog) == [("a", "sem_cota")]
+    record = next(r for r in caplog.records if r.getMessage() == "gemini_model_skipped")
+    assert record.seconds_left == 500  # type: ignore[attr-defined]
+
+
+async def test_model_at_its_per_minute_limit_is_skipped_with_a_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from app.services.gemini import RpmLimiter
+
+    caplog.set_level(logging.INFO, logger=gemini.logger.name)
+    limiter = RpmLimiter(0, clock=lambda: 0.0)
+    limiter.saturate("a")
+
+    async def ok(_: str) -> str:
+        return "ok"
+
+    chain = with_model_fallback([("a", ok), ("b", ok)], clock=lambda: 0.0, limiter=limiter)
+
+    assert await chain("x") == Generated("ok", "b")
+    assert _skipped(caplog) == [("a", "limite_minuto")]
+
+
+async def test_disabled_model_is_logged_as_skipped_on_every_check(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from app.services.model_limits import ModelLimits
+
+    caplog.set_level(logging.INFO, logger=gemini.logger.name)
+    install(monkeypatch, {PRIMARY: [text_response(ANSWER), text_response(ANSWER)], BACKUP: []})
+    limits = {PRIMARY: ModelLimits(rpm=60, rpd=1000), BACKUP: ModelLimits(rpm=60, rpd=0)}
+    chain = google_generate(FAKE_KEY, [PRIMARY, BACKUP], limits=limits)
+
+    await chain("prompt")
+    await chain("prompt")
+
+    assert _skipped(caplog) == [(BACKUP, "desligado"), (BACKUP, "desligado")]

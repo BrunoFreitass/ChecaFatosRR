@@ -677,3 +677,34 @@ async def test_daily_counter_per_model(session: AsyncSession) -> None:
     assert await repo.reserve_gemini_model("gemini-3.8-flash", 2) is False  # 2 do dia, fim
     assert await repo.reserve_gemini_model("gemini-3.7-flash", 2) is True  # outro modelo
     assert await repo.reserve_gemini_model("gemini-3.6-flash", 0) is False  # sem cota
+
+
+async def test_agencies_only_result_is_never_served_as_cache(session: AsyncSession) -> None:
+    """Resultado "só agências" (Gemini fora) não vira cache de 24 h: quando o Gemini voltar,
+    a próxima checagem do mesmo assunto faz a análise de IA (13/10/2026)."""
+    from app.repositories.checks import AGENCIES_ONLY_VERSION
+
+    repo = SqlCheckRepository(session)
+    user_id = await new_user(session)
+    subject = link()
+    started = await repo.begin_check(user_id, subject, LIMITS)
+    assert isinstance(started, Started)
+    await repo.save_result(
+        NewCheck(
+            subject=started.subject,
+            user_id=user_id,
+            veredito="nao_verificavel",
+            confianca=0,
+            result={"resumo": "só agências"},
+            model="agencias",
+            listed=False,
+            title="Título",
+            prompt_version=AGENCIES_ONLY_VERSION,
+        )
+    )
+
+    again = await repo.begin_check(user_id, subject, LIMITS)
+
+    assert isinstance(again, Started)  # análise nova, não cache
+    assert await repo.find_fresh(started.subject, 24, VERSION) is None
+    assert await repo.find_previous(started.subject, 24) is None
