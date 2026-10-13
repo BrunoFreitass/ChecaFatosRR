@@ -42,7 +42,6 @@ class Moderator(Protocol):
 class CommentLimits:
     min_interval_seconds: int
     daily: int
-    ai_daily_per_user: int
     gemini_daily_moderation: int
 
 
@@ -104,23 +103,18 @@ async def _check_limits(repos: CommentRepos, user_id: UUID, limits: CommentLimit
             "Espere alguns segundos antes de comentar de novo.",
             math.ceil(limits.min_interval_seconds - since),
         )
-    if state.day_count >= limits.daily:
+    # Um limite só (13/10/2026): publicados + tentativas bloqueadas pela IA (gastam a cota).
+    if state.day_count + state.ai_blocks >= limits.daily:
         raise _too_many(
             "limite_diario_comentarios",
             "Você chegou ao limite de comentários por hoje.",
-            state.day_retry,
+            state.day_retry or 3600,
         )
     if state.offensive_blocks >= OFFENSIVE_BLOCKS_TO_PAUSE and (state.offensive_retry or 0) > 0:
         raise _too_many(
             "comentarios_pausados",
             "Vários comentários seus foram bloqueados. Você poderá comentar de novo em 1 hora.",
             state.offensive_retry,
-        )
-    if state.day_count + state.ai_blocks >= limits.ai_daily_per_user:
-        raise _too_many(
-            "limite_moderacao",
-            "Você chegou ao limite de comentários por hoje.",
-            state.day_retry or 3600,
         )
 
 
@@ -244,18 +238,24 @@ async def _post(
 
 
 REPORT_THRESHOLD = 3
+# Quem pode denunciar (13/10/2026): conta com mais de 24 h E (1 comentário publicado OU 3 dias
+# de conta); no máximo 10 denúncias em 24 h. Contém brigadas de contas novas.
 REPORT_MIN_ACCOUNT_HOURS = 24
+REPORT_MIN_HISTORY_DAYS = 3
+REPORT_DAILY_LIMIT = 10
 
 
 async def report_comment(
     repos: CommentRepos, public_id: str, reporter_id: UUID, reason: str | None
 ) -> str:
-    outcome = await repos.comments.report(
+    outcome, retry = await repos.comments.report(
         public_id,
         reporter_id,
         reason=reason,
         threshold=REPORT_THRESHOLD,
         min_account_hours=REPORT_MIN_ACCOUNT_HOURS,
+        history_days=REPORT_MIN_HISTORY_DAYS,
+        daily_limit=REPORT_DAILY_LIMIT,
     )
     if outcome == "ok":
         return "recebida"
@@ -267,9 +267,17 @@ async def report_comment(
         raise AppError(422, "denuncia_propria", "Você não pode denunciar o próprio comentário.")
     if outcome == "no_profile":
         raise AppError(404, "profile_not_found", "Escolha um apelido para continuar.")
-    if outcome == "too_new":
+    if outcome == "daily_limit":
+        raise _too_many(
+            "limite_denuncias_diario",
+            f"Você chegou ao limite de {REPORT_DAILY_LIMIT} denúncias por dia.",
+            retry or 3600,
+        )
+    if outcome in ("needs_history", "too_new"):
         raise AppError(
-            403, "conta_nova", "Contas criadas há menos de 24 horas ainda não podem denunciar."
+            403,
+            "conta_inelegivel_denuncia",
+            "Sua conta não atende aos requisitos para realizar denúncias.",
         )
     raise AppError(403, "conta_restrita", "Sua conta não pode denunciar no momento.")
 

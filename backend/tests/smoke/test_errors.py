@@ -74,3 +74,20 @@ def test_log_extras_cannot_override_fixed_fields() -> None:
 
     assert payload["severity"] == "INFO"
     assert payload["path"] == "/health"
+
+
+def test_request_log_never_records_the_client_ip(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """LGPD: IP é dado pessoal; o log de acesso não o grava (nem de cabeçalho forjado)."""
+    caplog.set_level(logging.INFO, logger="app.request")
+    client.get(
+        "/health", headers={"cf-connecting-ip": "203.0.113.77", "x-forwarded-for": "198.51.100.9"}
+    )
+
+    records = [r for r in caplog.records if r.name == "app.request"]
+    assert records
+    for record in records:
+        assert not hasattr(record, "client_ip")
+        assert "203.0.113.77" not in JsonFormatter().format(record)
+        assert "198.51.100.9" not in JsonFormatter().format(record)

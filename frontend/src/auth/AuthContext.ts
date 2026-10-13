@@ -7,8 +7,6 @@ export type AuthStatus = "loading" | "anonymous" | "needs_profile" | "ready" | "
 export interface AuthContextValue {
   status: AuthStatus;
   profile: Profile | null;
-  /** Versão vigente dos Termos, informada pela API quando falta o perfil. */
-  termsVersion: string | null;
   errorMessage: string | null;
   signInWithGoogle: (returnPath: string) => Promise<void>;
   signOut: () => Promise<void>;

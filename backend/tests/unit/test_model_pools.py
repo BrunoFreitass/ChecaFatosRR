@@ -86,7 +86,7 @@ def test_default_pools_are_separate_and_follow_the_free_tier() -> None:
     assert not set(settings.gemini_models) & set(settings.gemini_moderation_models_list)
     # Só tetos de segurança globais: quem limita de verdade é o RPD de cada modelo.
     assert (settings.gemini_daily_checks, settings.gemini_daily_moderation) == (1000, 2000)
-    assert settings.moderation_ai_daily_per_user == 20
+    assert settings.comments_daily_limit == 20
 
 
 def test_pools_cannot_share_a_model() -> None:

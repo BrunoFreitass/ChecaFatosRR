@@ -51,7 +51,7 @@ function AccountState({ violation }: { violation: Violation }) {
   if (violation.strikes > 0) {
     return (
       <p className="text-sm">
-        Advertências ativas: {violation.strikes}. Com 3, a conta é suspensa por 7 dias; com 5, é banida.
+        Advertências ativas: {violation.strikes}. Com 3, a conta é suspensa por 24 horas; com 5, é banida.
       </p>
     );
   }
@@ -203,8 +203,10 @@ function CommentItem({ comment, checagem, canAct, ownApelido, isReply, onUpdate,
       delete: deleteButton,
       confirm: confirmButton,
     }[pendingFocus.current];
+    // Um efeito atrasado do render anterior pode rodar antes de o alvo existir: espera por ele.
+    if (target.current === null) return;
     pendingFocus.current = null;
-    target.current?.focus();
+    target.current.focus();
   });
 
   async function report() {

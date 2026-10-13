@@ -99,7 +99,9 @@ export function MinhaConta() {
       <div className="space-y-3 border-t border-slate-200 pt-6">
         <h2 className="text-lg font-semibold">Excluir minha conta</h2>
         <p className="text-sm text-slate-700">
-          Apaga seu apelido, seus comentários e seu histórico. Não dá para desfazer.
+          Apaga seu apelido, seus comentários e seu histórico. Não dá para desfazer. Se sua conta
+          tiver advertências ou estiver suspensa, isso fica guardado por 30 dias (sem dados
+          pessoais) e volta se você criar uma conta nova com o mesmo Google.
         </p>
         {!confirming ? (
           <button

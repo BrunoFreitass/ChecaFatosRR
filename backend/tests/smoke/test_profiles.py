@@ -278,3 +278,39 @@ def test_profile_creation_is_rate_limited(api: TestClient, repo: FakeProfileRepo
     blocked = api.post("/me", json=body("bruno_rr"), headers=headers)
     assert blocked.status_code == 429
     assert blocked.json()["error"]["code"] == "rate_limited"
+
+
+def test_delete_account_keeps_strikes_by_sub_hash(
+    api: TestClient, repo: FakeProfileRepository
+) -> None:
+    user_id, headers = login(repo)
+    api.post("/me", json=body(), headers=headers)
+    repo.strikes[user_id] = 2
+
+    assert api.delete("/me", headers=headers).status_code == 204
+
+    sub_hash = ban_hash(repo.google_subs[user_id], salt=TEST_BAN_SALT)
+    assert repo.kept_strikes == {sub_hash: 2}
+
+
+def test_delete_account_without_google_sub_logs_the_loss(
+    api: TestClient, repo: FakeProfileRepository, caplog: pytest.LogCaptureFixture
+) -> None:
+    user_id, headers = login(repo)
+    api.post("/me", json=body(), headers=headers)
+    repo.strikes[user_id] = 1
+    del repo.google_subs[user_id]
+
+    assert api.delete("/me", headers=headers).status_code == 204
+
+    assert repo.kept_strikes == {}
+    assert "moderation_not_kept_without_google_sub" in caplog.messages
+
+
+def test_legal_version_is_public_and_matches_the_backend(api: TestClient) -> None:
+    response = api.get("/legal/version")
+
+    assert response.status_code == 200
+    assert response.json() == {"version": CURRENT_TERMS_VERSION}
+    # Sem cache: depois de um deploy com Termos novos, o "tentar de novo" já vê a versão nova.
+    assert response.headers["Cache-Control"] == "no-cache"

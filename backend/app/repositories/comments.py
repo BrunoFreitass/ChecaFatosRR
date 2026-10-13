@@ -6,6 +6,7 @@ contas com mais de 24 h escondem o comentário e o mandam para a fila do admin; 
 o próprio (o texto some; as respostas ficam). Ids públicos aleatórios; o bigint é só interno.
 """
 
+import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -16,8 +17,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repositories.checks import new_public_id
 
+logger = logging.getLogger(__name__)
+
 ReportOutcome = Literal[
-    "ok", "duplicate", "not_found", "own", "too_new", "restricted", "no_profile"
+    "ok",
+    "duplicate",
+    "not_found",
+    "own",
+    "too_new",
+    "restricted",
+    "no_profile",
+    "daily_limit",
+    "needs_history",
 ]
 # Respostas por comentário na listagem (o resto fica para "ver mais", no frontend).
 MAX_REPLIES = 50
@@ -74,9 +85,15 @@ select p.status, p.suspended_until,
   ))::float as seconds_since_last,
   (select count(*) from public.comments
     where user_id = :uid and created_at > now() - interval '24 hours') as day_count,
+  -- O limite diário conta publicados + bloqueados pela IA: libera quando o mais antigo dos
+  -- dois sai da janela (least ignora o nulo).
   ceil(extract(epoch from (
-    (select min(created_at) from public.comments
-      where user_id = :uid and created_at > now() - interval '24 hours')
+    least(
+      (select min(created_at) from public.comments
+        where user_id = :uid and created_at > now() - interval '24 hours'),
+      (select min(created_at) from public.moderation_log
+        where user_id = :uid and action = 'blocked_ai' and created_at > now() - interval '24 hours')
+    )
     + interval '24 hours' - clock_timestamp())))::int as day_retry,
   (select count(*) from public.moderation_log
     where user_id = :uid and action in ('blocked_local', 'blocked_ai')
@@ -121,13 +138,27 @@ with t as (
   select c.id, c.user_id, c.status from public.comments c where c.public_id = :pid
 ),
 r as (
-  select p.status, p.suspended_until, p.created_at from public.profiles p where p.id = :reporter
+  select p.status, p.suspended_until, p.created_at,
+    (select count(*) from public.comment_reports cr
+      where cr.reporter_id = :reporter and cr.created_at > now() - interval '24 hours')
+      as day_reports,
+    ceil(extract(epoch from (
+      (select min(cr.created_at) from public.comment_reports cr
+        where cr.reporter_id = :reporter and cr.created_at > now() - interval '24 hours')
+      + interval '24 hours' - clock_timestamp())))::int as day_retry,
+    -- "Comentário publicado": ainda no ar (visível ou oculto por denúncias). Apagado pelo autor
+    -- não conta: senão bastaria comentar e apagar para denunciar antes dos 3 dias.
+    exists (select 1 from public.comments c
+      where c.user_id = :reporter and c.status in ('visible', 'hidden_reports')) as has_comment
+  from public.profiles p where p.id = :reporter
 ),
 ins as (
   insert into public.comment_reports (comment_id, reporter_id, reason)
   select t.id, :reporter, :reason from t, r
   where t.user_id <> :reporter and t.status = 'visible'
     and r.created_at < now() - make_interval(hours => :min_age)
+    and r.day_reports < :daily_limit
+    and (r.has_comment or r.created_at < now() - make_interval(days => :history_days))
     and (r.status = 'active' or (r.status = 'suspended' and r.suspended_until <= now()))
   on conflict do nothing
   returning comment_id
@@ -153,6 +184,11 @@ select
   (select created_at from r) as reporter_since,
   (select status from r) as reporter_status,
   (select suspended_until from r) as reporter_until,
+  (select day_reports from r) as day_reports,
+  (select day_retry from r) as day_retry,
+  (select has_comment from r) as has_comment,
+  exists (select 1 from public.comment_reports cr join t on cr.comment_id = t.id
+    where cr.reporter_id = :reporter) as already,
   exists (select 1 from ins) as inserted
 """
 
@@ -193,6 +229,35 @@ select exists (select 1 from up)
 
 class AccountRestrictedError(Exception):
     """A conta foi banida, suspensa ou excluída enquanto o comentário era analisado."""
+
+
+def _report_outcome(
+    row: Any, reporter_id: UUID, min_account_hours: int, history_days: int, daily_limit: int
+) -> tuple[ReportOutcome, int | None]:
+    if row["inserted"]:
+        return "ok", None
+    if not row["found"] or row["comment_status"] != "visible":
+        return "not_found", None
+    if row["author"] == reporter_id:
+        return "own", None
+    since = row["reporter_since"]
+    if since is None:
+        return "no_profile", None
+    now = datetime.now(UTC)
+    status, until = row["reporter_status"], row["reporter_until"]
+    if status == "banned" or (status == "suspended" and until is not None and until > now):
+        return "restricted", None
+    if since > now - timedelta(hours=min_account_hours):
+        return "too_new", None
+    if row["already"]:
+        return "duplicate", None
+    if row["day_reports"] >= daily_limit:
+        return "daily_limit", max(1, row["day_retry"] or 1)
+    if not row["has_comment"] and since > now - timedelta(days=history_days):
+        return "needs_history", None
+    # Inalcançável: nenhuma das regras explica a recusa. Se acontecer, fica no log.
+    logger.warning("report_refused_without_rule")
+    return "restricted", None
 
 
 def _comment(row: Any) -> StoredComment:
@@ -370,8 +435,17 @@ class SqlCommentRepository:
         reason: str | None,
         threshold: int,
         min_account_hours: int,
-    ) -> ReportOutcome:
+        history_days: int,
+        daily_limit: int,
+    ) -> tuple[ReportOutcome, int | None]:
+        """Resultado e, no limite diário, os segundos até liberar."""
         async with self._session.begin():
+            # Uma denúncia por vez por denunciante: sem o lock, duas em paralelo veriam a
+            # mesma contagem do dia e passariam juntas do limite.
+            await self._session.execute(
+                text("select 1 from public.profiles where id = :uid for no key update"),
+                {"uid": reporter_id},
+            )
             row = (
                 (
                     await self._session.execute(
@@ -382,28 +456,15 @@ class SqlCommentRepository:
                             "reason": reason,
                             "threshold": threshold,
                             "min_age": min_account_hours,
+                            "history_days": history_days,
+                            "daily_limit": daily_limit,
                         },
                     )
                 )
                 .mappings()
                 .one()
             )
-        if row["inserted"]:
-            return "ok"
-        if not row["found"] or row["comment_status"] != "visible":
-            return "not_found"
-        if row["author"] == reporter_id:
-            return "own"
-        if row["reporter_since"] is None:
-            return "no_profile"
-        now = datetime.now(UTC)
-        status, until = row["reporter_status"], row["reporter_until"]
-        if status == "banned" or (status == "suspended" and until is not None and until > now):
-            return "restricted"
-        since = row["reporter_since"]
-        if since is None or since > now - timedelta(hours=min_account_hours):
-            return "too_new"
-        return "duplicate"
+        return _report_outcome(row, reporter_id, min_account_hours, history_days, daily_limit)
 
     async def delete_own(self, public_id: str, user_id: UUID) -> bool:
         async with self._session.begin():

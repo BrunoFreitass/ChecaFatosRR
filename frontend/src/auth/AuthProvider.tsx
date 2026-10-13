@@ -10,7 +10,6 @@ import { AuthContext, type AuthContextValue, type AuthStatus } from "./AuthConte
 interface State {
   status: AuthStatus;
   profile: Profile | null;
-  termsVersion: string | null;
   errorMessage: string | null;
 }
 
@@ -20,11 +19,11 @@ interface Loaded {
   state: State;
 }
 
-const LOADING: State = { status: "loading", profile: null, termsVersion: null, errorMessage: null };
-const ANONYMOUS: State = { status: "anonymous", profile: null, termsVersion: null, errorMessage: null };
+const LOADING: State = { status: "loading", profile: null, errorMessage: null };
+const ANONYMOUS: State = { status: "anonymous", profile: null, errorMessage: null };
 
 function ready(profile: Profile): State {
-  return { status: "ready", profile, termsVersion: null, errorMessage: null };
+  return { status: "ready", profile, errorMessage: null };
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -57,11 +56,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
         if (error instanceof ApiError && error.code === "profile_not_found") {
-          const version = error.details.terms_version;
           settle({
             status: "needs_profile",
             profile: null,
-            termsVersion: typeof version === "string" ? version : null,
             errorMessage: null,
           });
           return;
@@ -80,7 +77,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         settle({
           status: "error",
           profile: null,
-          termsVersion: null,
           errorMessage:
             error instanceof ApiError ? error.message : "Não foi possível carregar sua conta.",
         });

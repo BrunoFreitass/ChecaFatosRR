@@ -50,7 +50,6 @@ function auth(overrides: Partial<AuthContextValue> = {}): AuthContextValue {
   return {
     status: "ready",
     profile: PROFILE,
-    termsVersion: null,
     errorMessage: null,
     signInWithGoogle: vi.fn(),
     signOut: vi.fn(),
@@ -178,7 +177,7 @@ describe("Comments", () => {
     renderComments(auth());
 
     fireEvent.click(await screen.findByRole("button", { name: "Apagar meu comentário" }));
-    expect(document.activeElement?.textContent).toBe("Sim, apagar");
+    await waitFor(() => expect(document.activeElement?.textContent).toBe("Sim, apagar"));
     fireEvent.click(screen.getByRole("button", { name: "Sim, apagar" }));
 
     expect(await screen.findByText("Comentário removido pelo autor")).toBeTruthy();

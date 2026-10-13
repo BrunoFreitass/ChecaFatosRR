@@ -104,7 +104,7 @@ cd frontend && npm run lint && npm test && npm run build && npm run e2e
 1. **`ofensivo` e `spam`**: bloqueio com aviso de violação, **sem** strike. Proteção: com 5 bloqueios desses em 24 h, o usuário fica 1 h sem comentar (cooldown, não strike).
 2. **Tela mínima de admin AGORA**: fila de moderação com Aprovar / Remover / Banir, só para `ADMIN_EMAIL`. Itens `strike_confirmation` ficam com Confirmar strike / Descartar / Banir. O painel completo continua na etapa 7.
 3. **Página "Comunidade"** no menu, para o feed geral.
-4. **Limite de 50 comentários por dia.** O autor pode apagar o próprio comentário, sem editar.
+4. **Limite de 50 comentários por dia** (trocado em 13/10/2026 por um limite único de 20/dia, que conta também as tentativas bloqueadas pela IA). O autor pode apagar o próprio comentário, sem editar.
    - As respostas continuam visíveis, e o original vira "Comentário removido pelo autor". O texto é apagado de `comments`.
    - Se o comentário estava na fila ou tinha denúncias, o texto fica registrado em `moderation_log` (ação `deleted_by_author`).
 5. **Modelos de moderação**: `models.list` autorizado e feito em 12/10, sem gerar texto.
