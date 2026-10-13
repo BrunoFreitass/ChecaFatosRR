@@ -150,14 +150,14 @@ async def list_comments(
     checagem: PublicId | None = None,
     cursor: Annotated[str | None, Query(max_length=200)] = None,
 ) -> CommentListOut:
-    link_id: int | None = None
+    position = _decode_cursor(cursor) if cursor else None
     if checagem is not None:
-        found, link_id = await repos.comments.link_of_check(checagem)
-        if not found or link_id is None:
+        found = await repos.comments.threads_of_check(checagem, position, PAGE_SIZE + 1)
+        if found is None:
             return CommentListOut(items=[], next_cursor=None)
-    threads = await repos.comments.threads(
-        link_id, _decode_cursor(cursor) if cursor else None, PAGE_SIZE + 1
-    )
+        threads = found
+    else:
+        threads = await repos.comments.threads(None, position, PAGE_SIZE + 1)
     page, more = threads[:PAGE_SIZE], len(threads) > PAGE_SIZE
     last = page[-1].root if page else None
     response.headers["Cache-Control"] = "no-store"

@@ -1084,3 +1084,31 @@ async def test_moderator_bug_before_the_call_publishes_and_queues(api: Api) -> N
     )
     assert status == "visible"  # publicado (fail-open)
     assert BrokenGenerate.calls == 0
+
+
+async def test_listing_comments_of_a_check_is_one_transaction(api: Api) -> None:
+    """Cada transação custa ~1 s entre Virginia e São Paulo: achar a checagem e listar os
+    comentários vão juntos."""
+    from sqlalchemy import event
+
+    from app.db import get_engine
+
+    author = await member(api)
+    api.as_user(author)
+    check_id = await link_check(api, author)
+    assert (await post(api, "Comentário na checagem.", checagem=check_id)).status_code == 201
+
+    begins: list[object] = []
+
+    def count(conn: object) -> None:
+        begins.append(conn)
+
+    engine = get_engine().sync_engine
+    event.listen(engine, "begin", count)
+    try:
+        listed = await api.http.get("/comments", params={"checagem": check_id})
+    finally:
+        event.remove(engine, "begin", count)
+
+    assert listed.status_code == 200 and len(listed.json()["items"]) == 1
+    assert len(begins) == 1
