@@ -118,12 +118,18 @@ class AiModerator:
     async def classify(
         self, body: str, reserve: Reserve, model_budget: ModelBudget | None = None
     ) -> AiVerdict | AiRefused | AiUnavailable:
-        all_exhausted = getattr(self._generate, "all_exhausted", None)
-        if all_exhausted is not None and all_exhausted():
-            return self._unavailable("sem_cota")
-        rate_limited_now = getattr(self._generate, "rate_limited_now", None)
-        if rate_limited_now is not None and rate_limited_now():
-            return self._unavailable("indisponivel")  # sem gastar a cota do dia
+        # Tudo antes da chamada também é fail-open: um bug aqui não pode virar 500.
+        try:
+            all_exhausted = getattr(self._generate, "all_exhausted", None)
+            if all_exhausted is not None and all_exhausted():
+                return self._unavailable("sem_cota")
+            rate_limited_now = getattr(self._generate, "rate_limited_now", None)
+            if rate_limited_now is not None and rate_limited_now():
+                return self._unavailable("indisponivel")  # sem gastar a cota do dia
+            prompt = build_moderation_prompt(body)
+        except Exception:
+            logger.exception("moderation_ai_precheck_failed")
+            return self._unavailable("indisponivel")
         try:
             if not await reserve():
                 return self._unavailable("sem_cota")
@@ -131,7 +137,6 @@ class AiModerator:
             logger.warning("moderation_quota_reserve_failed", exc_info=True)
             return self._unavailable("indisponivel")
         started = time.monotonic()
-        prompt = build_moderation_prompt(body)
         try:
             with deadline_scope(self._budget), model_budget_scope(model_budget):
                 async with asyncio.timeout(self._budget):
