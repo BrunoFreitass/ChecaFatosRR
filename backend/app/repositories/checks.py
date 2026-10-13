@@ -146,7 +146,8 @@ class CheckRepository(Protocol):
         self, request_id: int, user_id: UUID, lookups_per_hour: int
     ) -> int | None: ...
     async def release_gemini(self, purpose: GeminiPurpose) -> None: ...
-    async def reserve_gemini_model(self, model: str, daily_limit: int) -> bool: ...
+    async def reserve_gemini_model(self, model: str, daily_limit: int) -> date | None: ...
+    async def release_gemini_model(self, model: str, day: date) -> None: ...
     async def refund(self, request_id: int) -> None: ...
     async def get(self, public_id: str) -> StoredCheck | None: ...
     async def latest(
@@ -264,7 +265,14 @@ insert into public.gemini_model_usage as u (day, model, calls)
 values ((now() at time zone 'America/Los_Angeles')::date, :model, 1)
 on conflict (day, model) do update set calls = u.calls + 1
 where u.calls < :limit
-returning calls
+returning day
+"""
+
+# Devolução (503/500: o Google recusou sem processar). Dia da RESERVA, não now(): a chamada
+# pode ter cruzado a meia-noite do Pacífico. Nunca abaixo de 0.
+_RELEASE_GEMINI_MODEL = """
+update public.gemini_model_usage set calls = calls - 1
+where day = :day and model = :model and calls > 0
 """
 
 _RELEASE_GEMINI = """
@@ -614,14 +622,19 @@ class SqlCheckRepository:
             return None
         return max(1, int(row["retry"] or 1))
 
-    async def reserve_gemini_model(self, model: str, daily_limit: int) -> bool:
+    async def reserve_gemini_model(self, model: str, daily_limit: int) -> date | None:
+        """Dia (do Pacífico) em que a unidade foi reservada, ou None sem cota hoje."""
         if daily_limit <= 0:
-            return False
+            return None
         async with self._session.begin():
-            calls = await self._session.scalar(
+            day: date | None = await self._session.scalar(
                 text(_RESERVE_GEMINI_MODEL), {"model": model, "limit": daily_limit}
             )
-        return calls is not None
+        return day
+
+    async def release_gemini_model(self, model: str, day: date) -> None:
+        async with self._session.begin():
+            await self._session.execute(text(_RELEASE_GEMINI_MODEL), {"model": model, "day": day})
 
     async def release_gemini(self, purpose: GeminiPurpose) -> None:
         async with self._session.begin():

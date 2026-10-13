@@ -357,3 +357,37 @@ async def test_errors_before_the_call_also_fail_open(
     assert script.prompts == [] and quota.reserved == 0  # nem modelo, nem cota do dia
     failures = [r for r in caplog.records if r.getMessage() == "moderation_ai_precheck_failed"]
     assert failures and failures[0].exc_info is not None  # traceback no log
+
+
+async def test_moderation_503_refunds_the_model_unit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Moderação: o 503 do Flash-Lite vira fail-open (fila nao_moderado_ia) e a unidade do
+    contador diário do modelo volta (decisão de 13/10/2026)."""
+    from datetime import date
+
+    from tests.unit.test_gemini_client import api_error
+
+    class FakeModels:
+        async def generate_content(self, **_: Any) -> Any:
+            raise api_error(503, "high demand")
+
+    class FakeClient:
+        def __init__(self, **_: Any) -> None:
+            self.aio = SimpleNamespace(models=FakeModels())
+
+    monkeypatch.setattr("google.genai.Client", FakeClient)
+    day = date(2026, 10, 13)
+    released: list[tuple[str, date]] = []
+
+    async def budget(_: str, __: int) -> date:
+        return day
+
+    async def model_release(model: str, reserved_day: date) -> None:
+        released.append((model, reserved_day))
+
+    moderator = google_moderator(FAKE_KEY, ["gemini-3.1-flash-lite"])
+    result = await moderator.classify(
+        COMMENT, Quota(), model_budget=budget, model_release=model_release
+    )
+
+    assert result == AiUnavailable("indisponivel")
+    assert released == [("gemini-3.1-flash-lite", day)]

@@ -35,7 +35,9 @@ _IN_FLIGHT: set[UUID] = set()
 
 
 class Moderator(Protocol):
-    async def classify(self, body: str, reserve: Any, model_budget: Any = None) -> Any: ...
+    async def classify(
+        self, body: str, reserve: Any, model_budget: Any = None, model_release: Any = None
+    ) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -186,7 +188,12 @@ async def _post(
         async def reserve() -> bool:
             return await repos.quota.reserve_gemini("moderacao", limits.gemini_daily_moderation)
 
-        ai = await moderator.classify(body, reserve, model_budget=repos.quota.reserve_gemini_model)
+        ai = await moderator.classify(
+            body,
+            reserve,
+            model_budget=repos.quota.reserve_gemini_model,
+            model_release=repos.quota.release_gemini_model,
+        )
         decision = decide(local, ai)
 
     if not decision.publish:

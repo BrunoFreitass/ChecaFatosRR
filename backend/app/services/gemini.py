@@ -608,10 +608,10 @@ MIN_ATTEMPT_SECONDS = 5.0
 # Repetir o mesmo prompt só gasta o orçamento, e a resposta tem de sair antes do corte do
 # Cloudflare (~100 s): já no primeiro, a cadeia passa ao próximo modelo.
 DEADLINE_FAILURES_TO_SWITCH = 1
-# 503 ("high demand", modelo sobrecarregado) seguidos no MESMO modelo: persistente, a cadeia
-# passa ao próximo (ensaio de 12/10/2026). Um 503 isolado ainda ganha uma nova tentativa,
-# salvo se ela comer o tempo que o próximo modelo precisaria (503 lento, ~22 s em 09/10).
-UNAVAILABLE_FAILURES_TO_SWITCH = 2
+# 503 ("high demand", modelo sobrecarregado) no MESMO modelo: havendo próximo, a cadeia passa
+# a ele já na 1ª falha (13/10/2026: dois 503 seguidos no 3.8 gastaram ~5 s e, somados a um
+# modelo lento, deixaram o último da cadeia sem tempo). Sem próximo, o 503 é repetido.
+UNAVAILABLE_FAILURES_TO_SWITCH = 1
 # Erros do lado do Google tratados como "modelo sobrecarregado" (o 500 entrou com a moderação,
 # que roda sem novas tentativas: um 500 no 1º Flash-Lite não pode desligar a cadeia inteira).
 OVERLOADED_STATUS = frozenset({500, 503})
@@ -628,9 +628,18 @@ _DEADLINE: ContextVar[float | None] = ContextVar("gemini_deadline", default=None
 # novas tentativas de sempre. Fora de uma cadeia, não há sucessor.
 _HAS_NEXT_MODEL: ContextVar[bool] = ContextVar("gemini_has_next_model", default=False)
 # Contador DIÁRIO por modelo (no banco: o Render dorme e perderia um contador em memória).
-# Recebe (modelo, RPD) e devolve se ainda há cota hoje; modelo esgotado nem é chamado.
-ModelBudget = Callable[[str, int], Awaitable[bool]]
+# Recebe (modelo, RPD) e devolve o dia (do Pacífico) em que reservou a unidade, ou um valor
+# falso sem cota hoje; modelo esgotado nem é chamado. True = reservou sem dia conhecido.
+ModelBudget = Callable[[str, int], Awaitable[date | bool | None]]
 _MODEL_BUDGET: ContextVar[ModelBudget | None] = ContextVar("gemini_model_budget", default=None)
+# Devolve a unidade ao contador do dia da reserva (modelo, dia).
+ModelRelease = Callable[[str, date], Awaitable[None]]
+_MODEL_RELEASE: ContextVar[ModelRelease | None] = ContextVar("gemini_model_release", default=None)
+# 503/500: o Google recusou a requisição sem processá-la (sobrecarga). A unidade volta
+# (decisão de 13/10/2026: 503 em série esgotavam os 20/dia dos Flash sem nenhuma resposta).
+# Timeout e 504 não: o Google pode ter processado e cobrado. Se ele contar o 503 do lado
+# dele, o pior caso é um 429 diário real, que também troca de modelo.
+REFUNDED_STATUS = frozenset({500, 503})
 
 
 class GeminiRateLimitedError(GeminiUnavailableError):
@@ -730,12 +739,16 @@ class GeminiContentBlockedError(GeminiUnavailableError):
 
 
 @contextmanager
-def model_budget_scope(budget: "ModelBudget | None") -> Iterator[None]:
+def model_budget_scope(
+    budget: "ModelBudget | None", release: "ModelRelease | None" = None
+) -> Iterator[None]:
     """Contador diário por modelo (no banco) para as chamadas feitas dentro do bloco."""
     token = _MODEL_BUDGET.set(budget)
+    release_token = _MODEL_RELEASE.set(release)
     try:
         yield
     finally:
+        _MODEL_RELEASE.reset(release_token)
         _MODEL_BUDGET.reset(token)
 
 
@@ -806,8 +819,9 @@ def with_retries(
     model: str | None = None,  # só para o log
 ) -> RawCall:
     """Envolve uma chamada crua com teto por tentativa, novas tentativas em erro transitório
-    (backoff exponencial + jitter) e orçamento total. Novas tentativas NÃO reservam cota
-    diária: quem reserva é o GeminiAnalyzer, uma vez por resposta pedida ao modelo."""
+    (backoff exponencial + jitter) e orçamento total. A cota diária GLOBAL é reservada uma
+    vez por resposta (GeminiAnalyzer); o contador diário POR MODELO é reservado a cada
+    tentativa, dentro da chamada crua (google_generate), inclusive nas novas tentativas."""
 
     async def generate(prompt: str) -> str | None:
         deadline = clock() + budget_seconds
@@ -918,16 +932,24 @@ class ModelChain:
         clock: Callable[[], float] = time.monotonic,
         seconds_until_reset: Callable[[], float] = seconds_until_quota_reset,
         limiter: RpmLimiter | None = None,
+        disabled: Sequence[str] = (),
     ) -> None:
         self._chain = list(chain)
+        # Fora da cadeia (RPD 0), mas logados a cada checagem: o pulo nunca é silencioso.
+        self._disabled = tuple(disabled)
         self._clock = clock
         self._seconds_until_reset = seconds_until_reset
         self._exhausted_until: dict[str, float] = {}
         self._slow_until: dict[str, float] = {}
+        # Em cooldown por 400/404: quebrado (config recusada, nome inexistente), não só lento.
+        self._broken: set[str] = set()
         self._limiter = limiter or RpmLimiter(0, clock=clock)
 
     def _slow(self, model: str) -> bool:
         return self._clock() < self._slow_until.get(model, float("-inf"))
+
+    def _broken_now(self, model: str) -> bool:
+        return model in self._broken and self._slow(model)
 
     def _available(self, model: str) -> bool:
         return self._clock() >= self._exhausted_until.get(model, float("-inf"))
@@ -942,17 +964,43 @@ class ModelChain:
         available = [model for model, _ in self._chain if self._available(model)]
         return bool(available) and not any(self._limiter.has_room(m) for m in available)
 
+    def _log_skipped(
+        self, available: list[tuple[str, RawCall]], usable: list[tuple[str, RawCall]]
+    ) -> None:
+        """Todo modelo que não será chamado deixa rastro com o motivo (incidente de 13/10/2026:
+        a fila não avançou e o log não dizia por quê)."""
+        for model in self._disabled:
+            logger.info("gemini_model_skipped", extra={"model": model, "reason": "desligado"})
+        names = {model for model, _ in available}
+        usable_names = {model for model, _ in usable}
+        for model, _ in self._chain:
+            if model not in names:
+                left = int(self._exhausted_until[model] - self._clock())
+                logger.info(
+                    "gemini_model_skipped",
+                    extra={"model": model, "reason": "sem_cota", "seconds_left": left},
+                )
+            elif model not in usable_names:
+                logger.info(
+                    "gemini_model_skipped", extra={"model": model, "reason": "limite_minuto"}
+                )
+
     async def __call__(self, prompt: str) -> Generated:
         available = [(model, call) for model, call in self._chain if self._available(model)]
         # Modelo no limite por minuto nem é chamado (RPM 5 no nível gratuito).
         usable = [(model, call) for model, call in available if self._limiter.has_room(model)]
+        self._log_skipped(available, usable)
         rate_limited_seen = len(usable) < len(available)
         called = False  # alguma requisição chegou ao Google (gastou cota lá)?
         # Os lentos por último (sort estável: entre iguais, a ordem da cadeia).
         usable.sort(key=lambda item: self._slow(item[0]))
         slow_seen = False
         for index, (model, call) in enumerate(usable):
-            successor = any(not self._slow(later) for later, _ in usable[index + 1 :])
+            # Qualquer modelo depois deste conta como próximo, inclusive o em cooldown de lento
+            # (ele já está no fim da fila): um 503 troca de modelo em vez de encerrar a cadeia
+            # com tempo sobrando (incidente de 13/10/2026, 18:31 UTC). O quebrado (400/404),
+            # não: trocar para ele só gastaria tempo.
+            successor = any(not self._broken_now(later) for later, _ in usable[index + 1 :])
             token = _HAS_NEXT_MODEL.set(successor)
             try:
                 text = await call(prompt)
@@ -971,6 +1019,10 @@ class ModelChain:
                     else SLOW_MODEL_COOLDOWN_SECONDS
                 )
                 self._slow_until[model] = self._clock() + cooldown
+                if exc.reason in ("400", "404"):
+                    self._broken.add(model)
+                else:
+                    self._broken.discard(model)
                 logger.warning("gemini_model_slow", extra={"model": model, "reason": exc.reason})
                 slow_seen = True
                 continue
@@ -996,8 +1048,15 @@ def with_model_fallback(
     clock: Callable[[], float] = time.monotonic,
     seconds_until_reset: Callable[[], float] = seconds_until_quota_reset,
     limiter: RpmLimiter | None = None,
+    disabled: Sequence[str] = (),
 ) -> ModelChain:
-    return ModelChain(chain, clock=clock, seconds_until_reset=seconds_until_reset, limiter=limiter)
+    return ModelChain(
+        chain,
+        clock=clock,
+        seconds_until_reset=seconds_until_reset,
+        limiter=limiter,
+        disabled=disabled,
+    )
 
 
 class GeminiAnalyzer:
@@ -1020,6 +1079,7 @@ class GeminiAnalyzer:
         reserve: Reserve = _always_allowed,
         release: Release = _nothing_to_release,
         model_budget: ModelBudget | None = None,
+        model_release: ModelRelease | None = None,
     ) -> CheckResult:
         now = self._now()
         prompt = build_prompt(data, now)
@@ -1046,6 +1106,7 @@ class GeminiAnalyzer:
                 raise GeminiQuotaExhaustedError
             token = _DEADLINE.set(deadline)
             budget_token = _MODEL_BUDGET.set(model_budget)
+            model_release_token = _MODEL_RELEASE.set(model_release)
             try:
                 async with asyncio.timeout(deadline - time.monotonic()):
                     raw = await self._generate(prompt)
@@ -1058,6 +1119,7 @@ class GeminiAnalyzer:
                     await release()
                 raise
             finally:
+                _MODEL_RELEASE.reset(model_release_token)
                 _MODEL_BUDGET.reset(budget_token)
                 _DEADLINE.reset(token)
             model = None
@@ -1115,9 +1177,10 @@ def build_generate_config(*, thinking_budget: int = 0, thinking_level: str = "")
     return build_task_config(task, "gemini-flash")
 
 
-async def _within_daily_budget(model: str, rpd: int) -> bool:
-    """Contador diário do modelo (no banco). Sem contador (eval, testes) ou com o banco fora:
-    deixa passar, e o 429 diário do Google continua tirando o modelo da fila."""
+async def _within_daily_budget(model: str, rpd: int) -> date | bool | None:
+    """Contador diário do modelo (no banco): o dia da reserva, ou falso sem cota. Sem contador
+    (eval, testes) ou com o banco fora: deixa passar (True, sem dia: nada a devolver depois),
+    e o 429 diário do Google continua tirando o modelo da fila."""
     budget = _MODEL_BUDGET.get()
     if budget is None:
         return True
@@ -1128,6 +1191,20 @@ async def _within_daily_budget(model: str, rpd: int) -> bool:
     except Exception:
         logger.warning("gemini_model_budget_failed", extra={"model": model}, exc_info=True)
         return True
+
+
+async def _release_model_unit(model: str, day: date) -> None:
+    """Devolve a unidade do contador do modelo no dia da reserva. Falha aqui só vai para o
+    log: a checagem segue (o pior caso é o contador ficar 1 acima do real)."""
+    release = _MODEL_RELEASE.get()
+    if release is None:
+        return
+    try:
+        # shield: o teto da tentativa não cancela a transação no meio (sessão compartilhada).
+        await asyncio.shield(release(model, day))
+        logger.info("gemini_model_unit_refunded", extra={"model": model})
+    except Exception:
+        logger.warning("gemini_model_refund_failed", extra={"model": model}, exc_info=True)
 
 
 def google_generate(
@@ -1190,7 +1267,10 @@ def google_generate(
             if not limiter.try_acquire(model, estimate_tokens(contents)):
                 raise GeminiCallError(429, "limite local por minuto", rate_limited=True, local=True)
             # RPD 0 na tabela = modelo desligado (sem deploy, via GEMINI_MODEL_LIMITS).
-            if (known and rpd <= 0) or (known and not await _within_daily_budget(model, rpd)):
+            reserved: date | bool | None = True
+            if known and rpd > 0:
+                reserved = await _within_daily_budget(model, rpd)
+            if (known and rpd <= 0) or not reserved:
                 raise GeminiCallError(
                     429, "cota diária do modelo (contador local)", quota_exhausted=True, local=True
                 )
@@ -1210,6 +1290,8 @@ def google_generate(
                 per_minute = exc.code == 429 and not daily
                 if per_minute:
                     limiter.saturate(model)
+                if exc.code in REFUNDED_STATUS and isinstance(reserved, date):
+                    await _release_model_unit(model, reserved)
                 raise GeminiCallError(
                     exc.code, message, quota_exhausted=daily, rate_limited=per_minute
                 ) from None
@@ -1230,6 +1312,10 @@ def google_generate(
 
         return call
 
+    # RPD 0 = modelo desligado (sem deploy, via GEMINI_MODEL_LIMITS): fora da cadeia, para não
+    # contar como "próximo modelo" (o último de verdade desistiria do 503 por causa dele).
+    # Todos desligados: a cadeia fica como está e falha pelo contador local (sem chamar o Google).
+    enabled = [m for m in models if m not in model_limits or model_limits[m].rpd > 0]
     chain = [
         (
             model,
@@ -1241,6 +1327,7 @@ def google_generate(
                 model=model,
             ),
         )
-        for model in models
+        for model in (enabled or models)
     ]
-    return with_model_fallback(chain, limiter=limiter)
+    disabled = [m for m in models if m not in enabled] if enabled else []
+    return with_model_fallback(chain, limiter=limiter, disabled=disabled)
