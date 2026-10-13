@@ -4,6 +4,8 @@ Com NullPool cada requisição abriria TCP + TLS (verify-full) + autenticação 
 ~5 viagens de ~120 ms. Um pool pequeno reaproveita a conexão cliente → Supavisor.
 """
 
+import inspect
+
 import pytest
 from pydantic import ValidationError
 from sqlalchemy.pool import NullPool
@@ -136,3 +138,13 @@ def test_engine_installs_the_one_round_trip_ping(monkeypatch: pytest.MonkeyPatch
         db._engine = None
         db._sessionmaker = None
         get_settings.cache_clear()
+
+
+def test_driver_internals_used_by_the_ping_still_exist() -> None:
+    """O ping usa internos do adaptador asyncpg do SQLAlchemy (os mesmos do ping original).
+    Uma atualização que os mude quebra aqui, no CI, e não em produção."""
+    from sqlalchemy.dialects.postgresql.asyncpg import AsyncAdapt_asyncpg_connection
+
+    assert callable(getattr(AsyncAdapt_asyncpg_connection, "_handle_exception", None))
+    # O ping nativo, que o nosso espelha, usa a mesma conexão interna do adaptador.
+    assert "self._connection." in inspect.getsource(AsyncAdapt_asyncpg_connection._async_ping)

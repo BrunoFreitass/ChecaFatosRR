@@ -90,6 +90,7 @@ def ping_one_round_trip(dbapi_connection: Any) -> bool:
     except Exception as error:
         # Traduz para o erro do DBAPI: o pool reconhece a desconexão e abre outra conexão.
         dbapi_connection._handle_exception(error)
+        raise  # o tradutor sempre levanta; se um dia não levantar, o erro não vira "ok"
     return True
 
 
