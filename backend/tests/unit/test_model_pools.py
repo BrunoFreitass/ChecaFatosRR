@@ -535,3 +535,47 @@ async def test_refund_failure_does_not_break_the_check(monkeypatch: pytest.Monke
         data(), model_budget=budget, model_release=broken
     )
     assert result.model == "gemini-3.8-flash"
+
+
+async def test_no_refund_when_the_counter_was_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Banco fora na reserva: a chamada segue sem dia reservado, então um 503 depois não
+    devolve nada (não há unidade a devolver)."""
+    install(
+        monkeypatch,
+        {"gemini-3.8-flash": [api_error(503, "x")], "gemini-3.7-flash": [text_response(ANSWER)]},
+    )
+    released: list[object] = []
+
+    async def broken(_: str, __: int) -> object:
+        raise ConnectionError("banco fora")
+
+    async def model_release(*args: object) -> None:
+        released.append(args)
+
+    chain = google_generate(FAKE_KEY, ["gemini-3.8-flash", "gemini-3.7-flash"])
+    result = await GeminiAnalyzer(chain).analyze(
+        data(), model_budget=broken, model_release=model_release
+    )
+    assert result.model == "gemini-3.7-flash"
+    assert released == []
+
+
+async def test_no_refund_when_our_counter_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Contador local recusou (cota do dia acabou): nada foi reservado nem enviado ao Google."""
+    install(monkeypatch, {"gemini-3.8-flash": [], "gemini-3.7-flash": [text_response(ANSWER)]})
+    released: list[object] = []
+
+    async def budget(model: str, _: int) -> object:
+        from datetime import date
+
+        return None if model == "gemini-3.8-flash" else date(2026, 10, 13)
+
+    async def model_release(*args: object) -> None:
+        released.append(args)
+
+    chain = google_generate(FAKE_KEY, ["gemini-3.8-flash", "gemini-3.7-flash"])
+    result = await GeminiAnalyzer(chain).analyze(
+        data(), model_budget=budget, model_release=model_release
+    )
+    assert result.model == "gemini-3.7-flash"
+    assert released == []
