@@ -84,6 +84,7 @@ class FakeProfileRepository:
         self.profiles: dict[UUID, Profile] = {}
         self.google_subs: dict[UUID, str] = {}
         self.banned_hashes: set[bytes] = set()
+        self.kept_suspensions: dict[bytes, datetime] = {}
         self.blocked_nicknames: list[tuple[str, str]] = []
 
     async def get(self, user_id: UUID) -> Profile | None:
@@ -98,7 +99,22 @@ class FakeProfileRepository:
     async def is_banned(self, sub_hash: bytes) -> bool:
         return sub_hash in self.banned_hashes
 
-    async def create(self, user_id: UUID, apelido: str, terms_version: str) -> Profile:
+    async def suspension_until(self, sub_hash: bytes) -> datetime | None:
+        until = self.kept_suspensions.get(sub_hash)
+        return until if until and until > datetime.now(UTC) else None
+
+    async def keep_suspension(self, sub_hash: bytes, until: datetime) -> None:
+        if sub_hash not in self.banned_hashes:
+            self.kept_suspensions[sub_hash] = max(until, self.kept_suspensions.get(sub_hash, until))
+
+    async def create(
+        self,
+        user_id: UUID,
+        apelido: str,
+        terms_version: str,
+        *,
+        suspended_until: datetime | None = None,
+    ) -> Profile:
         if user_id in self.profiles:
             raise ProfileExistsError
         if await self.nickname_taken(apelido):
@@ -106,8 +122,8 @@ class FakeProfileRepository:
         profile = Profile(
             id=user_id,
             apelido=apelido,
-            status="active",
-            suspended_until=None,
+            status="suspended" if suspended_until else "active",
+            suspended_until=suspended_until,
             terms_version=terms_version,
             created_at=datetime.now(UTC),
         )
