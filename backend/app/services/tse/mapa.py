@@ -84,13 +84,21 @@ async def load_map(
     election = str(settings.tse_election_code)
     claimed = await repo.claim_ufs(settings.tse_mapa_refresh_seconds, settings.tse_mapa_lote)
     fetched = await asyncio.gather(*(_fetch(client, uf) for uf in claimed))
-    fresh = [
-        UfSnapshot(uf, result.eleicao, summarize(result), result.totalizado_em)
-        for uf, result in zip(claimed, fetched, strict=True)
-        if result is not None
-    ]
+    fresh: list[UfSnapshot] = []
+    for uf, result in zip(claimed, fetched, strict=True):
+        if result is None:
+            continue
+        # Arquivo de outra eleição (ou sem "ele") não entra: além de não aparecer, quebraria o
+        # CHECK de eleicao e derrubaria a gravação das outras UFs do lote.
+        if result.eleicao != election:
+            logger.error("tse_map_wrong_election", extra={"scope": uf, "eleicao": result.eleicao})
+            continue
+        fresh.append(UfSnapshot(uf, result.eleicao, summarize(result), result.totalizado_em))
     if fresh:
-        await repo.save_ufs(fresh)
+        try:
+            await repo.save_ufs(fresh)
+        except Exception:  # falha ao gravar: serve o que já estava salvo
+            logger.exception("tse_map_save_failed", extra={"ufs": [s.uf for s in fresh]})
     saved = {s.uf: s for s in await repo.get_ufs()}
     out: list[tuple[str, dict[str, Any] | None]] = []
     for uf in UFS:

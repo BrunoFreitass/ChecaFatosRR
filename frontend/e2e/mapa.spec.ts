@@ -97,7 +97,7 @@ test("mapa carrega em chunk separado, colore os estados e mostra o detalhe ao to
   await page.goto("/apuracao");
   await chunk;
 
-  const mapa = page.getByRole("img", { name: /Mapa do Brasil/ });
+  const mapa = page.getByRole("group", { name: /Mapa do Brasil/ });
   await expect(mapa).toBeVisible();
   await expect(mapa.locator("path[data-uf]")).toHaveCount(27);
   await expect(mapa.locator('path[data-uf="ac"]')).toHaveAttribute("fill", "#e2e8f0"); // sem dados
@@ -108,6 +108,11 @@ test("mapa carrega em chunk separado, colore os estados e mostra o detalhe ao to
   await expect(detalhe).toContainText("Roraima");
   await expect(detalhe).toContainText("CANDIDATO AZUL: 60,50%");
   await expect(detalhe).toContainText("Urnas apuradas: 87,25%");
+
+  // Teclado: o estado é um botão com nome; o foco mostra o detalhe.
+  await mapa.getByRole("button", { name: "Amazonas" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(detalhe).toContainText("Amazonas");
 
   const legenda = page.getByRole("list", { name: "Legenda do mapa" });
   await expect(legenda).toContainText("CANDIDATO VERMELHO à frente");
@@ -139,5 +144,5 @@ test("mapa desligado (404) não aparece e a apuração continua", async ({ page 
 
   await expect(page.getByText("Aguardando os primeiros resultados do TSE.")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Mapa por estado" })).toHaveCount(0);
-  await expect(page.getByRole("img", { name: /Mapa do Brasil/ })).toHaveCount(0);
+  await expect(page.getByRole("group", { name: /Mapa do Brasil/ })).toHaveCount(0);
 });

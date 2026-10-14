@@ -50,20 +50,30 @@ export function marginBand(margin: number): number {
   return 3;
 }
 
-function ranked(result: MapaResultado | null): MapaCandidato[] {
+/** Candidatos com percentual, do maior para o menor (não depende da ordem da API). */
+export function rankedCandidates(result: MapaResultado | null): MapaCandidato[] {
   return [...(result?.candidatos ?? [])]
     .filter((c) => c.pct !== null)
     .sort((a, b) => (b.pct ?? 0) - (a.pct ?? 0));
 }
 
 export function leaderOf(result: MapaResultado | null): MapaCandidato | null {
-  return ranked(result)[0] ?? null;
+  return rankedCandidates(result)[0] ?? null;
+}
+
+/** Cor configurada para o número; "constructor" e afins não contam (só chaves próprias). */
+export function colorOf(numero: string, cores: Record<string, string>): string | undefined {
+  return Object.hasOwn(cores, numero) ? cores[numero] : undefined;
+}
+
+function tonesOf(color: string | undefined): readonly string[] | undefined {
+  return color !== undefined && Object.hasOwn(TONES, color) ? TONES[color] : undefined;
 }
 
 export function fillFor(result: MapaResultado | null, cores: Record<string, string>): string {
-  const [first, second] = ranked(result);
+  const [first, second] = rankedCandidates(result);
   if (!first) return NO_DATA;
-  const tones = TONES[cores[first.numero] ?? ""];
+  const tones = tonesOf(colorOf(first.numero, cores));
   if (!tones) return NEUTRAL_OTHER;
   const margin = (first.pct ?? 0) - (second?.pct ?? 0);
   return tones[marginBand(margin)] ?? NEUTRAL_OTHER;
@@ -71,18 +81,42 @@ export function fillFor(result: MapaResultado | null, cores: Record<string, stri
 
 /** Tom da legenda (faixa intermediária) de uma cor configurada. */
 export function toneOf(color: string): string {
-  return TONES[color]?.[2] ?? NEUTRAL_OTHER;
+  return tonesOf(color)?.[2] ?? NEUTRAL_OTHER;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isPctOrNull(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isFinite(value));
+}
+
+function isCandidato(value: unknown): value is MapaCandidato {
+  return (
+    isRecord(value) && typeof value.numero === "string" && typeof value.nome === "string" && isPctOrNull(value.pct)
+  );
+}
+
+function isResultado(value: unknown): value is MapaResultado | null {
+  if (value === null) return true;
+  return (
+    isRecord(value) &&
+    Array.isArray(value.candidatos) &&
+    value.candidatos.every(isCandidato) &&
+    isPctOrNull(value.secoes_pct) &&
+    typeof value.final === "boolean" &&
+    (value.totalizado_em === null || typeof value.totalizado_em === "string")
+  );
+}
+
+/** Valida tudo o que a tela lê: resposta malformada não chega ao render. */
 export function isMapaResponse(value: unknown): value is MapaResponse {
   return (
     isRecord(value) &&
     isRecord(value.cores) &&
+    Object.values(value.cores).every((color) => typeof color === "string") &&
     Array.isArray(value.estados) &&
-    value.estados.every((e) => isRecord(e) && typeof e.uf === "string")
+    value.estados.every((e) => isRecord(e) && typeof e.uf === "string" && isResultado(e.resultado))
   );
 }

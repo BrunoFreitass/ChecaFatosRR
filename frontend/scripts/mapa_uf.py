@@ -51,7 +51,8 @@ def rings(geometry: dict[str, Any]) -> list[list[list[float]]]:
 def main(path: str) -> None:
     # No Windows a saída redirecionada sai em cp1252 e com CRLF; o build exige UTF-8.
     sys.stdout.reconfigure(encoding="utf-8", newline="\n")  # type: ignore[union-attr]
-    data = json.load(open(path, encoding="utf-8"))
+    with open(path, encoding="utf-8") as file:
+        data = json.load(file)
     states = [f for f in data["features"] if f["properties"].get("adm0_a3") == "BRA"]
     projected = {
         f["properties"]["iso_3166_2"][3:].lower(): [

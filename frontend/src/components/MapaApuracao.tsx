@@ -1,65 +1,82 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 
 import { ApiError, apiFetch } from "../lib/api.ts";
 import {
   BAND_LABELS,
+  colorOf,
   fillFor,
   isMapaResponse,
   leaderOf,
   NEUTRAL_OTHER,
   NO_DATA,
+  rankedCandidates,
   toneOf,
   UF_NAMES,
   type MapaResponse,
   type MapaResultado,
 } from "../lib/mapa.ts";
 import { MAPA_UF, MAPA_VIEWBOX } from "../lib/mapaUf.ts";
-import { formatPct, POLL_MS } from "../lib/tse.ts";
+import { formatPct, POLL_MS, POLL_SLACK_MS } from "../lib/tse.ts";
 
 // Carregado sob demanda (React.lazy na página Apuração): o bundle principal não cresce.
-// Polling igual ao da página: 60 s, só com a aba visível, uma requisição por vez.
+// Polling igual ao da página: 60 s, só com a aba visível, uma requisição por vez; 404 desliga.
 
-type State = { kind: "loading" } | { kind: "off" } | { kind: "ready"; data: MapaResponse };
+type State = { kind: "loading" } | { kind: "off" } | { kind: "ready"; data: MapaResponse; stale: boolean };
 
 export default function MapaApuracao() {
   const [state, setState] = useState<State>({ kind: "loading" });
   const [selected, setSelected] = useState<string | null>(null);
-  const off = useRef(false);
 
   useEffect(() => {
-    let controller: AbortController | null = null;
+    const controller = new AbortController();
+    let inFlight = false;
+    let off = false;
     let lastFetch = 0;
 
+    function stop() {
+      off = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    }
     function refresh() {
-      if (off.current || controller) return;
-      const current = new AbortController();
-      controller = current;
+      if (off || inFlight) return;
+      inFlight = true;
       lastFetch = Date.now();
-      apiFetch<unknown>("/tse/mapa", { anonymous: true, signal: current.signal })
+      apiFetch<unknown>("/tse/mapa", { anonymous: true, signal: controller.signal })
         .then((data) => {
-          if (!current.signal.aborted && isMapaResponse(data)) setState({ kind: "ready", data });
+          if (controller.signal.aborted) return;
+          if (!isMapaResponse(data)) throw new Error("resposta do mapa fora do formato");
+          setState({ kind: "ready", data, stale: false });
         })
         .catch((error: unknown) => {
+          if (controller.signal.aborted) return;
           // TSE_MAPA_ENABLED=false: o mapa some e não consulta mais.
           if (error instanceof ApiError && error.status === 404) {
-            off.current = true;
+            stop();
             setState({ kind: "off" });
+            return;
           }
+          // Outro erro: mantém o último mapa e avisa; sem mapa ainda, tenta no próximo tick.
+          setState((prev) => (prev.kind === "ready" ? { ...prev, stale: true } : prev));
         })
         .finally(() => {
-          if (controller === current) controller = null;
+          inFlight = false;
         });
     }
-
-    refresh();
+    function due(): boolean {
+      return Date.now() - lastFetch >= POLL_MS - POLL_SLACK_MS;
+    }
+    function onVisibility() {
+      if (document.visibilityState === "visible" && due()) refresh();
+    }
     const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible" && Date.now() - lastFetch >= POLL_MS - 1_000) {
-        refresh();
-      }
+      if (document.visibilityState === "visible" && due()) refresh();
     }, POLL_MS);
+    document.addEventListener("visibilitychange", onVisibility);
+    refresh();
     return () => {
-      window.clearInterval(timer);
-      controller?.abort();
+      controller.abort();
+      stop();
     };
   }, []);
 
@@ -69,18 +86,29 @@ export default function MapaApuracao() {
   const names = candidateNames(data);
   const hasOther = data.estados.some((e) => {
     const leader = leaderOf(e.resultado);
-    return leader !== null && !(leader.numero in data.cores);
+    return leader !== null && colorOf(leader.numero, data.cores) === undefined;
   });
+
+  function onKey(event: KeyboardEvent<SVGPathElement>, uf: string) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    setSelected(uf);
+  }
 
   return (
     <section aria-labelledby="mapa-titulo" className="space-y-4">
       <h2 id="mapa-titulo" className="text-xl font-bold">
         Mapa por estado
       </h2>
+      {state.stale && (
+        <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-950">
+          Não foi possível atualizar agora; mostrando a última atualização do mapa.
+        </p>
+      )}
       <svg
         viewBox={MAPA_VIEWBOX}
-        role="img"
-        aria-label="Mapa do Brasil com o candidato à frente em cada estado. Os números de cada estado estão na tabela abaixo."
+        role="group"
+        aria-label="Mapa do Brasil com o candidato à frente em cada estado. Cada estado é um botão; todos os números estão também em “Ver em tabela”."
         className="mx-auto block h-auto w-full max-w-xl"
       >
         {Object.entries(MAPA_UF).map(([uf, d]) => (
@@ -88,14 +116,30 @@ export default function MapaApuracao() {
             key={uf}
             data-uf={uf}
             d={d}
+            role="button"
+            tabIndex={0}
+            aria-label={UF_NAMES[uf] ?? uf.toUpperCase()}
+            aria-pressed={selected === uf}
             fill={fillFor(byUf.get(uf) ?? null, data.cores)}
-            stroke={selected === uf ? "#0f172a" : "#ffffff"}
-            strokeWidth={selected === uf ? 2 : 0.8}
-            className="cursor-pointer"
+            stroke="#ffffff"
+            strokeWidth={0.8}
+            className="cursor-pointer outline-none"
             onClick={() => setSelected(uf)}
-            onMouseEnter={() => setSelected(uf)}
+            onFocus={() => setSelected(uf)}
+            onKeyDown={(event) => onKey(event, uf)}
           />
         ))}
+        {/* Contorno do selecionado por cima de todos (senão os vizinhos o cobrem). */}
+        {selected && MAPA_UF[selected] && (
+          <path
+            d={MAPA_UF[selected]}
+            fill="none"
+            stroke="#0f172a"
+            strokeWidth={2.5}
+            pointerEvents="none"
+            aria-hidden="true"
+          />
+        )}
       </svg>
 
       <div role="status" aria-live="polite" className="min-h-16 rounded-lg bg-slate-50 p-3 text-sm">
@@ -162,7 +206,7 @@ function Detail({ uf, result }: { uf: string; result: MapaResultado | null }) {
     <div>
       <p className="font-semibold">{UF_NAMES[uf]}</p>
       <ul>
-        {result.candidatos.map((c) => (
+        {rankedCandidates(result).map((c) => (
           <li key={c.numero}>
             {c.nome}: {formatPct(c.pct)}
           </li>
@@ -175,38 +219,40 @@ function Detail({ uf, result }: { uf: string; result: MapaResultado | null }) {
 
 function StatesTable({ data }: { data: MapaResponse }) {
   return (
-    <table className="mt-3 w-full text-left text-sm">
-      <caption className="sr-only">Resultado por estado</caption>
-      <thead>
-        <tr>
-          <th scope="col">Estado</th>
-          <th scope="col">À frente</th>
-          <th scope="col">Percentuais</th>
-          <th scope="col">Urnas apuradas</th>
-        </tr>
-      </thead>
-      <tbody>
-        {data.estados.map(({ uf, resultado }) => {
-          const leader = leaderOf(resultado);
-          return (
-            <tr key={uf} className="border-t border-slate-100">
-              <th scope="row" className="font-normal">
-                {UF_NAMES[uf] ?? uf.toUpperCase()}
-              </th>
-              <td>{leader ? leader.nome : "Sem dados"}</td>
-              <td>
-                {resultado
-                  ? resultado.candidatos
-                      .slice(0, 2)
-                      .map((c) => `${c.nome} ${formatPct(c.pct)}`)
-                      .join(" · ")
-                  : "—"}
-              </td>
-              <td>{resultado ? formatPct(resultado.secoes_pct) : "—"}</td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <div className="overflow-x-auto">
+      <table className="mt-3 w-full text-left text-sm">
+        <caption className="sr-only">Resultado por estado</caption>
+        <thead>
+          <tr>
+            <th scope="col">Estado</th>
+            <th scope="col">À frente</th>
+            <th scope="col">Percentuais</th>
+            <th scope="col">Urnas apuradas</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.estados.map(({ uf, resultado }) => {
+            const ranked = rankedCandidates(resultado);
+            return (
+              <tr key={uf} className="border-t border-slate-100">
+                <th scope="row" className="font-normal">
+                  {UF_NAMES[uf] ?? uf.toUpperCase()}
+                </th>
+                <td>{ranked[0]?.nome ?? "Sem dados"}</td>
+                <td>
+                  {ranked.length
+                    ? ranked
+                        .slice(0, 2)
+                        .map((c) => `${c.nome} ${formatPct(c.pct)}`)
+                        .join(" · ")
+                    : "—"}
+                </td>
+                <td>{resultado ? formatPct(resultado.secoes_pct) : "—"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }

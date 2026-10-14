@@ -59,3 +59,20 @@ async def test_older_summary_never_overwrites_a_newer_one(session: AsyncSession)
     await repo.save_ufs([UfSnapshot("rr", "6257", {"candidatos": []}, new - timedelta(days=20))])
     rr = next(s for s in await repo.get_ufs() if s.uf == "rr")
     assert rr.eleicao == "6257"
+
+
+async def test_summary_without_tse_time_never_overwrites_a_dated_one(session: AsyncSession) -> None:
+    """Arquivo sem dt/ht (horário nulo) não apaga um resumo com horário (revisão, 14/10/2026)."""
+    await _reset(session)
+    repo = SqlTseMapRepository(session)
+    when = datetime(2026, 10, 25, 20, 0, tzinfo=UTC)
+    await repo.save_ufs([UfSnapshot("rr", "6258", {"candidatos": [{"numero": "13"}]}, when)])
+    await repo.save_ufs([UfSnapshot("rr", "6258", {"candidatos": []}, None)])
+
+    rr = next(s for s in await repo.get_ufs() if s.uf == "rr")
+    assert rr.resumo == {"candidatos": [{"numero": "13"}]} and rr.tse_updated_at == when
+
+    # Sem nada datado antes, o resumo sem horário entra (melhor que nenhum).
+    await repo.save_ufs([UfSnapshot("ac", "6258", {"candidatos": []}, None)])
+    ac = next(s for s in await repo.get_ufs() if s.uf == "ac")
+    assert ac.eleicao == "6258"

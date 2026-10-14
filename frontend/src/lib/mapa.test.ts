@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { fillFor, isMapaResponse, leaderOf, marginBand, NEUTRAL_OTHER, NO_DATA, UF_NAMES } from "./mapa.ts";
+import {
+  fillFor,
+  isMapaResponse,
+  leaderOf,
+  marginBand,
+  NEUTRAL_OTHER,
+  NO_DATA,
+  rankedCandidates,
+  UF_NAMES,
+} from "./mapa.ts";
 
 const CORES = { "13": "vermelho", "22": "azul" } as const;
 
@@ -56,6 +65,36 @@ describe("mapa: cores e faixas", () => {
 
   it("valida a resposta da API", () => {
     expect(isMapaResponse({ cores: CORES, estados: [{ uf: "ac", resultado: null }] })).toBe(true);
+    expect(isMapaResponse({ cores: CORES, estados: [{ uf: "rr", resultado: resultado(60, 40) }] })).toBe(true);
     expect(isMapaResponse({ estados: "x" })).toBe(false);
+  });
+
+  it("recusa resposta malformada em vez de quebrar a página (revisão 14/10)", () => {
+    const ok = resultado(60, 40);
+    const bad = [
+      { cores: [], estados: [] }, // cores como lista
+      { cores: { "13": 1 }, estados: [] }, // cor que não é texto
+      { cores: CORES, estados: [{ uf: "rr" }] }, // resultado ausente
+      { cores: CORES, estados: [{ uf: "rr", resultado: { ...ok, candidatos: "x" } }] },
+      { cores: CORES, estados: [{ uf: "rr", resultado: { ...ok, candidatos: [{ numero: "13", nome: "A", pct: "60" }] } }] },
+      { cores: CORES, estados: [{ uf: "rr", resultado: { ...ok, candidatos: [{ numero: 13, nome: "A", pct: 60 }] } }] },
+      { cores: CORES, estados: [{ uf: "rr", resultado: { ...ok, secoes_pct: "50" } }] },
+    ];
+    for (const value of bad) expect(isMapaResponse(value), JSON.stringify(value)).toBe(false);
+  });
+
+  it("ordena os candidatos por percentual, sem depender da ordem da API", () => {
+    expect(rankedCandidates(resultado(30, 70)).map((c) => c.pct)).toEqual([70, 30]);
+  });
+
+  it("número com nome de propriedade do objeto não vira cor", () => {
+    const outro = {
+      ...resultado(60, 40),
+      candidatos: [
+        { numero: "constructor", nome: "X", pct: 60 },
+        { numero: "13", nome: "LULA", pct: 40 },
+      ],
+    };
+    expect(fillFor(outro, CORES)).toBe(NEUTRAL_OTHER);
   });
 });

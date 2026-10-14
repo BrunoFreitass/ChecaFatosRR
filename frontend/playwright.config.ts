@@ -19,7 +19,7 @@ export default defineConfig({
   },
   projects: [
     { name: "celular", use: { ...devices["Pixel 7"] } },
-    // O mapa também é usado no computador (passar o mouse mostra o estado).
+    // O mapa também é usado no computador (clique e teclado).
     { name: "desktop", use: { ...devices["Desktop Chrome"] }, testMatch: /mapa\.spec\.ts$/ },
   ],
   webServer: {

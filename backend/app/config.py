@@ -31,9 +31,9 @@ DEFAULT_OPEN_PLATFORMS: tuple[str, ...] = (
     "linktr.ee",
 )
 
-# Arquivo de resultado do TSE em 2026 (conferido em 11/10/2026 com o 1º turno, eleição 6257).
 # Cores do mapa (mesmo contraste nos dois tons; o frontend define os tons).
 TSE_MAP_COLORS = frozenset({"vermelho", "azul"})
+# Arquivo de resultado do TSE em 2026 (conferido em 11/10/2026 com o 1º turno, eleição 6257).
 TSE_URL_TEMPLATE = (
     "https://resultados.tse.jus.br/oficial/ele2026/{eleicao}/dados/{escopo}/"
     "{escopo}-c{cargo:04d}-e{eleicao:06d}-u.json"
@@ -243,7 +243,7 @@ class Settings(BaseSettings):
         numbers: list[str] = []
         for pair in pairs:
             number, _, color = pair.partition("=")
-            if not number.isdigit() or color not in TSE_MAP_COLORS:
+            if not (number.isascii() and number.isdigit()) or color not in TSE_MAP_COLORS:
                 raise ValueError("TSE_MAPA_CORES: número=vermelho|azul, separados por vírgula")
             numbers.append(number)
         if len(numbers) != len(set(numbers)):

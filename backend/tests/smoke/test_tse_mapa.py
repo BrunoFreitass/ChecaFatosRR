@@ -45,9 +45,12 @@ class MapRepo:
 
 
 class Tse:
-    def __init__(self, failing: frozenset[str] = frozenset()) -> None:
+    def __init__(
+        self, failing: frozenset[str] = frozenset(), election: dict[str, str] | None = None
+    ) -> None:
         self.calls: list[str] = []
         self.failing = failing
+        self.election = election or {}
 
     async def fetch(self, scope: str) -> Any:
         self.calls.append(scope)
@@ -55,6 +58,8 @@ class Tse:
             raise TseUnavailableError("TSE fora")
         data = json.loads(FIXTURE.read_text(encoding="utf-8"))
         data["cdabr"] = scope
+        if scope in self.election:
+            data["ele"] = self.election[scope]
         return data
 
 
@@ -189,3 +194,39 @@ def test_invalid_map_colors_are_rejected(raw: str) -> None:
 def test_default_colors_are_the_ones_read_from_the_official_file() -> None:
     """Lidos do arquivo oficial 6257 e confirmados pelo usuário em 14/10/2026."""
     assert Settings().tse_mapa_color_map == {"13": "vermelho", "22": "azul"}
+
+
+def test_file_of_another_election_is_skipped_and_the_batch_is_saved(
+    app: FastAPI, repo: MapRepo
+) -> None:
+    """Revisão (14/10/2026): um arquivo com "ele" vazio quebraria o CHECK e o lote inteiro."""
+    odd = Tse(election={"ac": ""})
+    app.dependency_overrides[get_tse_map_repository] = lambda: repo
+    app.dependency_overrides[get_tse_client] = lambda: odd
+    with TestClient(app) as client:
+        response = client.get("/tse/mapa")
+
+    assert response.status_code == 200
+    assert repo.rows["ac"].eleicao is None  # não gravado
+    assert sum(r.eleicao == "6257" for r in repo.rows.values()) == 8
+
+
+def test_save_failure_serves_what_was_already_saved(app: FastAPI, repo: MapRepo, tse: Tse) -> None:
+    async def broken_save(items: list[UfSnapshot]) -> None:
+        raise RuntimeError("banco fora")
+
+    repo.rows["rr"] = UfSnapshot("rr", "6257", {"candidatos": [], "secoes_pct": 1.0}, None)
+    repo.save_ufs = broken_save  # type: ignore[method-assign]
+    app.dependency_overrides[get_tse_map_repository] = lambda: repo
+    app.dependency_overrides[get_tse_client] = lambda: tse
+    with TestClient(app) as client:
+        response = client.get("/tse/mapa")
+
+    assert response.status_code == 200
+    states = {e["uf"]: e["resultado"] for e in response.json()["estados"]}
+    assert states["rr"] == {"candidatos": [], "secoes_pct": 1.0}
+
+
+def test_non_ascii_digits_are_rejected_in_colors() -> None:
+    with pytest.raises(ValidationError):
+        Settings(tse_mapa_cores="¹³=vermelho")

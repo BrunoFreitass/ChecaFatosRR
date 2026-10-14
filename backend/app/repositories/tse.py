@@ -111,6 +111,7 @@ returning uf
 """
 
 # Grava se for mais novo que o salvo, ou de outra eleição (troca do ensaio). Um comando só.
+# Sem horário do TSE (n.ts nulo) só grava por cima de outro sem horário: nunca apaga um mais novo.
 _SAVE_UFS = """
 update public.tse_uf_snapshots t
 set resumo = n.resumo, eleicao = n.eleicao, tse_updated_at = n.ts
@@ -121,8 +122,8 @@ from (
   ) as x(uf, eleicao, resumo, ts)
 ) n
 where t.uf = n.uf
-  and (t.tse_updated_at is null or n.ts is null or n.ts >= t.tse_updated_at
-       or t.eleicao is distinct from n.eleicao)
+  and (t.eleicao is distinct from n.eleicao or t.tse_updated_at is null
+       or n.ts >= t.tse_updated_at)
 """
 
 
@@ -138,6 +139,7 @@ class SqlTseMapRepository:
             return [row[0] for row in rows]
 
     async def save_ufs(self, items: list[UfSnapshot]) -> None:
+        items = sorted(items, key=lambda i: i.uf)  # mesma ordem de travas: sem deadlock
         params = {
             "ufs": [i.uf for i in items],
             "eleicoes": [i.eleicao for i in items],
