@@ -115,8 +115,13 @@ python -m venv .venv
 # Windows: .venv\Scripts\activate    ·    Linux/Mac: source .venv/bin/activate
 pip install -r requirements-dev.txt
 cp .env.example .env               # preencha DATABASE_URL
-uvicorn app.main:create_app --factory --reload --port 8000
+CHECAFATOS_DOTENV=1 uvicorn app.main:create_app --factory --reload --port 8000
 ```
+
+O backend **só lê o arquivo de variáveis local com `CHECAFATOS_DOTENV=1`** (desde 14/10/2026):
+sem a flag, tudo vem do ambiente, como em produção. Assim, rodar o app ou um script em qualquer
+pasta não carrega segredos de um arquivo esquecido ali. Erros de configuração mostram o motivo,
+nunca os valores.
 
 - <http://localhost:8000/health> → `{"status":"ok"}`
 - <http://localhost:8000/health/ready> → confirma a conexão com o banco

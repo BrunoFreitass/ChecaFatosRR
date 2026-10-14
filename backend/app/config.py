@@ -1,3 +1,4 @@
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
@@ -60,9 +61,15 @@ _MODEL_NAME = re.compile(r"[a-z0-9][a-z0-9.\-]*")
 
 
 class Settings(BaseSettings):
-    """Configuração lida de variáveis de ambiente (ou de backend/.env em desenvolvimento)."""
+    """Configuração lida de variáveis de ambiente (ou do arquivo local, só em desenvolvimento)."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    # Sem arquivo de variáveis por padrão: em produção tudo vem do ambiente. O arquivo local só é
+    # lido com CHECAFATOS_DOTENV=1 (get_settings) ou passando _env_file de propósito: rodar o app
+    # numa pasta qualquer não pega segredos de um arquivo esquecido ali (incidente 14/10/2026).
+    # hide_input_in_errors: erro de validação mostra o motivo, nunca os valores.
+    model_config = SettingsConfigDict(
+        env_file=None, env_file_encoding="utf-8", extra="ignore", hide_input_in_errors=True
+    )
 
     app_env: Literal["development", "test", "production"] = "development"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
@@ -383,6 +390,13 @@ class Settings(BaseSettings):
         return self.app_env == "production"
 
 
+# Liga a leitura do arquivo de variáveis local (só desenvolvimento).
+DOTENV_FLAG = "CHECAFATOS_DOTENV"
+DOTENV_FILE = ".env"
+
+
 @lru_cache
 def get_settings() -> Settings:
+    if os.environ.get(DOTENV_FLAG) == "1":
+        return Settings(_env_file=DOTENV_FILE)  # type: ignore[call-arg]
     return Settings()
