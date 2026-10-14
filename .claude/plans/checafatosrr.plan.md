@@ -377,3 +377,21 @@ Plano: `.claude/plans/etapa-2-checagem.plan.md`. Mudanças em relação a este p
   - Conferir o texto vigente dos termos na data da redação.
 - O projeto da chave do Gemini fica **sem faturamento** de propósito (ver `deploy.plan.md`, fase 1). Se um dia passar ao nível pago, revisar a Política (o uso pelo Google muda).
 
+## 14. Congelamento até o 2º turno e itens pós-eleição (13/10/2026)
+
+**Regras até a eleição (decisão do usuário, 13/10/2026):**
+- Até 21/10: só correções de bugs e itens já previstos neste plano (inclui o teste de carga leve).
+- A partir de 22/10: prompt da IA congelado (ver §12).
+- Em 25/10 (2º turno): nenhum deploy.
+
+**Pós-eleição (decidido NÃO fazer antes de 25/10):**
+- Função PL/pgSQL para o `begin_check`: faria os 3 comandos (lock do usuário + assunto; uso, cache e claim; pedido + claim) numa só chamada. Cada comando interno teria o próprio snapshot, então a garantia dos limites por conta se mantém. Medido localmente em 13/10, a 100–120 ms por ida e volta: `begin_check` ~1,55 s e `db_ms` ~2,3 s no caminho normal. A estimativa com a função é `begin_check` ~0,7 s e `db_ms` ~1,4 s.
+  - **Por que fica para depois:** o ganho (~0,9 s numa checagem de 5–30 s) não justifica o risco nos limites por conta, nem uma migration a 12 dias do 2º turno.
+  - **Cuidados quando for feita:**
+    - declarar a função VOLATILE, SECURITY INVOKER e com `search_path` fixo;
+    - `revoke execute` de `anon`, `authenticated` e `public`;
+    - testes de integração com requisições simultâneas;
+    - migration acompanhada do alerta de migration pendente e de uma marca no `/health/ready`.
+- Juntar os comandos 1 e 2 do `begin_check` num SQL comum é **inseguro**: em READ COMMITTED, o snapshot seria tirado antes do lock do usuário. Não fazer.
+- A latência de fundo continua: a API está na Virgínia (Render) e o banco em São Paulo (Supabase), e cada transação custa ~0,7 s. Isso só muda colocando os dois na mesma região, avaliado depois da eleição.
+
