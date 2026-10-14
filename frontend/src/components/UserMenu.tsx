@@ -3,15 +3,16 @@ import { Link } from "react-router";
 import { useAuth } from "../auth/AuthContext.ts";
 
 const LINK_CLASS =
-  "inline-flex min-h-11 items-center rounded-md px-3 text-sm font-semibold text-brand-700 hover:bg-brand-50 focus-visible:outline-2 focus-visible:outline-brand-700";
+  "inline-flex min-h-11 items-center rounded-md px-2 sm:px-3 text-sm font-semibold text-brand-700 hover:bg-brand-50 focus-visible:outline-2 focus-visible:outline-brand-700";
 
 export function UserMenu() {
   const { status, profile } = useAuth();
 
   if (status === "ready" && profile) {
+    // Apelido longo (até 20 caracteres) cortado com "…" no menu; o nome acessível tem o inteiro.
     return (
-      <Link to="/minha-conta" className={LINK_CLASS} aria-label={`Minha conta (${profile.apelido})`}>
-        {profile.apelido}
+      <Link to="/minha-conta" className={`${LINK_CLASS} max-w-40`} aria-label={`Minha conta (${profile.apelido})`}>
+        <span className="min-w-0 truncate">{profile.apelido}</span>
       </Link>
     );
   }
