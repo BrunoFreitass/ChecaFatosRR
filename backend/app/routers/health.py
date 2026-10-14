@@ -101,17 +101,19 @@ async def probe_database() -> None:
 
 
 # GET e HEAD: o UptimeRobot grátis só faz HEAD (antes, 405). Mesmo status do GET; o corpo
-# do HEAD é descartado pelo servidor HTTP (uvicorn).
-HEALTH_METHODS = ["GET", "HEAD"]
+# do HEAD é descartado pelo servidor HTTP (uvicorn). O HEAD fica fora do OpenAPI: na mesma
+# rota que o GET, os dois teriam o mesmo operationId (aviso de duplicado no /docs).
 
 
-@router.api_route("/health", methods=HEALTH_METHODS)
+@router.get("/health")
+@router.head("/health", include_in_schema=False)
 async def health() -> dict[str, str]:
     """Liveness: não toca no banco (usado pelo Render/Cloud Run e pelo monitor)."""
     return {"status": "ok"}
 
 
-@router.api_route("/health/ready", methods=HEALTH_METHODS)
+@router.get("/health/ready")
+@router.head("/health/ready", include_in_schema=False)
 async def ready(request: Request) -> dict[str, str]:
     """Readiness: o banco responde e tem todas as migrations (em cache: READY_OK_SECONDS)."""
     cache: ReadyCache = request.app.state.ready_cache

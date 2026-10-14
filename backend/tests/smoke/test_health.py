@@ -177,3 +177,32 @@ def test_head_ready_is_503_with_outdated_schema(
 def test_other_methods_are_still_405(client: TestClient) -> None:
     assert client.post("/health").status_code == 405
     assert client.delete("/health/ready").status_code == 405
+
+
+def test_openapi_has_no_duplicate_operation_ids() -> None:
+    """GET e HEAD na mesma rota geravam operationId duplicado no /docs (aviso no OpenAPI)."""
+    import warnings
+
+    from app.main import create_app
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        schema = create_app().openapi()
+
+    assert "get" in schema["paths"]["/health"] and "head" not in schema["paths"]["/health"]
+
+
+def test_head_ready_uses_the_same_cache_as_get(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.routers import health
+
+    calls: list[int] = []
+
+    async def probe() -> None:
+        calls.append(1)
+
+    monkeypatch.setattr(health, "probe_database", probe)
+    assert client.get("/health/ready").status_code == 200
+    assert client.head("/health/ready").status_code == 200
+    assert calls == [1]  # o monitor em HEAD não toca o banco mais que o GET
