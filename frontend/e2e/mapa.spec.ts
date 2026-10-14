@@ -59,6 +59,9 @@ const MAPA = {
   })),
 };
 
+// Antes da apuração (hoje, com o 6258 ainda sem arquivo): nenhum estado com dados.
+const MAPA_VAZIO = { ...MAPA, estados: UFS.map((code) => ({ uf: code, resultado: null })) };
+
 const RESULT = {
   fonte: "TSE",
   link_oficial: "https://resultados.tse.jus.br/",
@@ -68,12 +71,13 @@ const RESULT = {
   ],
 };
 
-async function mockApi(page: Page, mapa: "on" | "off") {
+async function mockApi(page: Page, mapa: "on" | "off" | "empty") {
   await page.route(`${SUPABASE}/**`, (route) => route.fulfill({ status: 200, body: "{}" }));
   await page.route(`${API}/**`, async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/tse/resultado") return json(route, 200, RESULT);
     if (path === "/tse/mapa" && mapa === "on") return json(route, 200, MAPA);
+    if (path === "/tse/mapa" && mapa === "empty") return json(route, 200, MAPA_VAZIO);
     if (path === "/tse/mapa") {
       return json(route, 404, { error: { code: "mapa_indisponivel", message: "Mapa indisponível." } });
     }
@@ -104,7 +108,7 @@ test("mapa carrega em chunk separado, colore os estados e mostra o detalhe ao to
   await expect(mapa.locator('path[data-uf="rr"]')).toHaveAttribute("fill", "#2563eb"); // azul, 21 pontos
 
   await mapa.locator('path[data-uf="rr"]').click();
-  const detalhe = page.getByRole("status");
+  const detalhe = page.getByRole("region", { name: "Detalhe do estado" });
   await expect(detalhe).toContainText("Roraima");
   await expect(detalhe).toContainText("CANDIDATO AZUL: 60,50%");
   await expect(detalhe).toContainText("Urnas apuradas: 87,25%");
@@ -145,4 +149,106 @@ test("mapa desligado (404) não aparece e a apuração continua", async ({ page 
   await expect(page.getByText("Aguardando os primeiros resultados do TSE.")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Mapa por estado" })).toHaveCount(0);
   await expect(page.getByRole("group", { name: /Mapa do Brasil/ })).toHaveCount(0);
+});
+
+// Ajustes pedidos na revisão dos prints (14/10): legenda de intensidade, rolagem até o detalhe e
+// aviso antes da apuração — no celular, em 412 px (Pixel 7) e em 360 px.
+test.describe("celular: Pixel 7 e 360 px", () => {
+  test.skip(({ isMobile }) => !isMobile, "só no projeto de celular");
+
+  /** Registra as chamadas de scrollIntoView (para conferir a animação). */
+  async function spyScroll(page: Page) {
+    await page.addInitScript(() => {
+      const calls: unknown[] = [];
+      (window as unknown as { __scrolls: unknown[] }).__scrolls = calls;
+      const original = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = function (options?: boolean | ScrollIntoViewOptions) {
+        calls.push(options ?? null);
+        original.call(this, options);
+      };
+    });
+  }
+
+  function lastScroll(page: Page) {
+    return page.evaluate(() => (window as unknown as { __scrolls: unknown[] }).__scrolls.at(-1));
+  }
+
+  for (const width of [412, 360]) {
+    test(`${width} px: legenda de intensidade com as 4 faixas inteiras, sem rolagem lateral`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 800 });
+      await mockApi(page, "on");
+      await page.goto("/apuracao");
+
+      const faixas = page.getByRole("list", { name: /Intensidade da cor/ });
+      await expect(faixas.getByRole("listitem")).toHaveCount(4);
+      for (const label of ["até 5 pontos", "5 a 15 pontos", "15 a 30 pontos", "mais de 30 pontos"]) {
+        const item = faixas.getByRole("listitem").filter({ hasText: label });
+        await expect(item).toBeVisible();
+        await expect(item.locator("svg rect")).toHaveCount(2); // amostra vermelha e azul
+        const box = await item.boundingBox();
+        expect((box?.x ?? -1) >= 0 && (box?.x ?? 0) + (box?.width ?? 0) <= width, `${label} cabe na tela`).toBe(true);
+      }
+      expect(await mapOverflow(page)).toBeLessThanOrEqual(0);
+      expect(
+        await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth),
+      ).toBeLessThanOrEqual(0);
+    });
+
+    test(`${width} px: tocar num estado rola suave até o detalhe e põe o foco nele`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 640 });
+      await spyScroll(page);
+      await mockApi(page, "on");
+      await page.goto("/apuracao");
+      const mapa = page.getByRole("group", { name: /Mapa do Brasil/ });
+      await page.evaluate(() => window.scrollTo(0, 0));
+      const antes = page.getByRole("region", { name: "Detalhe do estado" });
+      await expect(antes).not.toBeInViewport(); // o detalhe começa abaixo da dobra
+
+      await mapa.locator('path[data-uf="rs"]').tap();
+
+      const detalhe = page.getByRole("region", { name: "Detalhe do estado" });
+      await expect(detalhe).toContainText("Rio Grande do Sul");
+      await expect(detalhe).toBeFocused();
+      await expect(detalhe).toBeInViewport();
+      expect(await lastScroll(page)).toMatchObject({ behavior: "smooth", block: "nearest" });
+    });
+
+    test(`${width} px: com movimento reduzido, vai até o detalhe sem animação`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 640 });
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await spyScroll(page);
+      await mockApi(page, "on");
+      await page.goto("/apuracao");
+      const mapa = page.getByRole("group", { name: /Mapa do Brasil/ });
+      await page.evaluate(() => window.scrollTo(0, 0));
+      const antes = page.getByRole("region", { name: "Detalhe do estado" });
+      await expect(antes).not.toBeInViewport(); // o detalhe começa abaixo da dobra
+
+      await mapa.locator('path[data-uf="rs"]').tap();
+
+      const detalhe = page.getByRole("region", { name: "Detalhe do estado" });
+      await expect(detalhe).toBeFocused();
+      await expect(detalhe).toBeInViewport();
+      expect(await lastScroll(page)).toMatchObject({ behavior: "auto" });
+    });
+
+    test(`${width} px: antes da apuração, mapa cinza com aviso e legenda`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 800 });
+      const errors: string[] = [];
+      page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+      await mockApi(page, "empty");
+      await page.goto("/apuracao");
+
+      await expect(page.getByText("O mapa será preenchido conforme o TSE divulgar os resultados.")).toBeVisible();
+      const fills = await page
+        .getByRole("group", { name: /Mapa do Brasil/ })
+        .locator("path[data-uf]")
+        .evaluateAll((paths) => [...new Set(paths.map((p) => p.getAttribute("fill")))]);
+      expect(fills).toEqual(["#e2e8f0"]);
+      await expect(page.getByRole("list", { name: "Legenda do mapa" })).toContainText("Sem dados");
+      await expect(page.getByRole("list", { name: /Intensidade da cor/ })).toBeVisible();
+      expect(await mapOverflow(page)).toBeLessThanOrEqual(0);
+      expect(errors.filter((e) => !/404|Failed to load resource/.test(e)), "erros no console").toEqual([]);
+    });
+  }
 });

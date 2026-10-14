@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 
 import { ApiError, apiFetch } from "../lib/api.ts";
 import {
@@ -13,6 +13,7 @@ import {
   standingOf,
   TIE,
   toneOf,
+  tonesOf,
   UF_NAMES,
   type MapaResponse,
   type MapaResultado,
@@ -29,6 +30,7 @@ type State = { kind: "loading" } | { kind: "off" } | { kind: "ready"; data: Mapa
 export default function MapaApuracao() {
   const [state, setState] = useState<State>({ kind: "loading" });
   const [selected, setSelected] = useState<string | null>(null);
+  const detailRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -92,11 +94,26 @@ export default function MapaApuracao() {
     return leader !== null && colorOf(leader.numero, data.cores) === undefined;
   });
   const hasTie = data.estados.some((e) => standingOf(e.resultado).kind === "tie");
+  // Antes da apuração o TSE manda tudo zerado (ou nada): o mapa fica cinza e explica por quê.
+  const empty = data.estados.every((e) => standingOf(e.resultado).kind === "none");
+
+  /**
+   * Toque, clique, Enter ou espaço: mostra o estado e leva até o detalhe (no celular ele fica
+   * abaixo do mapa). Só o foco via Tab não puxa a tela nem tira o foco do mapa.
+   */
+  function activate(uf: string) {
+    setSelected(uf);
+    const detail = detailRef.current;
+    if (!detail) return;
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    detail.scrollIntoView?.({ behavior: reduce ? "auto" : "smooth", block: "nearest" });
+    detail.focus({ preventScroll: true });
+  }
 
   function onKey(event: KeyboardEvent<SVGPathElement>, uf: string) {
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
-    setSelected(uf);
+    activate(uf);
   }
 
   return (
@@ -107,6 +124,11 @@ export default function MapaApuracao() {
       {state.stale && (
         <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-950">
           Não foi possível atualizar agora; mostrando a última atualização do mapa.
+        </p>
+      )}
+      {empty && (
+        <p className="rounded-lg bg-slate-100 p-3 text-sm">
+          O mapa será preenchido conforme o TSE divulgar os resultados.
         </p>
       )}
       <svg
@@ -128,7 +150,7 @@ export default function MapaApuracao() {
             stroke="#ffffff"
             strokeWidth={0.8}
             className="cursor-pointer outline-none"
-            onClick={() => setSelected(uf)}
+            onClick={() => activate(uf)}
             onFocus={() => setSelected(uf)}
             onKeyDown={(event) => onKey(event, uf)}
           />
@@ -146,13 +168,20 @@ export default function MapaApuracao() {
         )}
       </svg>
 
-      <div role="status" aria-live="polite" className="min-h-16 rounded-lg bg-slate-50 p-3 text-sm">
+      {/* Região focável (e não região viva): ao escolher um estado o foco vem para cá e o leitor
+          de tela lê o detalhe uma vez só. */}
+      <section
+        ref={detailRef}
+        tabIndex={-1}
+        aria-label="Detalhe do estado"
+        className="min-h-16 scroll-mt-4 rounded-lg bg-slate-50 p-3 text-sm focus:outline-2 focus:outline-brand-700"
+      >
         {selected ? (
           <Detail uf={selected} result={byUf.get(selected) ?? null} />
         ) : (
           "Toque num estado para ver os números."
         )}
-      </div>
+      </section>
 
       <ul aria-label="Legenda do mapa" className="flex flex-wrap gap-x-4 gap-y-2 text-sm">
         {Object.entries(data.cores).map(([numero, color]) => (
@@ -177,10 +206,26 @@ export default function MapaApuracao() {
           <Swatch color={NO_DATA} />
           Sem dados
         </li>
-        <li className="w-full text-slate-600">
-          Cor mais forte = vantagem maior ({BAND_LABELS.join("; ")}).
-        </li>
       </ul>
+
+      <div className="space-y-2 text-sm">
+        <p id="mapa-intensidade" className="text-slate-600">
+          Cor mais forte = vantagem maior do primeiro sobre o segundo:
+        </p>
+        <ul
+          aria-label="Intensidade da cor: vantagem do primeiro sobre o segundo"
+          className="flex flex-wrap gap-x-4 gap-y-2"
+        >
+          {BAND_LABELS.map((label, band) => (
+            <li key={label} className="flex items-center gap-1">
+              {Object.values(data.cores).map((color) => (
+                <Swatch key={color} color={tonesOf(color)?.[band] ?? NEUTRAL_OTHER} />
+              ))}
+              <span className="ml-1">{label}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
 
       <details className="rounded-lg border border-slate-200 p-3">
         <summary className="cursor-pointer font-semibold">Ver em tabela</summary>

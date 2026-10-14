@@ -49,7 +49,22 @@ function setVisibility(state: "visible" | "hidden") {
   document.dispatchEvent(new Event("visibilitychange"));
 }
 
-beforeEach(() => setVisibility("visible"));
+const scrolls: ScrollIntoViewOptions[] = [];
+let reducedMotion = false;
+
+beforeEach(() => {
+  setVisibility("visible");
+  scrolls.length = 0;
+  reducedMotion = false;
+  // jsdom não tem scrollIntoView nem matchMedia: registra as chamadas.
+  Element.prototype.scrollIntoView = function (options?: boolean | ScrollIntoViewOptions) {
+    scrolls.push(typeof options === "object" ? options : {});
+  };
+  window.matchMedia = ((query: string) => ({
+    matches: query.includes("prefers-reduced-motion") && reducedMotion,
+    media: query,
+  })) as unknown as typeof window.matchMedia;
+});
 
 afterEach(() => {
   cleanup();
@@ -76,7 +91,7 @@ describe("MapaApuracao", () => {
 
     fireEvent.click(mapa.querySelector('path[data-uf="rr"]') as Element);
 
-    const detalhe = screen.getByRole("status");
+    const detalhe = screen.getByRole("region", { name: "Detalhe do estado" });
     expect(detalhe.textContent).toMatch(/Roraima/);
     expect(detalhe.textContent).toMatch(/FLAVIO BOLSONARO/);
     expect(detalhe.textContent).toMatch(/60,50%/);
@@ -123,7 +138,7 @@ describe("MapaApuracao", () => {
     const roraima = screen.getByRole("button", { name: "Roraima" });
     expect(roraima.getAttribute("tabindex")).toBe("0");
     fireEvent.keyDown(roraima, { key: "Enter" });
-    expect(screen.getByRole("status").textContent).toMatch(/Roraima/);
+    expect(screen.getByRole("region", { name: "Detalhe do estado" }).textContent).toMatch(/Roraima/);
     expect(roraima.getAttribute("aria-pressed")).toBe("true");
   });
 
@@ -136,7 +151,7 @@ describe("MapaApuracao", () => {
     await screen.findByRole("group", { name: /Mapa do Brasil/ });
 
     fireEvent.click(screen.getByRole("button", { name: "Roraima" }));
-    expect(screen.getByRole("status").textContent).toMatch(/Atualizado em 25\/10\/2026 às 18:30/);
+    expect(screen.getByRole("region", { name: "Detalhe do estado" }).textContent).toMatch(/Atualizado em 25\/10\/2026 às 18:30/);
   });
 
   it("empate aparece como empate na tabela e na legenda", async () => {
@@ -158,7 +173,7 @@ describe("MapaApuracao", () => {
     const mapa = await screen.findByRole("group", { name: /Mapa do Brasil/ });
 
     fireEvent.mouseEnter(mapa.querySelector('path[data-uf="rr"]') as Element);
-    expect(screen.getByRole("status").textContent).not.toMatch(/Roraima/);
+    expect(screen.getByRole("region", { name: "Detalhe do estado" }).textContent).not.toMatch(/Roraima/);
   });
 
   it("tabela e detalhe em ordem de percentual, mesmo se a API mandar fora de ordem", async () => {
@@ -212,5 +227,70 @@ describe("MapaApuracao", () => {
       setVisibility("visible");
     });
     expect(api.apiFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("tocar num estado rola até o detalhe (suave) e põe o foco nele", async () => {
+    api.apiFetch.mockResolvedValue(resposta());
+    render(<MapaApuracao />);
+    await screen.findByRole("group", { name: /Mapa do Brasil/ });
+
+    fireEvent.click(screen.getByRole("button", { name: "Roraima" }));
+
+    const detalhe = screen.getByRole("region", { name: "Detalhe do estado" });
+    expect(document.activeElement).toBe(detalhe);
+    expect(scrolls.at(-1)).toMatchObject({ behavior: "smooth", block: "nearest" });
+  });
+
+  it("com movimento reduzido, rola sem animação", async () => {
+    reducedMotion = true;
+    api.apiFetch.mockResolvedValue(resposta());
+    render(<MapaApuracao />);
+    await screen.findByRole("group", { name: /Mapa do Brasil/ });
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Roraima" }), { key: "Enter" });
+    expect(scrolls.at(-1)).toMatchObject({ behavior: "auto" });
+  });
+
+  it("navegar com Tab pelos estados não tira o foco do mapa", async () => {
+    api.apiFetch.mockResolvedValue(resposta());
+    render(<MapaApuracao />);
+    await screen.findByRole("group", { name: /Mapa do Brasil/ });
+
+    const roraima = screen.getByRole("button", { name: "Roraima" });
+    act(() => roraima.focus()); // o Tab do teclado
+    expect(document.activeElement).toBe(roraima);
+    expect(scrolls).toHaveLength(0);
+    expect(screen.getByRole("region", { name: "Detalhe do estado" }).textContent).toMatch(/Roraima/);
+  });
+
+  it("legenda de intensidade: 4 faixas, cada uma com as amostras de cor e o texto", async () => {
+    api.apiFetch.mockResolvedValue(resposta());
+    render(<MapaApuracao />);
+    await screen.findByRole("group", { name: /Mapa do Brasil/ });
+
+    const faixas = screen.getByRole("list", { name: /Intensidade da cor/ });
+    const itens = within(faixas).getAllByRole("listitem");
+    expect(itens.map((i) => i.textContent)).toEqual(["até 5 pontos", "5 a 15 pontos", "15 a 30 pontos", "mais de 30 pontos"]);
+    for (const item of itens) expect(item.querySelectorAll("svg rect")).toHaveLength(2); // vermelho e azul
+  });
+
+  it("antes da apuração (nenhum estado com dados) avisa e mantém o mapa cinza com a legenda", async () => {
+    const data = resposta();
+    for (const e of data.estados) e.resultado = null;
+    api.apiFetch.mockResolvedValue(data);
+    render(<MapaApuracao />);
+    const mapa = await screen.findByRole("group", { name: /Mapa do Brasil/ });
+
+    expect(screen.getByText("O mapa será preenchido conforme o TSE divulgar os resultados.")).toBeTruthy();
+    const fills = new Set([...mapa.querySelectorAll("path[data-uf]")].map((p) => p.getAttribute("fill")));
+    expect([...fills]).toEqual(["#e2e8f0"]);
+    expect(screen.getByRole("list", { name: "Legenda do mapa" }).textContent).toMatch(/Sem dados/);
+  });
+
+  it("com algum estado apurado, não mostra o aviso de antes da apuração", async () => {
+    api.apiFetch.mockResolvedValue(resposta());
+    render(<MapaApuracao />);
+    await screen.findByRole("group", { name: /Mapa do Brasil/ });
+    expect(screen.queryByText(/será preenchido conforme o TSE/)).toBeNull();
   });
 });

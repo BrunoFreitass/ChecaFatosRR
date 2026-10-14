@@ -41,7 +41,7 @@ const TONES: Record<string, readonly string[]> = {
 };
 
 /** Faixas de margem (pontos percentuais entre o 1º e o 2º): até 5, 15, 30 e acima de 30. */
-export const BAND_LABELS = ["até 5 pontos", "5 a 15", "15 a 30", "mais de 30"] as const;
+export const BAND_LABELS = ["até 5 pontos", "5 a 15 pontos", "15 a 30 pontos", "mais de 30 pontos"] as const;
 
 export function marginBand(margin: number): number {
   if (margin <= 5) return 0;
@@ -87,7 +87,8 @@ export function colorOf(numero: string, cores: Record<string, string>): string |
   return Object.hasOwn(cores, numero) ? cores[numero] : undefined;
 }
 
-function tonesOf(color: string | undefined): readonly string[] | undefined {
+/** Os 4 tons (faixas de margem) de uma cor configurada; undefined se a cor não existe. */
+export function tonesOf(color: string | undefined): readonly string[] | undefined {
   return color !== undefined && Object.hasOwn(TONES, color) ? TONES[color] : undefined;
 }
 
