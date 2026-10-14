@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Iterator
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.config import Settings, get_settings
-from app.routers.tse import get_tse_client, get_tse_map_repository
+from app.routers.tse import get_tse_client, get_tse_map_repos
 from app.services.tse.client import TseUnavailableError
 from app.services.tse.mapa import UFS, UfSnapshot
 
@@ -83,10 +84,18 @@ def tse() -> Tse:
 
 @pytest.fixture
 def api(app: FastAPI, repo: MapRepo, tse: Tse) -> Iterator[TestClient]:
-    app.dependency_overrides[get_tse_map_repository] = lambda: repo
+    app.dependency_overrides[get_tse_map_repos] = lambda: lambda: nullcontext(repo)
     app.dependency_overrides[get_tse_client] = lambda: tse
     with TestClient(app) as client:
         yield client
+
+
+def poll(api: TestClient, **kwargs: Any) -> Any:
+    """Um polling do visitante: a resposta sai da memória e a busca no TSE corre em segundo
+    plano; espera a busca acabar e devolve o que o próximo pedido já recebe."""
+    api.get("/tse/mapa", **kwargs)
+    api.portal.call(api.app.state.tse_map_cache.idle)  # type: ignore[union-attr,attr-defined]
+    return api.get("/tse/mapa", **kwargs)
 
 
 def _next_poll(api: TestClient, repo: MapRepo, seconds: int = 61) -> None:
@@ -96,7 +105,7 @@ def _next_poll(api: TestClient, repo: MapRepo, seconds: int = 61) -> None:
 
 
 def test_first_request_fetches_one_batch_of_nine_states(api: TestClient, tse: Tse) -> None:
-    body = api.get("/tse/mapa").json()
+    body = poll(api).json()
 
     assert len(tse.calls) == 9
     assert [e["uf"] for e in body["estados"]] == list(UFS)
@@ -111,11 +120,11 @@ def test_one_visitor_updates_all_27_states_in_three_polls(
     api: TestClient, repo: MapRepo, tse: Tse
 ) -> None:
     """Plano aprovado: com 1 visitante (polling de 60 s), os 27 estados em até ~3 min."""
-    api.get("/tse/mapa")
+    poll(api)
     _next_poll(api, repo)
-    api.get("/tse/mapa")
+    poll(api)
     _next_poll(api, repo)
-    body = api.get("/tse/mapa").json()
+    body = poll(api).json()
 
     assert sorted(tse.calls) == sorted(UFS)  # cada UF buscada uma vez
     assert all(e["resultado"] is not None for e in body["estados"])
@@ -125,7 +134,7 @@ def test_no_state_is_fetched_twice_within_two_minutes(
     api: TestClient, repo: MapRepo, tse: Tse
 ) -> None:
     for _ in range(4):  # polling a cada 30 s: 90 s ao todo
-        api.get("/tse/mapa")
+        poll(api)
         _next_poll(api, repo, seconds=30)
 
     assert len(tse.calls) == len(set(tse.calls))
@@ -133,10 +142,10 @@ def test_no_state_is_fetched_twice_within_two_minutes(
 
 def test_tse_failure_in_one_state_does_not_break_the_others(app: FastAPI, repo: MapRepo) -> None:
     failing = Tse(failing=frozenset({"ac"}))
-    app.dependency_overrides[get_tse_map_repository] = lambda: repo
+    app.dependency_overrides[get_tse_map_repos] = lambda: lambda: nullcontext(repo)
     app.dependency_overrides[get_tse_client] = lambda: failing
     with TestClient(app) as client:
-        response = client.get("/tse/mapa")
+        response = poll(client)
 
     assert response.status_code == 200
     states = {e["uf"]: e["resultado"] for e in response.json()["estados"]}
@@ -150,7 +159,7 @@ def test_disabled_map_is_404_and_never_calls_the_tse(
     monkeypatch.setenv("TSE_MAPA_ENABLED", "false")
     get_settings.cache_clear()
 
-    response = api.get("/tse/mapa")
+    response = poll(api)
 
     assert response.status_code == 404
     assert tse.calls == []
@@ -162,23 +171,23 @@ def test_status_announces_the_map_when_enabled(api: TestClient) -> None:
 
 
 def test_map_never_says_elected_and_sends_the_configured_colors(api: TestClient) -> None:
-    response = api.get("/tse/mapa")
+    response = poll(api)
 
     assert "eleit" not in response.text.lower()  # "Eleito" só no BR, com o texto do TSE
     assert response.json()["cores"] == {"13": "vermelho", "22": "azul"}
 
 
 def test_snapshot_of_another_election_is_not_shown(api: TestClient, repo: MapRepo) -> None:
-    api.get("/tse/mapa")
+    poll(api)
     repo.rows["ac"] = UfSnapshot("ac", "6258", {"candidatos": []}, None)
     _next_poll(api, repo, seconds=1)
 
-    states = {e["uf"]: e["resultado"] for e in api.get("/tse/mapa").json()["estados"]}
+    states = {e["uf"]: e["resultado"] for e in poll(api).json()["estados"]}
     assert states["ac"] is None
 
 
 def test_etag_answers_304(api: TestClient) -> None:
-    first = api.get("/tse/mapa")
+    first = poll(api)
     again = api.get("/tse/mapa", headers={"If-None-Match": first.headers["etag"]})
 
     assert again.status_code == 304
@@ -201,10 +210,10 @@ def test_file_of_another_election_is_skipped_and_the_batch_is_saved(
 ) -> None:
     """Revisão (14/10/2026): um arquivo com "ele" vazio quebraria o CHECK e o lote inteiro."""
     odd = Tse(election={"ac": ""})
-    app.dependency_overrides[get_tse_map_repository] = lambda: repo
+    app.dependency_overrides[get_tse_map_repos] = lambda: lambda: nullcontext(repo)
     app.dependency_overrides[get_tse_client] = lambda: odd
     with TestClient(app) as client:
-        response = client.get("/tse/mapa")
+        response = poll(client)
 
     assert response.status_code == 200
     assert repo.rows["ac"].eleicao is None  # não gravado
@@ -217,10 +226,10 @@ def test_save_failure_serves_what_was_already_saved(app: FastAPI, repo: MapRepo,
 
     repo.rows["rr"] = UfSnapshot("rr", "6257", {"candidatos": [], "secoes_pct": 1.0}, None)
     repo.save_ufs = broken_save  # type: ignore[method-assign]
-    app.dependency_overrides[get_tse_map_repository] = lambda: repo
+    app.dependency_overrides[get_tse_map_repos] = lambda: lambda: nullcontext(repo)
     app.dependency_overrides[get_tse_client] = lambda: tse
     with TestClient(app) as client:
-        response = client.get("/tse/mapa")
+        response = poll(client)
 
     assert response.status_code == 200
     states = {e["uf"]: e["resultado"] for e in response.json()["estados"]}
@@ -230,3 +239,16 @@ def test_save_failure_serves_what_was_already_saved(app: FastAPI, repo: MapRepo,
 def test_non_ascii_digits_are_rejected_in_colors() -> None:
     with pytest.raises(ValidationError):
         Settings(tse_mapa_cores="¹³=vermelho")
+
+
+def test_each_state_fetch_is_logged_like_the_count(
+    api: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="app.services.tse.mapa"):
+        poll(api)
+
+    fetched = [r for r in caplog.records if r.getMessage() == "tse_fetch_ok"]
+    assert len(fetched) == 9  # um lote
+    assert all(isinstance(r.fetch_ms, int) for r in fetched)  # type: ignore[attr-defined]

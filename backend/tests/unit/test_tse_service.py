@@ -233,60 +233,140 @@ async def test_snapshot_of_another_election_is_ignored() -> None:
     assert [r.resultado for r in results] == [None, None]
 
 
-async def test_cache_serves_concurrent_requests_with_a_single_load() -> None:
-    loads = 0
+# ---------- TseCache: responde da memória e busca o TSE em segundo plano ----------
 
-    async def load() -> str:
-        nonlocal loads
-        loads += 1
-        await asyncio.sleep(0.02)
-        return f"v{loads}"
 
+class Loads:
+    """read() lê o snapshot do banco; refresh() busca no TSE e grava (só em segundo plano)."""
+
+    def __init__(self, value: str = "banco") -> None:
+        self.value = value
+        self.reads = 0
+        self.refreshes = 0
+        self.gate: asyncio.Event | None = None  # segura o TSE "lento"
+        self.refresh_error: Exception | None = None
+        self.read_error: Exception | None = None
+
+    async def read(self) -> str:
+        self.reads += 1
+        if self.read_error is not None:
+            raise self.read_error
+        await asyncio.sleep(0)
+        return self.value
+
+    async def refresh(self) -> None:
+        self.refreshes += 1
+        if self.gate is not None:
+            await self.gate.wait()
+        if self.refresh_error is not None:
+            raise self.refresh_error
+        self.value = f"tse{self.refreshes}"
+
+
+async def test_cold_start_serves_the_database_snapshot_without_the_tse() -> None:
+    loads = Loads()
+    loads.gate = asyncio.Event()  # o TSE nunca responde durante a requisição
     cache: TseCache[str] = TseCache(ttl=5.0)
-    results = await asyncio.gather(*(cache.get(load) for _ in range(20)))
 
-    assert loads == 1
-    assert set(results) == {"v1"}
+    value = await asyncio.wait_for(cache.get(loads.read, loads.refresh), timeout=0.5)
 
-
-async def test_cache_expires_and_never_makes_others_wait_for_the_tse() -> None:
-    now = [0.0]
-    gate = asyncio.Event()
-
-    async def slow() -> str:
-        await gate.wait()
-        return "novo"
-
-    cache: TseCache[str] = TseCache(ttl=5.0, clock=lambda: now[0])
-    assert await cache.get(lambda: _value("velho")) == "velho"
-    now[0] = 6.0  # expirou
-
-    refreshing = asyncio.create_task(cache.get(slow))
+    assert value == "banco"  # o último snapshot do banco, sem esperar o TSE
     await asyncio.sleep(0)
-    # Enquanto uma requisição busca, as outras recebem o valor anterior na hora.
-    assert await asyncio.wait_for(cache.get(slow), timeout=0.1) == "velho"
-    gate.set()
-    assert await refreshing == "novo"
+    assert loads.refreshes == 1  # a busca já começou, em segundo plano
+    loads.gate.set()
+    await cache.idle()
+    assert await cache.get(loads.read, loads.refresh) == "tse1"
 
 
-async def test_cache_keeps_the_old_value_when_the_load_fails() -> None:
+async def test_concurrent_cold_start_reads_the_database_once() -> None:
+    loads = Loads()
+    loads.gate = asyncio.Event()
+    cache: TseCache[str] = TseCache(ttl=5.0)
+
+    values = await asyncio.gather(*(cache.get(loads.read, loads.refresh) for _ in range(20)))
+
+    assert set(values) == {"banco"}
+    assert loads.reads == 1
+    loads.gate.set()
+    await cache.idle()
+    assert loads.refreshes == 1
+
+
+async def test_expired_value_is_served_at_once_while_one_background_refresh_runs() -> None:
     now = [0.0]
+    loads = Loads()
     cache: TseCache[str] = TseCache(ttl=5.0, clock=lambda: now[0])
-    await cache.get(lambda: _value("bom"))
+    await cache.get(loads.read, loads.refresh)
+    await cache.idle()
+    assert await cache.get(loads.read, loads.refresh) == "tse1"
+
+    now[0] = 6.0  # venceu
+    loads.gate = asyncio.Event()
+    served = [await asyncio.wait_for(cache.get(loads.read, loads.refresh), 0.1) for _ in range(10)]
+
+    assert set(served) == {"tse1"}  # ninguém espera o TSE
+    await asyncio.sleep(0)  # a tarefa em segundo plano começa
+    assert loads.refreshes == 2  # uma busca só, mesmo com 10 pedidos
+    loads.gate.set()
+    await cache.idle()
+    assert await cache.get(loads.read, loads.refresh) == "tse2"
+
+
+async def test_fresh_value_does_not_start_a_refresh() -> None:
+    now = [0.0]
+    loads = Loads()
+    cache: TseCache[str] = TseCache(ttl=5.0, clock=lambda: now[0])
+    await cache.get(loads.read, loads.refresh)
+    await cache.idle()
+
+    now[0] = 4.0
+    await cache.get(loads.read, loads.refresh)
+    await cache.idle()
+
+    assert loads.refreshes == 1
+
+
+async def test_tse_failure_keeps_serving_the_last_good_value(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    now = [0.0]
+    loads = Loads()
+    cache: TseCache[str] = TseCache(ttl=5.0, clock=lambda: now[0])
+    await cache.get(loads.read, loads.refresh)
+    await cache.idle()
+    loads.refresh_error = RuntimeError("TSE fora")
+
     now[0] = 6.0
+    with caplog.at_level(logging.WARNING, logger="app.services.tse.service"):
+        await cache.get(loads.read, loads.refresh)
+        await cache.idle()
 
-    async def broken() -> str:
-        raise RuntimeError("banco fora")
-
-    assert await cache.get(broken) == "bom"
+    assert await cache.get(loads.read, loads.refresh) == "tse1"
+    assert "tse_refresh_failed" in [r.getMessage() for r in caplog.records]
 
 
-async def test_cache_without_value_propagates_the_failure() -> None:
-    async def broken() -> str:
-        raise RuntimeError("banco fora")
+async def test_database_failure_in_background_keeps_the_value() -> None:
+    now = [0.0]
+    loads = Loads()
+    cache: TseCache[str] = TseCache(ttl=5.0, clock=lambda: now[0])
+    await cache.get(loads.read, loads.refresh)
+    await cache.idle()
+    loads.read_error = RuntimeError("banco fora")
+
+    now[0] = 6.0
+    await cache.get(loads.read, loads.refresh)
+    await cache.idle()
+
+    assert await cache.get(loads.read, loads.refresh) == "tse1"
+
+
+async def test_cold_start_without_database_propagates_the_failure() -> None:
+    loads = Loads()
+    loads.read_error = RuntimeError("banco fora")
 
     with pytest.raises(RuntimeError):
-        await TseCache[str](ttl=5.0).get(broken)
+        await TseCache[str](ttl=5.0).get(loads.read, loads.refresh)
+    assert loads.refreshes == 0  # sem snapshot, nem tenta o TSE nesta requisição
 
 
 async def _value(value: str) -> str:
