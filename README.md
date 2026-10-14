@@ -22,7 +22,7 @@ docs/        DEPLOY.md
 # Backend
 cd backend && python -m venv .venv && .venv/Scripts/activate   # Linux/Mac: source .venv/bin/activate
 pip install -r requirements-dev.txt && cp .env.example .env
-uvicorn app.main:create_app --factory --reload --port 8000
+CHECAFATOS_DOTENV=1 uvicorn app.main:create_app --factory --reload --port 8000  # lê o arquivo local só com a flag
 
 # Frontend (outro terminal)
 cd frontend && npm install && cp .env.example .env.local && npm run dev
