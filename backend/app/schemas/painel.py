@@ -1,6 +1,7 @@
 """Resposta de GET /admin/painel: só números agregados (nada por pessoa)."""
 
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -33,7 +34,8 @@ class PedidosDia(BaseModel):
 class ComentariosDia(BaseModel):
     dia: date
     total: int
-    ocultos: int  # removidos ou escondidos por denúncias
+    # Removidos pela moderação ou escondidos por denúncias (não os apagados pelo próprio autor).
+    ocultos: int
 
 
 class TotalDia(BaseModel):
@@ -54,7 +56,7 @@ class Usuarios(BaseModel):
 
 
 class Cota(BaseModel):
-    uso: str  # checagem | moderacao
+    uso: Literal["checagem", "moderacao"]
     usadas: int
     limite: int
     restante: int

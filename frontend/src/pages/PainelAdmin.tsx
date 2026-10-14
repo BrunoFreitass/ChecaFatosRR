@@ -85,14 +85,15 @@ export default function PainelAdmin() {
 }
 
 function Painel({ data }: { data: PainelResponse }) {
-  // Hoje primeiro: é o que o admin olha no dia.
-  const days = [...data.checagens].reverse();
+  // Hoje primeiro: é o que o admin olha no dia (ordena pelo dia, sem depender da ordem da API).
+  const newestFirst = <T extends { dia: string }>(rows: T[]) => [...rows].sort((a, b) => b.dia.localeCompare(a.dia));
+  const days = newestFirst(data.checagens);
   const byDay = <T extends { dia: string }>(rows: T[]) => new Map(rows.map((r) => [r.dia, r]));
   const pedidos = byDay(data.pedidos);
   const comentarios = byDay(data.comentarios);
   const denuncias = byDay(data.denuncias);
   const novos = byDay(data.usuarios_novos);
-  const tokens = [...data.tokens].reverse();
+  const tokens = newestFirst(data.tokens);
 
   return (
     <div className="space-y-5">
@@ -229,7 +230,7 @@ function Painel({ data }: { data: PainelResponse }) {
         </tbody>
       </Table>
 
-      <Table caption="Tokens por dia (checagens; antes de 14/10 não eram gravados)">
+      <Table caption="Tokens por dia (só as checagens com tokens gravados)">
         <thead>
           <tr>
             <Th>Dia</Th>

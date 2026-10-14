@@ -161,8 +161,9 @@ class CheckResult:
     checagens_relacionadas: list[AgencyCheck] = field(default_factory=list)
     # Domínio de onde a página veio, se não for plataforma aberta (None em texto colado).
     origem_confirmada: str | None = None
-    # Tokens de todas as respostas do Gemini nesta análise ({"in", "out", "thoughts"}), para o
-    # painel do admin. Fora do to_json (público): o check_service grava à parte no result.
+    # Tokens das respostas do Gemini nesta análise ({"in", "out", "thoughts"}), inclusive as
+    # vazias ou recusadas (o Google cobra); chamada sem resposta (timeout, rede) não tem como
+    # contar. Para o painel do admin; fora do to_json (público): o check_service grava à parte.
     tokens: dict[str, int] | None = None
 
     def to_json(self) -> dict[str, Any]:
@@ -1183,6 +1184,23 @@ def _empty_reason(response: Any) -> tuple[str, bool]:
     return f"resposta sem texto (finish_reason={finish}, block_reason={blocked})", refused
 
 
+def _count_tokens(response: Any) -> None:
+    """Soma os tokens da resposta na análise em andamento (painel do admin). Só números: campo
+    ausente não vira zero gravado."""
+    totals = _TOKENS.get()
+    usage = getattr(response, "usage_metadata", None)
+    if totals is None or usage is None:
+        return
+    for key, attr in (
+        ("in", "prompt_token_count"),
+        ("out", "candidates_token_count"),
+        ("thoughts", "thoughts_token_count"),
+    ):
+        value = getattr(usage, attr, None)
+        if isinstance(value, int) and not isinstance(value, bool):
+            totals[key] = totals.get(key, 0) + value
+
+
 def _log_usage(model: str, prompt: str, response: Any, started: float) -> None:
     """Tamanho do que foi enviado e tokens gastos (thoughts > 0 = o thinking não desligou)."""
     usage = getattr(response, "usage_metadata", None)
@@ -1197,16 +1215,6 @@ def _log_usage(model: str, prompt: str, response: Any, started: float) -> None:
             "elapsed_ms": int((time.monotonic() - started) * 1000),
         },
     )
-    totals = _TOKENS.get()
-    if totals is None or usage is None:
-        return
-    for key, attr in (
-        ("in", "prompt_token_count"),
-        ("out", "candidates_token_count"),
-        ("thoughts", "thoughts_token_count"),
-    ):
-        value = getattr(usage, attr, None)
-        totals[key] = totals.get(key, 0) + (value if isinstance(value, int) else 0)
 
 
 def build_generate_config(*, thinking_budget: int = 0, thinking_level: str = "") -> Any:
@@ -1349,6 +1357,7 @@ def google_generate(
                 raise GeminiCallError(None, type(exc).__name__) from None
             except Exception as exc:  # erro inesperado do SDK: não repetir
                 raise GeminiCallError(None, type(exc).__name__, retryable=False) from None
+            _count_tokens(response)  # antes do teste de vazio: resposta recusada também é cobrada
             if not response.text:
                 # Bloqueio de segurança, MAX_TOKENS etc.: o mesmo prompt teria o mesmo fim.
                 reason, refused = _empty_reason(response)

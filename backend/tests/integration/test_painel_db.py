@@ -8,7 +8,7 @@ O banco de teste é compartilhado entre os testes: cada teste mede a diferença 
 # com esse nome são a fixture, não uma redefinição.
 # ruff: noqa: F811
 
-from datetime import date
+from datetime import date, datetime, time, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -16,7 +16,8 @@ import pytest
 from sqlalchemy import text
 
 from app.repositories.checks import NewCheck, SqlCheckRepository, Started
-from app.repositories.painel import SqlPainelRepository
+from app.repositories.painel import BOA_VISTA, SqlPainelRepository
+from tests.integration.conftest import create_auth_user
 from tests.integration.test_checks_db import LIMITS, VERSION, link
 from tests.integration.test_comments_api import (  # noqa: F401 (fixture api)
     ADMIN_EMAIL,
@@ -46,7 +47,9 @@ async def as_admin(api: Api) -> UUID:
     return admin
 
 
-async def check_with_tokens(api: Api, user_id: UUID, tokens: dict[str, Any] | None) -> None:
+async def check_with_tokens(
+    api: Api, user_id: UUID, tokens: dict[str, Any] | None, *, version: str = VERSION
+) -> None:
     repo = SqlCheckRepository(api.session)
     started = await repo.begin_check(user_id, link(), LIMITS)
     assert isinstance(started, Started)
@@ -55,7 +58,7 @@ async def check_with_tokens(api: Api, user_id: UUID, tokens: dict[str, Any] | No
         result["tokens"] = tokens
     await repo.save_result(
         NewCheck(
-            prompt_version=VERSION,
+            prompt_version=version,
             subject=started.subject,
             user_id=user_id,
             veredito="enganoso",
@@ -112,12 +115,22 @@ async def test_checks_by_verdict_and_tokens_of_today(api: Api) -> None:
     before = await panel(api)
 
     await check_with_tokens(api, admin, {"in": 2100, "out": 380, "thoughts": 7})
-    await check_with_tokens(api, admin, None)  # checagem antiga, sem tokens gravados
+    await check_with_tokens(api, admin, None, version="agencias")  # sem IA: sem tokens
+    await run(
+        api,
+        "insert into public.check_requests (user_id, cache_hit) values (:u, true), (:u, false)",
+        u=admin,
+    )
     after = await panel(api)
 
     old, new = today(before["checagens"]), today(after["checagens"])
     assert new["total"] - old["total"] == 2
     assert new["enganoso"] - old["enganoso"] == 2
+    assert new["so_agencias"] - old["so_agencias"] == 1
+    old_p, new_p = today(before["pedidos"]), today(after["pedidos"])
+    # begin_check também grava um pedido por checagem (2) + os 2 inseridos aqui.
+    assert new_p["total"] - old_p["total"] == 4
+    assert new_p["do_cache"] - old_p["do_cache"] == 1
     old_t, new_t = today(before["tokens"]), today(after["tokens"])
     assert (new_t["entrada"] - old_t["entrada"], new_t["saida"] - old_t["saida"]) == (2100, 380)
     assert new_t["raciocinio"] - old_t["raciocinio"] == 7
@@ -156,12 +169,24 @@ async def test_comments_reports_queue_and_users(api: Api) -> None:
         "values ('comment_review', 'hidden_by_reports', :c)",
         c=comment_id,
     )
+    await run(
+        api, "update public.comments set status = 'hidden_reports' where id = :c", c=comment_id
+    )
+    api.as_user(author)
+    deleted = await post(api, "Vou apagar este comentário.")
+    await run(
+        api,
+        "update public.comments set status = 'removed_by_author' where public_id = :p",
+        p=deleted.json()["id"],
+    )
     await member(api, status="suspended")
     await member(api, status="banned")
     await as_admin(api)
     after = await panel(api)
 
-    assert today(after["comentarios"])["total"] - today(before["comentarios"])["total"] == 1
+    assert today(after["comentarios"])["total"] - today(before["comentarios"])["total"] == 2
+    # Escondido por denúncias conta; apagado pelo próprio autor não.
+    assert today(after["comentarios"])["ocultos"] - today(before["comentarios"])["ocultos"] == 1
     assert today(after["denuncias"])["total"] - today(before["denuncias"])["total"] == 1
     assert after["fila"]["pendentes"] - before["fila"]["pendentes"] == 1
     assert after["fila"]["revisao"] - before["fila"]["revisao"] == 1
@@ -210,6 +235,44 @@ async def test_gemini_usage_of_the_pacific_day_with_remaining_quota(api: Api) ->
 
     assert model(after)["usadas"] - model(before)["usadas"] == 2
     assert model(after)["restante"] == max(model(after)["limite"] - model(after)["usadas"], 0)
+
+
+async def test_day_boundaries_in_boa_vista_and_the_seven_day_edge(api: Api) -> None:
+    """Meia-noite de Boa Vista separa os dias; o 8º dia para trás fica de fora."""
+    await as_admin(api)
+    before = await panel(api)
+    today_bv = datetime.now(BOA_VISTA).date()
+
+    def at(days_ago: int, hour: int, minute: int, second: int) -> datetime:
+        return datetime.combine(
+            today_bv - timedelta(days=days_ago), time(hour, minute, second), BOA_VISTA
+        )
+
+    moments = [
+        at(1, 0, 0, 0),  # início de ontem
+        at(1, 23, 59, 59),  # fim de ontem
+        at(0, 0, 0, 0),  # início de hoje
+        at(6, 0, 0, 0),  # primeiro instante da janela de 7 dias
+        at(7, 23, 59, 59),  # último instante fora da janela
+    ]
+    for moment in moments:
+        user_id = await create_auth_user(api.session)
+        await run(
+            api,
+            "insert into public.profiles (id, apelido, terms_version, created_at) "
+            "values (:id, :apelido, 'teste', :at)",
+            id=user_id,
+            apelido=f"b_{user_id.hex[:12]}",
+            at=moment,
+        )
+    after = await panel(api)
+
+    deltas = [
+        a["total"] - b["total"]
+        for a, b in zip(after["usuarios_novos"], before["usuarios_novos"], strict=True)
+    ]
+    assert after["usuarios_novos"][0]["dia"] == (today_bv - timedelta(days=6)).isoformat()
+    assert deltas == [1, 0, 0, 0, 0, 2, 1]
 
 
 # ---------- privacidade e custo ----------

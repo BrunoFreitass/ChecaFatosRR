@@ -21,7 +21,9 @@ BOA_VISTA = ZoneInfo("America/Boa_Vista")
 DAILY = ("checagens", "tokens", "pedidos", "comentarios", "denuncias", "usuarios_novos")
 
 # Janela por dia com início e fim em timestamptz: as consultas usam os índices de created_at.
-# Tokens só quando são número (o result é jsonb livre): um valor estranho não derruba o painel.
+# Tokens: o result (jsonb grande, em TOAST) é lido uma vez por linha (lateral com offset 0, que
+# o planejador não desdobra); só valores numéricos, limitados a 10^12 (um valor estranho não
+# derruba o painel nem estoura o bigint).
 _PAINEL = """
 with dias as (
   select * from unnest(
@@ -37,18 +39,22 @@ checagens as (
          count(c.id) filter (where c.veredito = 'fora_de_contexto') as fora_de_contexto,
          count(c.id) filter (where c.veredito = 'nao_verificavel') as nao_verificavel,
          count(c.id) filter (where c.prompt_version = 'agencias') as so_agencias,
-         count(c.id) filter (where jsonb_typeof(c.result -> 'tokens') = 'object') as com_tokens,
-         coalesce(sum(case when jsonb_typeof(c.result -> 'tokens' -> 'in') = 'number'
-                           then (c.result -> 'tokens' ->> 'in')::numeric end), 0)::bigint
-           as tokens_in,
-         coalesce(sum(case when jsonb_typeof(c.result -> 'tokens' -> 'out') = 'number'
-                           then (c.result -> 'tokens' ->> 'out')::numeric end), 0)::bigint
-           as tokens_out,
-         coalesce(sum(case when jsonb_typeof(c.result -> 'tokens' -> 'thoughts') = 'number'
-                           then (c.result -> 'tokens' ->> 'thoughts')::numeric end), 0)::bigint
-           as tokens_thoughts
+         count(t.tok) filter (where jsonb_typeof(t.tok) = 'object') as com_tokens,
+         coalesce(sum(t.tin), 0)::bigint as tokens_in,
+         coalesce(sum(t.tout), 0)::bigint as tokens_out,
+         coalesce(sum(t.tthoughts), 0)::bigint as tokens_thoughts
   from dias d
   left join public.checks c on c.created_at >= d.inicio and c.created_at < d.fim
+  left join lateral (
+    select tok,
+           case when jsonb_typeof(tok -> 'in') = 'number'
+                then least(greatest((tok ->> 'in')::numeric, 0), 1e12) end as tin,
+           case when jsonb_typeof(tok -> 'out') = 'number'
+                then least(greatest((tok ->> 'out')::numeric, 0), 1e12) end as tout,
+           case when jsonb_typeof(tok -> 'thoughts') = 'number'
+                then least(greatest((tok ->> 'thoughts')::numeric, 0), 1e12) end as tthoughts
+    from (select c.result -> 'tokens' as tok offset 0) as r
+  ) t on true
   group by d.dia
 ),
 pedidos as (
@@ -58,7 +64,8 @@ pedidos as (
   group by d.dia
 ),
 comentarios as (
-  select d.dia, count(c.id) as total, count(c.id) filter (where c.status <> 'visible') as ocultos
+  select d.dia, count(c.id) as total,
+         count(c.id) filter (where c.status in ('hidden_reports', 'removed')) as ocultos
   from dias d
   left join public.comments c on c.created_at >= d.inicio and c.created_at < d.fim
   group by d.dia

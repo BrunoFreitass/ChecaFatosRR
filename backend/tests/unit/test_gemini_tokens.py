@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.services import gemini
 from app.services.gemini import GeminiAnalyzer, google_generate
 from tests.unit.test_gemini_client import (
     ANSWER,
@@ -80,16 +81,52 @@ async def test_calls_outside_an_analysis_still_work(monkeypatch: pytest.MonkeyPa
 async def test_two_analyses_at_the_same_time_do_not_mix_tokens(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    install_fake_client(
+    models = install_fake_client(
         monkeypatch,
         [
             text_response(ANSWER, usage=usage(100, 1, 0)),
             text_response(ANSWER, usage=usage(7, 2, 0)),
         ],
     )
+    # A 1ª chamada só responde depois que a 2ª já respondeu: as duas análises se intercalam.
+    second_done = asyncio.Event()
+    original = models.generate_content
+
+    async def interleaved(**kwargs: object) -> object:
+        first = models.calls == 0
+        response = await original(**kwargs)
+        if first:
+            await second_done.wait()
+        else:
+            second_done.set()
+        return response
+
+    monkeypatch.setattr(models, "generate_content", interleaved)
     analyzer = GeminiAnalyzer(google_generate(FAKE_KEY, [MODEL]))
 
     first, second = await asyncio.gather(analyzer.analyze(data()), analyzer.analyze(data()))
 
-    assert first.tokens is not None and second.tokens is not None
-    assert {first.tokens["in"], second.tokens["in"]} == {100, 7}
+    assert first.tokens == {"in": 100, "out": 1, "thoughts": 0}
+    assert second.tokens == {"in": 7, "out": 2, "thoughts": 0}
+
+
+async def test_a_refused_answer_is_counted_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Resposta vazia (recusa de segurança, MAX_TOKENS) também é cobrada pelo Google.
+    install_fake_client(monkeypatch, [text_response(None, "SAFETY", usage=usage(900, 0, 40))])
+    totals: dict[str, int] = {}
+    token = gemini._TOKENS.set(totals)
+    try:
+        with pytest.raises(Exception):  # noqa: B017 (a cadeia traduz a recusa; só importa que falhe)
+            await google_generate(FAKE_KEY, [MODEL])("prompt")
+    finally:
+        gemini._TOKENS.reset(token)
+
+    assert totals == {"in": 900, "out": 0, "thoughts": 40}
+
+
+async def test_usage_without_numbers_records_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_fake_client(monkeypatch, [text_response(ANSWER, usage=usage(None, None, None))])
+
+    result = await GeminiAnalyzer(google_generate(FAKE_KEY, [MODEL])).analyze(data())
+
+    assert result.tokens is None  # nada de "checagem com 0 tokens" no painel

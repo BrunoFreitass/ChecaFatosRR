@@ -20,6 +20,9 @@ describe("painel: validação da resposta", () => {
       { ...ok, usuarios: [] },
       { ...ok, gemini: { ...ok.gemini, cota: [{ uso: "checagem", usadas: 1 }] } },
       { ...ok, gemini: { ...ok.gemini, modelos: [{ ...ok.gemini.modelos[0], checagem: "sim" }] } },
+      { ...ok, checagens: [{ ...ok.checagens[0], dia: "x" }, ...ok.checagens.slice(1)] }, // dia sem formato
+      { ...ok, gemini: { ...ok.gemini, dia_pacifico: "ontem" } },
+      { ...ok, denuncias: ok.denuncias.slice(1) }, // listas com dias diferentes
     ];
     for (const value of bad) expect(isPainelResponse(value), JSON.stringify(value)).toBe(false);
   });
