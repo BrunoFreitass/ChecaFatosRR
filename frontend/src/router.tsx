@@ -1,7 +1,9 @@
+import { lazy, Suspense } from "react";
 import { createBrowserRouter } from "react-router";
 
-import { RequireProfile, RequireSessionWithoutProfile } from "./auth/guards.tsx";
+import { RequireAdmin, RequireProfile, RequireSessionWithoutProfile } from "./auth/guards.tsx";
 import { Layout } from "./components/Layout.tsx";
+import { Loading } from "./components/Loading.tsx";
 import { AdminModeracao } from "./pages/AdminModeracao.tsx";
 import { AuthCallback } from "./pages/AuthCallback.tsx";
 import { Comunidade } from "./pages/Comunidade.tsx";
@@ -16,6 +18,9 @@ import { Onboarding } from "./pages/Onboarding.tsx";
 import { Resultado } from "./pages/Resultado.tsx";
 import { Apuracao } from "./pages/Apuracao.tsx";
 import { Ultimas } from "./pages/Ultimas.tsx";
+
+// Só o admin usa: chunk separado, o bundle de quem lê o site não cresce.
+const PainelAdmin = lazy(() => import("./pages/PainelAdmin.tsx"));
 
 export const router = createBrowserRouter([
   {
@@ -39,6 +44,16 @@ export const router = createBrowserRouter([
           <RequireProfile>
             <MinhaConta />
           </RequireProfile>
+        ),
+      },
+      {
+        path: "minha-conta/painel",
+        element: (
+          <RequireAdmin>
+            <Suspense fallback={<Loading />}>
+              <PainelAdmin />
+            </Suspense>
+          </RequireAdmin>
         ),
       },
       {

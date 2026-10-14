@@ -161,6 +161,10 @@ class CheckResult:
     checagens_relacionadas: list[AgencyCheck] = field(default_factory=list)
     # Domínio de onde a página veio, se não for plataforma aberta (None em texto colado).
     origem_confirmada: str | None = None
+    # Tokens das respostas do Gemini nesta análise ({"in", "out", "thoughts"}), inclusive as
+    # vazias ou recusadas (o Google cobra); chamada sem resposta (timeout, rede) não tem como
+    # contar. Para o painel do admin; fora do to_json (público): o check_service grava à parte.
+    tokens: dict[str, int] | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -635,6 +639,9 @@ _MODEL_BUDGET: ContextVar[ModelBudget | None] = ContextVar("gemini_model_budget"
 # Devolve a unidade ao contador do dia da reserva (modelo, dia).
 ModelRelease = Callable[[str, date], Awaitable[None]]
 _MODEL_RELEASE: ContextVar[ModelRelease | None] = ContextVar("gemini_model_release", default=None)
+# Soma dos tokens das respostas da análise em andamento (definido pelo GeminiAnalyzer; o
+# _log_usage soma). Fora de uma análise (moderação), None: nada a somar.
+_TOKENS: ContextVar[dict[str, int] | None] = ContextVar("gemini_tokens", default=None)
 # 503/500: o Google recusou a requisição sem processá-la (sobrecarga). A unidade volta
 # (decisão de 13/10/2026: 503 em série esgotavam os 20/dia dos Flash sem nenhuma resposta).
 # Timeout e 504 não: o Google pode ter processado e cobrado. Se ele contar o 503 do lado
@@ -1092,6 +1099,22 @@ class GeminiAnalyzer:
         model_budget: ModelBudget | None = None,
         model_release: ModelRelease | None = None,
     ) -> CheckResult:
+        tokens: dict[str, int] = {}
+        tokens_token = _TOKENS.set(tokens)
+        try:
+            result = await self._analyze(data, reserve, release, model_budget, model_release)
+        finally:
+            _TOKENS.reset(tokens_token)
+        return replace(result, tokens=tokens or None)
+
+    async def _analyze(
+        self,
+        data: AnalysisInput,
+        reserve: Reserve,
+        release: Release,
+        model_budget: ModelBudget | None,
+        model_release: ModelRelease | None,
+    ) -> CheckResult:
         now = self._now()
         prompt = build_prompt(data, now)
         today = now.astimezone(BOA_VISTA).date()
@@ -1159,6 +1182,23 @@ def _empty_reason(response: Any) -> tuple[str, bool]:
     finish_name = str(getattr(finish, "name", finish) or "")
     refused = blocked is not None or finish_name in _SAFETY_FINISH
     return f"resposta sem texto (finish_reason={finish}, block_reason={blocked})", refused
+
+
+def _count_tokens(response: Any) -> None:
+    """Soma os tokens da resposta na análise em andamento (painel do admin). Só números: campo
+    ausente não vira zero gravado."""
+    totals = _TOKENS.get()
+    usage = getattr(response, "usage_metadata", None)
+    if totals is None or usage is None:
+        return
+    for key, attr in (
+        ("in", "prompt_token_count"),
+        ("out", "candidates_token_count"),
+        ("thoughts", "thoughts_token_count"),
+    ):
+        value = getattr(usage, attr, None)
+        if isinstance(value, int) and not isinstance(value, bool):
+            totals[key] = totals.get(key, 0) + value
 
 
 def _log_usage(model: str, prompt: str, response: Any, started: float) -> None:
@@ -1317,6 +1357,7 @@ def google_generate(
                 raise GeminiCallError(None, type(exc).__name__) from None
             except Exception as exc:  # erro inesperado do SDK: não repetir
                 raise GeminiCallError(None, type(exc).__name__, retryable=False) from None
+            _count_tokens(response)  # antes do teste de vazio: resposta recusada também é cobrada
             if not response.text:
                 # Bloqueio de segurança, MAX_TOKENS etc.: o mesmo prompt teria o mesmo fim.
                 reason, refused = _empty_reason(response)
