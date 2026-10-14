@@ -5,4 +5,4 @@ precisa aceitar a versão atual. O frontend a lê em GET /legal/version (Onboard
 exibida nas páginas legais).
 """
 
-CURRENT_TERMS_VERSION = "2026-10-13"
+CURRENT_TERMS_VERSION = "2026-10-14"

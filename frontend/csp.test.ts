@@ -19,6 +19,14 @@ describe("buildCsp", () => {
     expect(csp).toContain("form-action 'self'");
   });
 
+  it("libera o Cloudflare Web Analytics (beacon e envio), sem mais nada de fora", () => {
+    const csp = buildCsp(PROD);
+    expect(csp).toContain("script-src 'self' https://static.cloudflareinsights.com;");
+    expect(csp).toContain(
+      "connect-src 'self' https://checafatosrr-api-abc-rj.a.run.app https://abcd.supabase.co https://cloudflareinsights.com;",
+    );
+  });
+
   it("nunca usa unsafe-inline nem unsafe-eval", () => {
     expect(buildCsp(PROD)).not.toMatch(/unsafe-/);
   });

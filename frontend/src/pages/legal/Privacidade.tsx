@@ -71,8 +71,13 @@ export function Privacidade() {
       <p>Só com os serviços necessários para o site funcionar:</p>
       <ul>
         <li>Supabase: banco de dados e login, com servidores em São Paulo.</li>
-        <li>Google Cloud: servidor da aplicação.</li>
+        <li>Render (servidores nos Estados Unidos): servidor da aplicação.</li>
         <li>Cloudflare: hospedagem do site.</li>
+        <li>
+          Cloudflare Web Analytics: estatísticas de visitas ao site, operadas pela Cloudflare, sem
+          cookies e só com contagens agregadas (páginas vistas, país, navegador). Não identifica
+          você nem acompanha o seu uso.
+        </li>
         <li>
           Google Gemini (inteligência artificial): recebe o texto dos links checados, das mensagens
           coladas (já sem telefones, e-mails, CPF e chaves Pix) e dos comentários, para análise e
