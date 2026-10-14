@@ -3,6 +3,7 @@ import json
 import logging
 import re
 from collections.abc import Callable, Iterator
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -15,7 +16,12 @@ from fastapi.testclient import TestClient
 from app.auth import TokenVerifier, get_token_verifier
 from app.repositories.checks import Limits, StoredCheck, SubjectRef, new_public_id
 from app.repositories.profiles import Profile
-from app.routers.checks import get_check_repository, get_check_settings, get_check_tools
+from app.routers.checks import (
+    get_check_repos,
+    get_check_repository,
+    get_check_settings,
+    get_check_tools,
+)
 from app.routers.profiles import get_profile_repository
 from app.services.check_service import CheckSettings, CheckTools
 from app.services.factcheck import AgencyCheck
@@ -113,6 +119,7 @@ def api(app: FastAPI, env: Env) -> Iterator[TestClient]:
     )
     app.dependency_overrides[get_profile_repository] = lambda: env.profiles
     app.dependency_overrides[get_check_repository] = lambda: env.checks
+    app.dependency_overrides[get_check_repos] = lambda: lambda: nullcontext(env.checks)
     app.dependency_overrides[get_check_tools] = env.tools
     app.dependency_overrides[get_check_settings] = lambda: env.settings
     with TestClient(app, raise_server_exceptions=False) as client:

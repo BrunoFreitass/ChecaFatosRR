@@ -2,6 +2,9 @@
 fila de moderação do admin (só ADMIN_EMAIL)."""
 
 import ipaddress
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from datetime import datetime
 from functools import lru_cache
 from typing import Annotated, Any
 
@@ -10,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser, current_user, require_admin
 from app.config import Settings, get_settings
-from app.db import get_session
+from app.db import get_session, session_scope
 from app.errors import AppError
 from app.repositories.checks import SqlCheckRepository
 from app.repositories.comments import SqlCommentRepository, StoredComment, Thread
@@ -79,6 +82,20 @@ def get_comment_repos(session: Annotated[AsyncSession, Depends(get_session)]) ->
 
 
 Repos = Annotated[CommentRepos, Depends(get_comment_repos)]
+OwnRepos = Callable[[], AbstractAsyncContextManager[CommentRepos]]
+
+
+@asynccontextmanager
+async def _own_comment_repos() -> AsyncIterator[CommentRepos]:
+    async with session_scope() as session:
+        yield get_comment_repos(session)
+
+
+def get_own_comment_repos() -> OwnRepos:
+    """Repositórios com sessão própria para a leitura do cache (servida a vários pedidos)."""
+    return _own_comment_repos
+
+
 Caches = Annotated[ReadCaches, Depends(get_read_caches)]
 User = Annotated[CurrentUser, Depends(current_user)]
 Admin = Annotated[CurrentUser, Depends(require_admin)]
@@ -147,7 +164,7 @@ def _thread_out(thread: Thread) -> CommentOut:
 
 @router.get("/comments", response_model=CommentListOut, dependencies=[Depends(_read_limit)])
 async def list_comments(
-    repos: Repos,
+    repos: Annotated[OwnRepos, Depends(get_own_comment_repos)],
     response: Response,
     caches: Caches,
     checagem: PublicId | None = None,
@@ -157,14 +174,17 @@ async def list_comments(
     response.headers["Cache-Control"] = "no-store"
 
     async def load() -> CommentListOut:
-        return await _list(repos, checagem, position)
+        async with repos() as own:
+            return await _list(own, checagem, position)
 
     # Resposta pública e igual para todos (sem campo por usuário): cache curto, invalidado em
     # toda escrita abaixo.
-    return await caches.comments.get((checagem, cursor), load)  # type: ignore[no-any-return]
+    return await caches.comments.get((checagem, position), load)  # cursor já decodificado
 
 
-async def _list(repos: CommentRepos, checagem: str | None, position: Any) -> CommentListOut:
+async def _list(
+    repos: CommentRepos, checagem: str | None, position: tuple[datetime, str] | None
+) -> CommentListOut:
     if checagem is not None:
         found = await repos.comments.threads_of_check(checagem, position, PAGE_SIZE + 1)
         if found is None:

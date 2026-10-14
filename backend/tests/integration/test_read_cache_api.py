@@ -146,3 +146,38 @@ async def test_concurrent_reads_go_to_the_database_once(
     assert all(r.status_code == 200 for r in responses) and again.status_code == 200
     assert len({r.text for r in [*responses, again]}) == 1
     assert calls == 1  # 21 leituras, 1 consulta ao banco
+
+
+async def test_approved_hidden_comment_reappears_at_once(api: Api) -> None:
+    api.as_user(await member(api))
+    created = (await post(api, "Comentário denunciado à toa.")).json()["id"]
+    for _ in range(3):
+        api.as_user(await member(api))
+        await api.http.post(f"/comments/{created}/denuncia", json={})
+    assert created not in ids(await feed(api))  # oculto (e o cache aquecido sem ele)
+
+    await admin(api)
+    item = next(i for i in await queue(api) if i["comentario"] == created)
+    response = await api.http.post(f"/admin/moderacao/fila/{item['id']}", json={"acao": "aprovar"})
+
+    assert response.status_code == 200
+    assert created in ids(await feed(api))
+
+
+async def test_shared_read_never_uses_the_request_session(api: Api) -> None:
+    """A leitura do cache serve vários pedidos: ela abre a própria sessão. Se usasse a do 1º
+    pedido, ela fecharia quando ele desistisse e derrubaria os outros."""
+    from app.db import get_session
+
+    async def no_request_session() -> Any:
+        raise AssertionError("a leitura do cache usou a sessão da requisição")
+        yield  # pragma: no cover
+
+    api.app.dependency_overrides[get_session] = no_request_session
+    api.app.state.read_caches.comments.invalidate()
+    try:
+        response = await api.http.get("/comments")
+    finally:
+        del api.app.dependency_overrides[get_session]
+
+    assert response.status_code == 200

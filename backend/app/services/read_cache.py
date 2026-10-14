@@ -6,8 +6,15 @@
   banido): a próxima leitura vai ao banco e o autor vê o próprio comentário;
 - leitura que começou ANTES de uma invalidação não é guardada nem compartilhada com quem pede
   depois (geração);
-- tamanho limitado (ids aleatórios em ?checagem= não fazem a memória crescer sem fim).
-Só respostas públicas, iguais para todos: nada autenticado ou pessoal entra aqui.
+- tamanho limitado (ids aleatórios em ?checagem= não fazem a memória crescer sem fim);
+- a leitura compartilhada abre a PRÓPRIA sessão do banco (quem chama passa um load que faz
+  isso): se o 1º pedido desistir, a sessão dele fecha sem derrubar a leitura dos outros;
+- cada leitura tem prazo (LOAD_TIMEOUT): banco travado não prende os pedidos para sempre.
+Só respostas públicas, iguais para todos: nada autenticado ou pessoal entra aqui. Os valores
+guardados são só lidos (o FastAPI serializa uma cópia), nunca alterados.
+
+SUPÕE UM PROCESSO SÓ (Dockerfile: um worker do uvicorn, uma instância no Render). Com mais de
+um, a invalidação valeria só no processo da escrita: o autor poderia esperar até o TTL.
 """
 
 import asyncio
@@ -15,24 +22,31 @@ import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Hashable
 from dataclasses import dataclass, field
-from typing import Any
 
 from fastapi import Request
+
+from app.schemas.checks import LatestChecksOut
+from app.schemas.comments import CommentListOut
 
 # Teste de carga: home e Comunidade a cada visita. 15 s para a lista de checagens (só muda com
 # checagem nova, e essa invalida na hora); 10 s para comentários.
 LATEST_TTL = 15.0
 COMMENTS_TTL = 10.0
+LOAD_TIMEOUT = 10.0
 
 
 class ReadCache[T]:
+    """Leitura pública por chave, por TTL segundos, com uma carga por vez e invalidação."""
+
     def __init__(
         self,
         ttl: float,
         max_entries: int = 256,
         clock: Callable[[], float] = time.monotonic,
+        timeout: float = LOAD_TIMEOUT,
     ) -> None:
         self._ttl = ttl
+        self._timeout = timeout
         self._max = max_entries
         self._clock = clock
         self._entries: OrderedDict[Hashable, tuple[float, T]] = OrderedDict()
@@ -50,7 +64,7 @@ class ReadCache[T]:
         generation = self._generation
         task = self._loading.get((generation, key))
         if task is None:
-            task = asyncio.ensure_future(load())
+            task = asyncio.ensure_future(asyncio.wait_for(load(), self._timeout))
             self._loading[(generation, key)] = task
             task.add_done_callback(lambda done: self._finish(generation, key, done))
         # shield: quem desiste (conexão fechada) não cancela a leitura dos outros.
@@ -76,9 +90,10 @@ class ReadCache[T]:
 class ReadCaches:
     """Os caches do processo (app.state.read_caches)."""
 
-    latest: ReadCache[Any] = field(default_factory=lambda: ReadCache(ttl=LATEST_TTL))
-    comments: ReadCache[Any] = field(default_factory=lambda: ReadCache(ttl=COMMENTS_TTL))
+    latest: ReadCache[LatestChecksOut] = field(default_factory=lambda: ReadCache(ttl=LATEST_TTL))
+    comments: ReadCache[CommentListOut] = field(default_factory=lambda: ReadCache(ttl=COMMENTS_TTL))
 
 
 def get_read_caches(request: Request) -> ReadCaches:
-    return request.app.state.read_caches  # type: ignore[no-any-return]
+    caches: ReadCaches = request.app.state.read_caches
+    return caches
