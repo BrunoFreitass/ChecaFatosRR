@@ -1,15 +1,17 @@
 """Mapa do Brasil na Apuração: resumo mais recente do TSE por UF (plano mapa-e-painel-admin).
 
 Mesmo desenho da apuração BR/RR (service.py): busca preguiçosa (só quando alguém pede o mapa),
-single-flight no processo (TseCache) e claim no banco. Aqui o claim é em lote: até
-TSE_MAPA_LOTE UFs vencidas por requisição, cada UF no máximo 1 busca a cada
-TSE_MAPA_REFRESH_SECONDS (com 1 visitante e polling de 60 s, as 27 em ~3 min). Uma UF que
-falha no TSE fica com o último resumo bom (ou sem dado): nunca derruba as outras.
+sempre em segundo plano (TseCache: o usuário recebe o que está em memória) e claim no banco.
+Aqui o claim é em lote: até TSE_MAPA_LOTE UFs vencidas por recarga, cada UF no máximo 1
+busca a cada TSE_MAPA_REFRESH_SECONDS (com 1 visitante e polling de 60 s, as 27 buscadas em
+~3 min; como a busca roda depois da resposta, o visitante vê cada lote no polling seguinte).
+Uma UF que falha no TSE fica com o último resumo bom (ou sem dado): nunca derruba as outras.
 O mapa nunca diz "Eleito": não existe eleito por UF na eleição presidencial.
 """
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
@@ -81,6 +83,13 @@ def summarize(result: TseResult) -> dict[str, Any]:
 async def load_map(
     repo: TseMapRepository, client: TseClient, settings: Settings
 ) -> list[tuple[str, dict[str, Any] | None]]:
+    """Busca e depois lê (o que a recarga em segundo plano faz)."""
+    await refresh_map(repo, client, settings)
+    return await read_map(repo, settings)
+
+
+async def refresh_map(repo: TseMapRepository, client: TseClient, settings: Settings) -> None:
+    """Busca no TSE as UFs vencidas (em lote) e grava; só em segundo plano."""
     election = str(settings.tse_election_code)
     claimed = await repo.claim_ufs(settings.tse_mapa_refresh_seconds, settings.tse_mapa_lote)
     fetched = await asyncio.gather(*(_fetch(client, uf) for uf in claimed))
@@ -99,6 +108,13 @@ async def load_map(
             await repo.save_ufs(fresh)
         except Exception:  # falha ao gravar: serve o que já estava salvo
             logger.exception("tse_map_save_failed", extra={"ufs": [s.uf for s in fresh]})
+
+
+async def read_map(
+    repo: TseMapRepository, settings: Settings
+) -> list[tuple[str, dict[str, Any] | None]]:
+    """Último resumo gravado de cada UF (só banco), na ordem de UFS."""
+    election = str(settings.tse_election_code)
     saved = {s.uf: s for s in await repo.get_ufs()}
     out: list[tuple[str, dict[str, Any] | None]] = []
     for uf in UFS:
@@ -110,8 +126,15 @@ async def load_map(
 
 
 async def _fetch(client: TseClient, uf: str) -> TseResult | None:
+    started = time.monotonic()
     try:
-        return parse_result(await client.fetch(uf))
+        result = parse_result(await client.fetch(uf))
+        # Uma linha por busca real no TSE (mesmo nome da apuração BR/RR: dá para somar tudo).
+        logger.info(
+            "tse_fetch_ok",
+            extra={"scope": uf, "fetch_ms": int((time.monotonic() - started) * 1000)},
+        )
+        return result
     except TseUnavailableError as exc:
         logger.warning("tse_map_fetch_failed", extra={"scope": uf, "error": str(exc)})
     except TseFormatError as exc:

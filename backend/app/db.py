@@ -11,6 +11,7 @@ import logging
 import ssl
 import time
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import Any
 from uuid import uuid4
@@ -123,8 +124,9 @@ def get_engine() -> AsyncEngine:
     return _engine
 
 
-async def get_session() -> AsyncIterator[AsyncSession]:
-    """Dependência do FastAPI: uma sessão por requisição.
+@asynccontextmanager
+async def session_scope() -> AsyncIterator[AsyncSession]:
+    """Sessão própria, fora de uma requisição (ex.: recarga do TSE em segundo plano).
 
     Convenção: escritas sempre dentro de `async with session.begin():` (commit/rollback
     explícitos). Sem isso, o que não for commitado é descartado ao fechar a sessão.
@@ -133,6 +135,12 @@ async def get_session() -> AsyncIterator[AsyncSession]:
     if _sessionmaker is None:
         raise DatabaseNotConfiguredError("sessionmaker não inicializado")
     async with _sessionmaker() as session:
+        yield session
+
+
+async def get_session() -> AsyncIterator[AsyncSession]:
+    """Dependência do FastAPI: uma sessão por requisição (mesma convenção de session_scope)."""
+    async with session_scope() as session:
         yield session
 
 

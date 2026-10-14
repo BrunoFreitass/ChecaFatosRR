@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -15,11 +17,19 @@ from app.services.tse.service import TseCache
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        await dispose_engine()
+        try:
+            # Recarga do TSE em segundo plano ainda rodando: espera até 5 s antes de fechar o
+            # banco (interrompida no meio, a UF/escopo fica para o próximo intervalo do claim).
+            caches = [getattr(app.state, n, None) for n in ("tse_cache", "tse_map_cache")]
+            pending = [cache.idle() for cache in caches if cache is not None]
+            with contextlib.suppress(TimeoutError):  # as duas juntas: no máximo 5 s
+                await asyncio.wait_for(asyncio.gather(*pending), timeout=5)
+        finally:
+            await dispose_engine()
 
 
 def create_app() -> FastAPI:
