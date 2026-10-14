@@ -35,6 +35,32 @@ export function RequireProfile({ children }: { children: ReactNode }) {
   return children;
 }
 
+/**
+ * Página só do admin: exige perfil e is_admin. Quem não é admin vê um aviso e a página nem
+ * monta (nada chama a API). O backend confere de novo (require_admin, 403): isto é só a tela.
+ */
+export function RequireAdmin({ children }: { children: ReactNode }) {
+  return (
+    <RequireProfile>
+      <AdminOnly>{children}</AdminOnly>
+    </RequireProfile>
+  );
+}
+
+function AdminOnly({ children }: { children: ReactNode }) {
+  const { profile } = useAuth();
+  if (!profile?.is_admin) {
+    return (
+      <section className="space-y-2">
+        <title>Acesso restrito — ChecaFatosRR</title>
+        <h1 className="text-2xl font-bold">Acesso restrito</h1>
+        <p className="text-slate-700">Só a administração do site pode ver esta página.</p>
+      </section>
+    );
+  }
+  return children;
+}
+
 /** Página do primeiro acesso: exige login, mas ainda SEM perfil. */
 export function RequireSessionWithoutProfile({ children }: { children: ReactNode }) {
   const { status, errorMessage } = useAuth();

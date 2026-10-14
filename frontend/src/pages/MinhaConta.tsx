@@ -80,12 +80,20 @@ export function MinhaConta() {
       </div>
 
       {profile.is_admin && (
-        <Link
-          to="/admin/moderacao"
-          className="inline-flex min-h-12 w-full items-center justify-center rounded-lg bg-brand-700 px-4 font-semibold text-white"
-        >
-          Fila de moderação
-        </Link>
+        <>
+          <Link
+            to="/minha-conta/painel"
+            className="inline-flex min-h-12 w-full items-center justify-center rounded-lg bg-brand-700 px-4 font-semibold text-white"
+          >
+            Painel do administrador
+          </Link>
+          <Link
+            to="/admin/moderacao"
+            className="inline-flex min-h-12 w-full items-center justify-center rounded-lg bg-brand-700 px-4 font-semibold text-white"
+          >
+            Fila de moderação
+          </Link>
+        </>
       )}
 
       <button
