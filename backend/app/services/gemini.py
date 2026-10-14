@@ -161,6 +161,9 @@ class CheckResult:
     checagens_relacionadas: list[AgencyCheck] = field(default_factory=list)
     # Domínio de onde a página veio, se não for plataforma aberta (None em texto colado).
     origem_confirmada: str | None = None
+    # Tokens de todas as respostas do Gemini nesta análise ({"in", "out", "thoughts"}), para o
+    # painel do admin. Fora do to_json (público): o check_service grava à parte no result.
+    tokens: dict[str, int] | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -635,6 +638,9 @@ _MODEL_BUDGET: ContextVar[ModelBudget | None] = ContextVar("gemini_model_budget"
 # Devolve a unidade ao contador do dia da reserva (modelo, dia).
 ModelRelease = Callable[[str, date], Awaitable[None]]
 _MODEL_RELEASE: ContextVar[ModelRelease | None] = ContextVar("gemini_model_release", default=None)
+# Soma dos tokens das respostas da análise em andamento (definido pelo GeminiAnalyzer; o
+# _log_usage soma). Fora de uma análise (moderação), None: nada a somar.
+_TOKENS: ContextVar[dict[str, int] | None] = ContextVar("gemini_tokens", default=None)
 # 503/500: o Google recusou a requisição sem processá-la (sobrecarga). A unidade volta
 # (decisão de 13/10/2026: 503 em série esgotavam os 20/dia dos Flash sem nenhuma resposta).
 # Timeout e 504 não: o Google pode ter processado e cobrado. Se ele contar o 503 do lado
@@ -1092,6 +1098,22 @@ class GeminiAnalyzer:
         model_budget: ModelBudget | None = None,
         model_release: ModelRelease | None = None,
     ) -> CheckResult:
+        tokens: dict[str, int] = {}
+        tokens_token = _TOKENS.set(tokens)
+        try:
+            result = await self._analyze(data, reserve, release, model_budget, model_release)
+        finally:
+            _TOKENS.reset(tokens_token)
+        return replace(result, tokens=tokens or None)
+
+    async def _analyze(
+        self,
+        data: AnalysisInput,
+        reserve: Reserve,
+        release: Release,
+        model_budget: ModelBudget | None,
+        model_release: ModelRelease | None,
+    ) -> CheckResult:
         now = self._now()
         prompt = build_prompt(data, now)
         today = now.astimezone(BOA_VISTA).date()
@@ -1175,6 +1197,16 @@ def _log_usage(model: str, prompt: str, response: Any, started: float) -> None:
             "elapsed_ms": int((time.monotonic() - started) * 1000),
         },
     )
+    totals = _TOKENS.get()
+    if totals is None or usage is None:
+        return
+    for key, attr in (
+        ("in", "prompt_token_count"),
+        ("out", "candidates_token_count"),
+        ("thoughts", "thoughts_token_count"),
+    ):
+        value = getattr(usage, attr, None)
+        totals[key] = totals.get(key, 0) + (value if isinstance(value, int) else 0)
 
 
 def build_generate_config(*, thinking_budget: int = 0, thinking_level: str = "") -> Any:

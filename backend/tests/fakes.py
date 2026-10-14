@@ -440,6 +440,7 @@ class FakeAnalyzer:
         self.veredito = "falso"
         self.confianca = 85
         self.model: str | None = None  # modelo que "respondeu" (None = não informado)
+        self.tokens: dict[str, int] | None = None  # tokens da análise (painel do admin)
 
     async def analyze(
         self,
@@ -475,4 +476,5 @@ class FakeAnalyzer:
             checagens_agencias=data.agency_checks,
             fontes_sugeridas=["Site oficial do TSE"],
             model=self.model,
+            tokens=self.tokens,
         )

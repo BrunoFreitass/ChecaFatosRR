@@ -270,6 +270,25 @@ def test_saves_the_model_that_answered(
     assert [check.model for check in env.checks.saved] == [saved]
 
 
+def test_tokens_are_saved_in_the_result_but_not_shown(api: TestClient, env: Env) -> None:
+    """Painel do admin (plano §B): tokens no checks.result, sem migration; nunca na resposta."""
+    env.analyzer.tokens = {"in": 2100, "out": 380, "thoughts": 0}
+    _, headers = env.login()
+
+    response = api.post("/checks", json={"texto": MSG}, headers=headers)
+
+    assert response.status_code == 200
+    assert env.checks.saved[0].result["tokens"] == {"in": 2100, "out": 380, "thoughts": 0}
+    assert "tokens" not in response.text
+
+
+def test_without_tokens_the_result_has_no_tokens_key(api: TestClient, env: Env) -> None:
+    _, headers = env.login()
+
+    assert api.post("/checks", json={"texto": MSG}, headers=headers).status_code == 200
+    assert "tokens" not in env.checks.saved[0].result
+
+
 def test_text_check_masks_personal_data_and_stays_unlisted(api: TestClient, env: Env) -> None:
     _, headers = env.login()
 

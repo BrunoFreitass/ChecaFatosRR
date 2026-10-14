@@ -406,7 +406,13 @@ async def _analyze(
                 confianca=result.confianca,
                 # O título vai junto no result: é o desta checagem, mesmo se ela não for listada.
                 # O modelo também: o eval e o log mostram a qualidade por modelo do pool.
-                result={**result.to_json(), "title": data.title, "model": result.model},
+                # Tokens (painel do admin): só no banco; a resposta pública escolhe os campos.
+                result={
+                    **result.to_json(),
+                    "title": data.title,
+                    "model": result.model,
+                    **({"tokens": result.tokens} if result.tokens else {}),
+                },
                 model=result.model or settings.model,
                 listed=listed,
                 title=data.title,
