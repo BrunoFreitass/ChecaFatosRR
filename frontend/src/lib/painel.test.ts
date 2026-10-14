@@ -1,7 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { painelFixture } from "./painel.fixture.ts";
 import { isPainelResponse } from "./painel.ts";
+
+// Sem o módulo real da API: ele exige VITE_API_URL, que o CI não define.
+vi.mock("./api.ts", () => ({ apiFetch: vi.fn() }));
 
 describe("painel: validação da resposta", () => {
   it("aceita a resposta do GET /admin/painel", () => {
