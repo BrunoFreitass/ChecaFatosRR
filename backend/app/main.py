@@ -13,6 +13,7 @@ from app.logging_setup import configure_logging
 from app.middleware import BodySizeLimitMiddleware, RequestContextMiddleware
 from app.routers import admin_painel, checks, comments, health, legal, profiles, tse
 from app.services.rate_limit import RateLimiters
+from app.services.read_cache import ReadCaches
 from app.services.tse.service import TseCache
 
 
@@ -64,6 +65,7 @@ def create_app() -> FastAPI:
     )
     register_error_handlers(app)
     app.state.rate_limiters = RateLimiters()
+    app.state.read_caches = ReadCaches()
     app.state.ready_cache = health.ReadyCache()
     app.state.tse_cache = TseCache(ttl=5.0)
     app.state.tse_map_cache = TseCache(ttl=5.0)

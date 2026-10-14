@@ -289,6 +289,36 @@ def test_without_tokens_the_result_has_no_tokens_key(api: TestClient, env: Env) 
     assert "tokens" not in env.checks.saved[0].result
 
 
+def test_latest_is_read_once_and_a_new_check_shows_at_once(
+    api: TestClient, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR cache-leitura: a home não vai ao banco a cada visita, mas checagem nova aparece já."""
+    calls = 0
+    original = env.checks.latest
+
+    async def counting(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(env.checks, "latest", counting)
+    _, headers = env.login()
+    assert api.get("/checks/latest").json()["items"] == []
+    assert api.get("/checks/latest").json()["items"] == []
+    assert calls == 1  # a 2ª visita saiu da memória
+
+    created = api.post("/checks", json={"url": LINK}, headers=headers).json()["id"]
+
+    assert [i["id"] for i in api.get("/checks/latest").json()["items"]] == [created]
+    assert calls == 2
+
+
+def test_latest_pages_are_cached_separately(api: TestClient, env: Env) -> None:
+    assert api.get("/checks/latest", params={"limit": 5}).status_code == 200
+    assert api.get("/checks/latest", params={"limit": 10}).status_code == 200
+    assert api.get("/checks/latest", params={"cursor": "lixo"}).status_code == 422  # antes do cache
+
+
 def test_text_check_masks_personal_data_and_stays_unlisted(api: TestClient, env: Env) -> None:
     _, headers = env.login()
 

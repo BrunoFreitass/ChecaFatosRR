@@ -18,6 +18,7 @@ from app.services.profiles import (
     nickname_availability,
 )
 from app.services.rate_limit import SlidingWindowLimiter
+from app.services.read_cache import ReadCaches, get_read_caches
 from app.services.supabase_admin import SupabaseAdmin, get_supabase_admin
 
 router = APIRouter(tags=["perfil"])
@@ -118,9 +119,15 @@ async def delete_me(
     repo: Repo,
     settings: AppSettings,
     admin: Annotated[SupabaseAdmin, Depends(get_supabase_admin)],
+    caches: Annotated[ReadCaches, Depends(get_read_caches)],
 ) -> Response:
     """Exclusão de conta (LGPD). O trigger do banco apaga os textos do log de moderação.
     Suspensão e advertências ficam guardadas pelo hash do sub do Google antes (plano §10)."""
-    await keep_moderation_on_delete(user, repo, settings.ban_hash_salt)
-    await admin.delete_user(user.id)
+    try:
+        await keep_moderation_on_delete(user, repo, settings.ban_hash_salt)
+        await admin.delete_user(user.id)
+    finally:
+        # Os comentários da conta somem do banco (cascade): sai das listas na hora.
+        caches.comments.invalidate()
+        caches.latest.invalidate()
     return Response(status_code=204)
