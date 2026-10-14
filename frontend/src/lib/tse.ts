@@ -52,6 +52,8 @@ export const SCOPE_LABELS: Record<TseScope, string> = { br: "Brasil", rr: "Rorai
 export const OFFICIAL_SITE = "https://resultados.tse.jus.br/";
 /** Consulta do navegador (aprovado em 11/10/2026): a cada 60 s, só com a aba visível. */
 export const POLL_MS = 60_000;
+/** Folga para o tick do intervalo não repetir a consulta feita ao voltar para a aba. */
+export const POLL_SLACK_MS = 5_000;
 
 const NUMBER = new Intl.NumberFormat("pt-BR");
 const PERCENT = new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });

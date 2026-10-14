@@ -17,7 +17,11 @@ export default defineConfig({
     timezoneId: "America/Boa_Vista",
     trace: "retain-on-failure",
   },
-  projects: [{ name: "celular", use: { ...devices["Pixel 7"] } }],
+  projects: [
+    { name: "celular", use: { ...devices["Pixel 7"] } },
+    // O mapa também é usado no computador (clique e teclado).
+    { name: "desktop", use: { ...devices["Desktop Chrome"] }, testMatch: /mapa\.spec\.ts$/ },
+  ],
   webServer: {
     // Build de PRODUÇÃO servido pelo vite preview, com a mesma CSP do Cloudflare Pages
     // (plugin em csp.ts): o servidor de dev injeta script inline e não serve para testar CSP.

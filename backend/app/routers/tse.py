@@ -12,8 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings, get_settings
 from app.db import get_session
 from app.errors import AppError
-from app.repositories.tse import SqlTseRepository, TseRepository
+from app.repositories.tse import SqlTseMapRepository, SqlTseRepository, TseRepository
 from app.services.tse.client import HttpTseClient, TseClient
+from app.services.tse.mapa import TseMapRepository, load_map
 from app.services.tse.service import ScopeResult, TseCache, load_results
 
 router = APIRouter(tags=["tse"])
@@ -22,6 +23,8 @@ OFFICIAL_LINK = "https://resultados.tse.jus.br/"
 BANNER_TEXT = "Acompanhe a apuração oficial do 2º turno — fonte: TSE"
 # Navegador e Cloudflare podem reaproveitar por 15 s; o ETag faz a revalidação custar ~0 byte.
 RESULT_CACHE = "public, max-age=15"
+# O mapa muda devagar (cada UF no máximo a cada 2 min): cache público de 30 s.
+MAP_CACHE = "public, max-age=30"
 STATUS_CACHE = "public, max-age=60"
 
 
@@ -88,6 +91,48 @@ async def status(
     now: Annotated[datetime, Depends(get_now)],
 ) -> Response:
     shown = settings.tse_banner_inicio <= now < settings.tse_banner_fim
-    body = {"banner": shown, "texto": BANNER_TEXT, "apuracao": settings.tse_enabled}
+    body = {
+        "banner": shown,
+        "texto": BANNER_TEXT,
+        "apuracao": settings.tse_enabled,
+        "mapa": settings.tse_enabled and settings.tse_mapa_enabled,
+    }
     content = json.dumps(body, ensure_ascii=False).encode()
     return Response(content, media_type="application/json", headers={"Cache-Control": STATUS_CACHE})
+
+
+def get_tse_map_repository(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> TseMapRepository:
+    return SqlTseMapRepository(session)
+
+
+@router.get("/tse/mapa")
+async def mapa(
+    request: Request,
+    repo: Annotated[TseMapRepository, Depends(get_tse_map_repository)],
+    client: Annotated[TseClient, Depends(get_tse_client)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
+    """Resumo por UF para o mapa. TSE_MAPA_ENABLED=false: 404 sem buscar nada no TSE."""
+    if not (settings.tse_enabled and settings.tse_mapa_enabled):
+        raise AppError(404, "mapa_indisponivel", "O mapa da apuração não está disponível.")
+
+    async def build() -> tuple[bytes, str]:
+        states = await load_map(repo, client, settings)
+        body = {
+            "fonte": "TSE",
+            "link_oficial": OFFICIAL_LINK,
+            "eleicao": str(settings.tse_election_code),
+            "cores": settings.tse_mapa_color_map,
+            "estados": [{"uf": uf, "resultado": resumo} for uf, resumo in states],
+        }
+        content = json.dumps(body, ensure_ascii=False).encode()
+        return content, '"' + hashlib.sha256(content).hexdigest()[:32] + '"'
+
+    cache: TseCache[tuple[bytes, str]] = request.app.state.tse_map_cache
+    content, etag = await cache.get(build)
+    headers = {"ETag": etag, "Cache-Control": MAP_CACHE}
+    if _not_modified(request.headers.get("if-none-match"), etag):
+        return Response(status_code=304, headers=headers)
+    return Response(content, media_type="application/json", headers=headers)

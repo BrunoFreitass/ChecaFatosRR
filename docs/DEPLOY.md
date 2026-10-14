@@ -268,6 +268,14 @@ painel (*Environment*) para mudar:
 | `TSE_REFRESH_SECONDS` | `30` | intervalo mínimo entre buscas no TSE |
 | `TSE_URL_TEMPLATE` | `https://resultados.tse.jus.br/oficial/ele2026/{eleicao}/dados/{escopo}/{escopo}-c{cargo:04d}-e{eleicao:06d}-u.json` | só muda se o TSE mudar o endereço; outro host é recusado no boot |
 | `TSE_BANNER_INICIO` / `TSE_BANNER_FIM` | `2026-10-25T16:00:00-04:00` / `2026-10-27T00:00:00-04:00` | janela do banner da home (horário de Boa Vista se vier sem fuso) |
+| `TSE_MAPA_ENABLED` | `true` | `false` desliga o mapa por estado (`GET /tse/mapa` = 404, nenhuma busca por UF); a apuração continua |
+| `TSE_MAPA_REFRESH_SECONDS` | `120` | idade mínima de cada UF antes de buscar de novo (60–600) |
+| `TSE_MAPA_LOTE` | `9` | UFs buscadas por requisição ao mapa (1–27): com 1 visitante, as 27 em ~3 min |
+| `TSE_MAPA_CORES` | `13=vermelho,22=azul` | cor de cada número de candidato (lidos do arquivo oficial 6257); qualquer outro número fica cinza |
+
+O mapa (`GET /tse/mapa`, cache de 30 s com ETag) usa a tabela `tse_uf_snapshots` (migration
+`20261015000000_tse_mapa.sql`, conferida em `/health/ready`). Falha do TSE numa UF não derruba
+as outras (log `tse_map_fetch_failed`); o mapa nunca escreve "Eleito".
 
 Ensaio (até 18/10): `TSE_ELECTION_CODE=6257` mostra o 1º turno real; depois volte para `6258`
 (o resultado do ensaio não aparece na eleição nova). Nenhuma troca de 22 a 26/10.

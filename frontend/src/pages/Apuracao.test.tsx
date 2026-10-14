@@ -20,6 +20,16 @@ vi.mock("../lib/api.ts", () => ({
   apiFetch: api.apiFetch,
 }));
 
+// O mapa tem os próprios testes (MapaApuracao.test.tsx) e consulta /tse/mapa por conta própria;
+// aqui só importa que a página o carrega sob demanda.
+const mapa = vi.hoisted(() => ({ broken: false }));
+vi.mock("../components/MapaApuracao.tsx", () => ({
+  default: () => {
+    if (mapa.broken) throw new Error("chunk do mapa não carregou");
+    return <p>mapa carregado</p>;
+  },
+}));
+
 const CANDIDATE_A: TseCandidate = { numero: "22", nome: "CANDIDATO A", partido: "PA", vice: "VICE A", votos: 56104503, pct: 52.63, situacao: "", eleito: false };
 const CANDIDATE_B: TseCandidate = { numero: "13", nome: "CANDIDATO B", partido: "PB", vice: "VICE B", votos: 900, pct: 47.37, situacao: "", eleito: false };
 
@@ -70,6 +80,7 @@ function setVisibility(state: "visible" | "hidden") {
 }
 
 beforeEach(() => {
+  mapa.broken = false;
   api.apiFetch.mockReset();
   setVisibility("visible");
 });
@@ -255,5 +266,23 @@ describe("Apuracao", () => {
     expect(api.apiFetch).toHaveBeenCalledTimes(2);
     await act(async () => release(response(result())));
   });
-});
 
+  it("carrega o mapa por estado sob demanda, depois do resultado", async () => {
+    api.apiFetch.mockResolvedValue(response(result()));
+    renderPage();
+
+    expect(await screen.findByText("mapa carregado")).toBeTruthy();
+    expect(api.apiFetch).toHaveBeenCalledTimes(1); // só /tse/resultado; o mapa faz a sua
+  });
+
+  it("se o mapa quebrar (chunk antigo depois de um deploy), a apuração continua", async () => {
+    mapa.broken = true;
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => undefined); // React loga o erro
+    api.apiFetch.mockResolvedValue(response(result()));
+    renderPage();
+
+    expect(await screen.findByText("CANDIDATO A")).toBeTruthy();
+    expect(screen.queryByText("mapa carregado")).toBeNull();
+    quiet.mockRestore();
+  });
+});

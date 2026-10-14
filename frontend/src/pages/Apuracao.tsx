@@ -1,4 +1,13 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import {
+  Component,
+  lazy,
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 
 import { Loading } from "../components/Loading.tsx";
 import { ApiError, apiFetch } from "../lib/api.ts";
@@ -9,6 +18,7 @@ import {
   isTseResponse,
   OFFICIAL_SITE,
   POLL_MS,
+  POLL_SLACK_MS,
   SCOPE_LABELS,
   type TseCandidate,
   type TseResponse,
@@ -16,11 +26,25 @@ import {
   type TseScope,
 } from "../lib/tse.ts";
 
+// Chunk separado: o contorno dos estados (~20 KB) não entra no bundle principal.
+const MapaApuracao = lazy(() => import("../components/MapaApuracao.tsx"));
+
 const SCOPES: TseScope[] = ["br", "rr"];
 const LINK_CLASS = "font-semibold text-brand-700 underline break-words";
 const EXTERNAL = { target: "_blank", rel: "noopener noreferrer" } as const;
-// Folga para o tick do intervalo não repetir a consulta feita ao voltar para a aba.
-const POLL_SLACK_MS = 5_000;
+
+/** Se o mapa quebrar (chunk antigo depois de um deploy, rede), some só ele: a apuração fica. */
+class MapBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
 
 type State =
   | { kind: "loading" }
@@ -185,6 +209,11 @@ export function Apuracao() {
               {scope === item && <ScopePanel result={resultOf(item)} />}
             </div>
           ))}
+          <MapBoundary>
+            <Suspense fallback={null}>
+              <MapaApuracao />
+            </Suspense>
+          </MapBoundary>
         </>
       )}
 

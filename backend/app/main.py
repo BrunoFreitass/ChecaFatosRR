@@ -56,6 +56,7 @@ def create_app() -> FastAPI:
     app.state.rate_limiters = RateLimiters()
     app.state.ready_cache = health.ReadyCache()
     app.state.tse_cache = TseCache(ttl=5.0)
+    app.state.tse_map_cache = TseCache(ttl=5.0)
     app.include_router(health.router)
     app.include_router(legal.router)
     app.include_router(profiles.router)
