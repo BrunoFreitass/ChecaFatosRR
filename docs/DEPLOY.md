@@ -199,8 +199,8 @@ Crie a conta em <https://uptimerobot.com> com **2FA** e contatos de alerta por *
 
 | # | Tipo | Nome | URL | Intervalo | Detalhes |
 |---|---|---|---|---|---|
-| 1 | HTTP(s) | API /health | `https://<servico>.onrender.com/health` | **5 min** | método **GET** (não HEAD); timeout 30 s. Mantém o serviço acordado (dorme com 15 min sem acesso). |
-| 2 | Keyword | API /health/ready | `https://<servico>.onrender.com/health/ready` | **60 min** | palavra-chave `"database":"ok"`, alertar quando **não** existir; método GET. Toca o banco e evita a pausa do Supabase Free (7 dias sem uso). |
+| 1 | HTTP(s) | API /health | `https://<servico>.onrender.com/health` | **5 min** | GET ou **HEAD** (o plano grátis só faz HEAD; aceito desde 14/10/2026, antes dava 405); timeout 30 s. Mantém o serviço acordado (dorme com 15 min sem acesso). |
+| 2 | HTTP(s) | API /health/ready | `https://<servico>.onrender.com/health/ready` | **60 min** | **HEAD** no plano grátis: alerta pelo status (200 = banco e schema ok; 503 = banco fora ou migration faltando). HEAD não traz corpo, então um monitor Keyword (`"database":"ok"`) só funciona com GET, nos planos pagos. Toca o banco (cache de 60 s) e evita a pausa do Supabase Free (7 dias sem uso). |
 | 3 | Keyword | Site | `https://<seu-projeto>.pages.dev/` | 5 min | palavra-chave `ChecaFatosRR`; opcional (avisa se o Pages cair). |
 
 Teste os alertas uma vez (suspenda o serviço no Render por 10 min e veja o aviso chegar). No dia
@@ -462,7 +462,7 @@ o deploy do Pages para a CSP acompanhar.
 
 ## 6. Checklist pós-deploy
 
-- [ ] `GET /health` e `GET /health/ready` respondem 200 no Render.
+- [ ] `GET /health` e `GET /health/ready` respondem 200 no Render (e `curl -I`, que faz HEAD, também).
 - [ ] `CORS_ORIGINS` contém exatamente a URL do Pages (sem `/` no final).
 - [ ] O site abre no celular e a página "não encontrada" funciona em uma rota inventada.
 - [ ] Monitores do UptimeRobot ativos (seção 3.4) e só **um** serviço Free no workspace do Render.
