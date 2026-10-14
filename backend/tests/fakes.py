@@ -336,6 +336,27 @@ class FakeCheckRepository:
         if day == FAKE_PACIFIC_DAY and self.model_used.get(model, 0) > 0:
             self.model_used[model] -= 1
 
+    async def reserve_gemini_and_model(
+        self, purpose: str, purpose_limit: int, model: str, model_limit: int
+    ) -> object:
+        """Como o SQL: global primeiro; modelo recusado desfaz a global (rollback)."""
+        from app.repositories.checks import GLOBAL_QUOTA_REFUSED
+
+        if not await self.reserve_gemini(purpose, purpose_limit):
+            return GLOBAL_QUOTA_REFUSED
+        day = await self.reserve_gemini_model(model, model_limit)
+        if day is None:
+            await self.release_gemini(purpose)
+        return day
+
+    async def save_lookup_result(
+        self, request_id: int, user_id: UUID, lookups_per_hour: int, check: NewCheck
+    ) -> StoredCheck | int:
+        retry = await self.convert_to_lookup(request_id, user_id, lookups_per_hour)
+        if retry is not None:
+            return retry
+        return await self.save_result(check)
+
     async def release_gemini(self, purpose: str) -> None:
         self.gemini_used = max(0, self.gemini_used - 1)
 
@@ -430,6 +451,16 @@ class FakeAnalyzer:
     ) -> CheckResult:
         if reserve is not None and not await reserve():
             raise GeminiQuotaExhaustedError
+        # Como o analisador real: o 1º modelo chamado reserva a cota dele (e, com a cota
+        # combinada, a global junto). Global esgotada ou modelo sem cota = "sem cota".
+        if model_budget is not None:
+            from app.services.gemini import GlobalQuotaRefusedError
+
+            try:
+                if not await model_budget("gemini-fake", 1_000_000):
+                    raise GeminiQuotaExhaustedError
+            except GlobalQuotaRefusedError:
+                raise GeminiQuotaExhaustedError from None
         self.inputs.append(data)
         if self.error is not None:
             raise self.error

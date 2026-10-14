@@ -39,6 +39,7 @@ from app.services.gemini import (
     GeminiUnavailableError,
     VerdictAnalyzer,
 )
+from app.services.gemini_quota import CombinedQuota
 from app.services.moderation.local_filter import check_text
 from app.services.text_input import TextTooLongError, TextTooShortError, prepare_text
 from app.services.url_guard import (
@@ -357,23 +358,18 @@ async def _analyze(
         agency_checks, agencies_failed = await _search_agencies(tools, data)
         data = replace(data, agency_checks=agency_checks)
 
-    async def release() -> None:
-        # Nenhuma requisição chegou ao Google (todos no limite por minuto): a unidade volta.
-        await repo.release_gemini("checagem")
-
-    async def reserve() -> bool:
-        # A cota só é gasta depois que o conteúdo foi lido (link ilegível não gasta), e a
-        # cada tentativa real de chamada ao modelo.
-        return await repo.reserve_gemini("checagem", settings.daily_gemini_checks)
+    # A cota só é gasta depois que o conteúdo foi lido (link ilegível não gasta), e só quando
+    # um modelo é de fato chamado: global + modelo numa transação (gemini_quota).
+    quota = CombinedQuota(repo, "checagem", settings.daily_gemini_checks)
 
     try:
         with timer.stage("gemini"):
             result = await tools.analyzer.analyze(
                 data,
-                reserve,
-                release,
-                model_budget=repo.reserve_gemini_model,
-                model_release=repo.release_gemini_model,
+                quota.reserve,
+                quota.release,
+                model_budget=quota.model_budget,
+                model_release=quota.model_release,
             )
     except GeminiContentBlockedError as exc:
         # Recusa de segurança do modelo: tentar de novo dá no mesmo, e uma página pública
@@ -445,12 +441,11 @@ async def _agencies_only(
     data, started = job.data, job.started
     try:
         with timer.stage("db"):
-            retry = await repo.convert_to_lookup(
-                started.request_id, job.user_id, settings.limits.lookups_per_hour
-            )
-            if retry is not None:
-                raise _limit_error(LimitExceededError("consultas", retry))
-            saved = await repo.save_result(
+            # Vira consulta e grava numa transação só (~0,7 s a menos que em duas).
+            saved = await repo.save_lookup_result(
+                started.request_id,
+                job.user_id,
+                settings.limits.lookups_per_hour,
                 NewCheck(
                     subject=started.subject,
                     user_id=job.user_id,
@@ -465,8 +460,10 @@ async def _agencies_only(
                     published_at=job.published_at,
                     claim_token=job.claim_token,
                     prompt_version=AGENCIES_ONLY_VERSION,
-                )
+                ),
             )
+            if isinstance(saved, int):
+                raise _limit_error(LimitExceededError("consultas", saved))
     except BaseException:
         # Nada salvo: o pedido não conta em limite nenhum (o finally de _run_check solta o
         # claim). shield: termina mesmo se a requisição foi cancelada.

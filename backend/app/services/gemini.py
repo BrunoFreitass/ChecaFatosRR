@@ -642,6 +642,17 @@ _MODEL_RELEASE: ContextVar[ModelRelease | None] = ContextVar("gemini_model_relea
 REFUNDED_STATUS = frozenset({500, 503})
 
 
+class GlobalQuotaRefusedError(Exception):
+    """A cota GLOBAL do dia (GEMINI_DAILY_*) acabou, descoberta na reserva junto com a do
+    modelo. Não é falta de cota do modelo: atravessa a cadeia sem marcar o modelo como "sem
+    cota" (ModelChain não a trata) e vira "sem cota" para quem chamou."""
+
+
+class GlobalQuotaUnavailableError(GlobalQuotaRefusedError):
+    """O banco falhou na reserva da cota global: sem poder contar, a IA não é chamada (a cota
+    global nunca é furada). Checagem: "sem cota"; moderação: fail-open "indisponivel"."""
+
+
 class GeminiRateLimitedError(GeminiUnavailableError):
     """Todos os modelos no limite por minuto (RPM): a checagem responde na hora no modo
     "só agências", sem esperar o minuto virar. called=False: nenhuma requisição chegou ao
@@ -1112,6 +1123,9 @@ class GeminiAnalyzer:
                     raw = await self._generate(prompt)
             except TimeoutError as exc:
                 raise GeminiUnavailableError("orçamento de tempo esgotado") from exc
+            except GlobalQuotaRefusedError:
+                # Cota global acabou na reserva junto com a do modelo: "sem cota", como antes.
+                raise GeminiQuotaExhaustedError from None
             except GeminiRateLimitedError as exc:
                 # Outra checagem ocupou o minuto entre o pré-check e a chamada: nada chegou
                 # ao Google, então a unidade da cota diária volta (36/dia é apertado).
@@ -1188,6 +1202,8 @@ async def _within_daily_budget(model: str, rpd: int) -> date | bool | None:
         # shield: o teto da tentativa não cancela a transação no meio (a sessão do banco é a
         # mesma das gravações seguintes da checagem).
         return await asyncio.shield(budget(model, rpd))
+    except GlobalQuotaRefusedError:
+        raise
     except Exception:
         logger.warning("gemini_model_budget_failed", extra={"model": model}, exc_info=True)
         return True

@@ -44,6 +44,15 @@ class FakeModerator:
         self.calls.append(body)
         if not await reserve():
             return AiUnavailable("sem_cota")
+        # Como o moderador real: reserva a cota do modelo antes de chamá-lo.
+        if model_budget is not None:
+            from app.services.gemini import GlobalQuotaRefusedError
+
+            try:
+                if not await model_budget("gemini-3.1-flash-lite", 500):
+                    return AiUnavailable("sem_cota")
+            except GlobalQuotaRefusedError:
+                return AiUnavailable("sem_cota")
         return self.answer
 
 
@@ -1112,3 +1121,30 @@ async def test_listing_comments_of_a_check_is_one_transaction(api: Api) -> None:
 
     assert listed.status_code == 200 and len(listed.json()["items"]) == 1
     assert len(begins) == 1
+
+
+async def test_posting_a_comment_on_a_check_uses_three_transactions(api: Api) -> None:
+    """Antes, 5 transações (~0,7 s cada entre Virginia e São Paulo): checagem alvo, limites,
+    cota global, cota do modelo e gravação. Agora 3: alvo + limites, as duas cotas, gravação."""
+    from sqlalchemy import event
+
+    from app.db import get_engine
+
+    author = await member(api)
+    api.as_user(author)
+    check_id = await link_check(api, author)
+
+    begins: list[object] = []
+
+    def count(conn: object) -> None:
+        begins.append(conn)
+
+    engine = get_engine().sync_engine
+    event.listen(engine, "begin", count)
+    try:
+        response = await post(api, "Comentário com poucas idas ao banco.", checagem=check_id)
+    finally:
+        event.remove(engine, "begin", count)
+
+    assert response.status_code == 201
+    assert len(begins) == 3
