@@ -172,6 +172,9 @@ class Settings(BaseSettings):
     db_pool_max_overflow: int = Field(default=2, ge=0, le=10)
     db_pool_timeout_seconds: float = Field(default=8, gt=0, le=30)
 
+    # Validadores: a mensagem de erro diz o motivo e o nome da variável, NUNCA o valor de um campo
+    # secreto (hide_input_in_errors esconde a entrada, mas não o que o validador escreve).
+
     @field_validator("log_level", mode="before")
     @classmethod
     def _upper_log_level(cls, value: object) -> object:
