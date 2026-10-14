@@ -26,25 +26,22 @@ export function Layout() {
           >
             ChecaFatos<span className="text-brand-700">RR</span>
           </Link>
-          <nav
-            aria-label="Principal"
-            className="-mx-2 flex min-w-0 flex-wrap items-center sm:mx-0 sm:gap-1"
-          >
+          <nav aria-label="Principal" className="-mx-2 flex min-w-0 flex-wrap items-center sm:mx-0 sm:gap-1">
             <Link
               to="/apuracao"
-              className="inline-flex min-h-11 items-center rounded-md px-2 text-sm sm:px-3 font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand-700"
+              className="inline-flex min-h-11 items-center rounded-md px-2 sm:px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand-700"
             >
               Apuração
             </Link>
             <Link
               to="/ultimas"
-              className="inline-flex min-h-11 items-center rounded-md px-2 text-sm sm:px-3 font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand-700"
+              className="inline-flex min-h-11 items-center rounded-md px-2 sm:px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand-700"
             >
               Últimas
             </Link>
             <Link
               to="/comunidade"
-              className="inline-flex min-h-11 items-center rounded-md px-2 text-sm sm:px-3 font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand-700"
+              className="inline-flex min-h-11 items-center rounded-md px-2 sm:px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand-700"
             >
               Comunidade
             </Link>
@@ -53,24 +50,14 @@ export function Layout() {
         </div>
       </header>
 
-      <main
-        id={MAIN_ID}
-        tabIndex={-1}
-        className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 outline-none"
-      >
+      <main id={MAIN_ID} tabIndex={-1} className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 outline-none">
         <Outlet />
       </main>
 
       <footer className="border-t border-slate-200 bg-white">
         <div className="mx-auto max-w-5xl space-y-2 px-4 py-4 text-sm text-slate-600">
-          <p>
-            Projeto apartidário de combate à desinformação nas eleições ·
-            Roraima
-          </p>
-          <nav
-            aria-label="Informações legais"
-            className="flex flex-wrap gap-x-4"
-          >
+          <p>Projeto apartidário de combate à desinformação nas eleições · Roraima</p>
+          <nav aria-label="Informações legais" className="flex flex-wrap gap-x-4">
             <Link to="/termos" className={FOOTER_LINK}>
               Termos de Uso
             </Link>
