@@ -51,3 +51,19 @@ test("o beacon do Web Analytics carrega e envia sem violar a CSP", async ({ page
   await page.waitForFunction(() => (window as unknown as { __beaconSent?: boolean }).__beaconSent);
   expect(sent).toBe(true);
 });
+
+test("script de outro host continua bloqueado pela CSP", async ({ page }) => {
+  // Sem este caso, um script-src * também passaria no teste acima.
+  await page.route("https://outro-host.example.com/**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/javascript", body: "window.__evil = true;" }),
+  );
+  await page.goto("/");
+
+  await expect(page.addScriptTag({ url: "https://outro-host.example.com/x.js" })).rejects.toThrow();
+  await expect
+    .poll(() => cspViolations.get(page) ?? [])
+    .toEqual([expect.stringContaining("outro-host.example.com")]);
+  expect(await page.evaluate(() => (window as unknown as { __evil?: boolean }).__evil)).toBeUndefined();
+  cspViolations.get(page)?.splice(0); // violação esperada: não derruba o afterEach
+});
+

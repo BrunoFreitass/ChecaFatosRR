@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { assertBuildEnv, buildCsp, injectCsp } from "./csp.ts";
 
-const PROD = { apiUrl: "https://checafatosrr-api-abc-rj.a.run.app", supabaseUrl: "https://abcd.supabase.co" };
+const PROD = { apiUrl: "https://checafatosrr-api.onrender.com", supabaseUrl: "https://abcd.supabase.co" };
 
 describe("buildCsp", () => {
   it("só libera o próprio site, a API e o Supabase", () => {
@@ -11,7 +11,7 @@ describe("buildCsp", () => {
     expect(csp).toContain("script-src 'self'");
     expect(csp).toContain("style-src 'self'");
     expect(csp).toContain(
-      "connect-src 'self' https://checafatosrr-api-abc-rj.a.run.app https://abcd.supabase.co",
+      "connect-src 'self' https://checafatosrr-api.onrender.com https://abcd.supabase.co",
     );
     expect(csp).toContain("frame-ancestors 'none'");
     expect(csp).toContain("object-src 'none'");
@@ -23,7 +23,7 @@ describe("buildCsp", () => {
     const csp = buildCsp(PROD);
     expect(csp).toContain("script-src 'self' https://static.cloudflareinsights.com;");
     expect(csp).toContain(
-      "connect-src 'self' https://checafatosrr-api-abc-rj.a.run.app https://abcd.supabase.co https://cloudflareinsights.com;",
+      "connect-src 'self' https://checafatosrr-api.onrender.com https://abcd.supabase.co https://cloudflareinsights.com;",
     );
   });
 

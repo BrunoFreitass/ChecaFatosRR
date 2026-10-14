@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 describe("Política de Privacidade", () => {
-  it("informa as estatísticas de visitas do Cloudflare Web Analytics, sem cookies", () => {
+  it("informa as estatísticas de visitas do Cloudflare Web Analytics: IP, sem cookies, agregadas", () => {
     render(
       <MemoryRouter>
         <Privacidade />
@@ -21,7 +21,8 @@ describe("Política de Privacidade", () => {
     );
 
     const item = screen.getByText(/Cloudflare Web Analytics/);
-    expect(item.textContent).toMatch(/sem cookies/);
+    expect(item.textContent).toMatch(/não usa cookies/);
+    expect(item.textContent).toMatch(/endereço IP/);
     expect(item.textContent).toMatch(/contagens agregadas/);
   });
 });

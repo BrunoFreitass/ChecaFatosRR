@@ -74,9 +74,10 @@ export function Privacidade() {
         <li>Render (servidores nos Estados Unidos): servidor da aplicação.</li>
         <li>Cloudflare: hospedagem do site.</li>
         <li>
-          Cloudflare Web Analytics: estatísticas de visitas ao site, operadas pela Cloudflare, sem
-          cookies e só com contagens agregadas (páginas vistas, país, navegador). Não identifica
-          você nem acompanha o seu uso.
+          Cloudflare Web Analytics: estatísticas de visitas ao site, operadas pela Cloudflare. Para
+          contar as visitas, a Cloudflare recebe o endereço IP e dados técnicos do acesso (página,
+          país, navegador), mas não usa cookies nem cria perfil individual de quem visita; nós só
+          vemos contagens agregadas. Base legal: legítimo interesse (saber quanto o site é usado).
         </li>
         <li>
           Google Gemini (inteligência artificial): recebe o texto dos links checados, das mensagens
