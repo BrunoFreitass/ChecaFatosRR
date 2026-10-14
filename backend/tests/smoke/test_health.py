@@ -121,3 +121,59 @@ def test_ready_hits_the_database_once_per_minute(
         body = client.get("/health/ready").json()
         assert body == {"status": "ok", "database": "ok", "schema": "ok"}
     assert calls == [1]
+
+
+# ---------- HEAD (o UptimeRobot grátis só faz HEAD; antes era 405, 14/10/2026) ----------
+
+
+def test_head_health_is_200_without_body(client: TestClient) -> None:
+    response = client.head("/health")
+
+    assert response.status_code == 200
+    assert response.content == b""
+    assert response.headers["x-request-id"]
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["content-security-policy"]
+
+
+def test_head_ready_is_200_when_the_database_and_schema_are_ok(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.routers import health
+
+    async def probe() -> None:
+        return None
+
+    monkeypatch.setattr(health, "probe_database", probe)
+    response = client.head("/health/ready")
+
+    assert response.status_code == 200
+    assert response.content == b""
+
+
+def test_head_ready_is_503_without_database(client: TestClient) -> None:
+    response = client.head("/health/ready")
+
+    assert response.status_code == 503
+    assert response.content == b""
+
+
+def test_head_ready_is_503_with_outdated_schema(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.routers import health
+
+    async def probe() -> None:
+        raise health.SchemaOutdatedError(["20991231000000_futura"])
+
+    monkeypatch.setattr(health, "probe_database", probe)
+
+    assert client.head("/health/ready").status_code == 503
+    get = client.get("/health/ready")  # mesmo status no GET, com o corpo de sempre
+    assert get.status_code == 503
+    assert get.json()["error"]["code"] == "schema_desatualizado"
+
+
+def test_other_methods_are_still_405(client: TestClient) -> None:
+    assert client.post("/health").status_code == 405
+    assert client.delete("/health/ready").status_code == 405

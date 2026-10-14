@@ -100,13 +100,18 @@ async def probe_database() -> None:
         raise SchemaOutdatedError(missing)
 
 
-@router.get("/health")
+# GET e HEAD: o UptimeRobot grátis só faz HEAD (antes, 405). Mesmo status do GET; o corpo
+# do HEAD é descartado pelo servidor HTTP (uvicorn).
+HEALTH_METHODS = ["GET", "HEAD"]
+
+
+@router.api_route("/health", methods=HEALTH_METHODS)
 async def health() -> dict[str, str]:
     """Liveness: não toca no banco (usado pelo Render/Cloud Run e pelo monitor)."""
     return {"status": "ok"}
 
 
-@router.get("/health/ready")
+@router.api_route("/health/ready", methods=HEALTH_METHODS)
 async def ready(request: Request) -> dict[str, str]:
     """Readiness: o banco responde e tem todas as migrations (em cache: READY_OK_SECONDS)."""
     cache: ReadyCache = request.app.state.ready_cache
