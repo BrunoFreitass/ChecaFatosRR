@@ -10,11 +10,14 @@ import {
   NEUTRAL_OTHER,
   NO_DATA,
   rankedCandidates,
+  standingOf,
+  TIE,
   toneOf,
   UF_NAMES,
   type MapaResponse,
   type MapaResultado,
 } from "../lib/mapa.ts";
+import { formatDateTime } from "../lib/format.ts";
 import { MAPA_UF, MAPA_VIEWBOX } from "../lib/mapaUf.ts";
 import { formatPct, POLL_MS, POLL_SLACK_MS } from "../lib/tse.ts";
 
@@ -88,6 +91,7 @@ export default function MapaApuracao() {
     const leader = leaderOf(e.resultado);
     return leader !== null && colorOf(leader.numero, data.cores) === undefined;
   });
+  const hasTie = data.estados.some((e) => standingOf(e.resultado).kind === "tie");
 
   function onKey(event: KeyboardEvent<SVGPathElement>, uf: string) {
     if (event.key !== "Enter" && event.key !== " ") return;
@@ -163,6 +167,12 @@ export default function MapaApuracao() {
             Outro candidato à frente
           </li>
         )}
+        {hasTie && (
+          <li className="flex items-center gap-2">
+            <Swatch color={TIE} />
+            Empate
+          </li>
+        )}
         <li className="flex items-center gap-2">
           <Swatch color={NO_DATA} />
           Sem dados
@@ -213,6 +223,11 @@ function Detail({ uf, result }: { uf: string; result: MapaResultado | null }) {
         ))}
       </ul>
       <p>Urnas apuradas: {formatPct(result.secoes_pct)}</p>
+      {result.totalizado_em && (
+        <p className="text-slate-600">
+          Atualizado em {formatDateTime(result.totalizado_em)} (horário de Boa Vista)
+        </p>
+      )}
     </div>
   );
 }
@@ -233,12 +248,15 @@ function StatesTable({ data }: { data: MapaResponse }) {
         <tbody>
           {data.estados.map(({ uf, resultado }) => {
             const ranked = rankedCandidates(resultado);
+            const standing = standingOf(resultado);
             return (
               <tr key={uf} className="border-t border-slate-100">
                 <th scope="row" className="font-normal">
                   {UF_NAMES[uf] ?? uf.toUpperCase()}
                 </th>
-                <td>{ranked[0]?.nome ?? "Sem dados"}</td>
+                <td>
+                  {standing.kind === "lead" ? standing.leader.nome : standing.kind === "tie" ? "Empate" : "Sem dados"}
+                </td>
                 <td>
                   {ranked.length
                     ? ranked

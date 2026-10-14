@@ -57,8 +57,29 @@ export function rankedCandidates(result: MapaResultado | null): MapaCandidato[] 
     .sort((a, b) => (b.pct ?? 0) - (a.pct ?? 0));
 }
 
+/** Empate exato (raro, mas não pode ganhar a cor de ninguém). */
+export const TIE = "#94a3b8";
+
+export type Standing =
+  | { kind: "none" }
+  | { kind: "tie" }
+  | { kind: "lead"; leader: MapaCandidato; margin: number };
+
+/**
+ * Quem está à frente. Sem seções apuradas, sem voto ou com menos de dois percentuais = sem
+ * dados (antes de apurar, o TSE manda todos com 0% e a ordem da API não pode virar cor).
+ */
+export function standingOf(result: MapaResultado | null): Standing {
+  const [first, second] = rankedCandidates(result);
+  if (!result?.secoes_pct || !first || !second || !first.pct) return { kind: "none" };
+  const margin = (first.pct ?? 0) - (second.pct ?? 0);
+  if (margin <= 0) return { kind: "tie" };
+  return { kind: "lead", leader: first, margin };
+}
+
 export function leaderOf(result: MapaResultado | null): MapaCandidato | null {
-  return rankedCandidates(result)[0] ?? null;
+  const standing = standingOf(result);
+  return standing.kind === "lead" ? standing.leader : null;
 }
 
 /** Cor configurada para o número; "constructor" e afins não contam (só chaves próprias). */
@@ -71,12 +92,12 @@ function tonesOf(color: string | undefined): readonly string[] | undefined {
 }
 
 export function fillFor(result: MapaResultado | null, cores: Record<string, string>): string {
-  const [first, second] = rankedCandidates(result);
-  if (!first) return NO_DATA;
-  const tones = tonesOf(colorOf(first.numero, cores));
+  const standing = standingOf(result);
+  if (standing.kind === "none") return NO_DATA;
+  if (standing.kind === "tie") return TIE;
+  const tones = tonesOf(colorOf(standing.leader.numero, cores));
   if (!tones) return NEUTRAL_OTHER;
-  const margin = (first.pct ?? 0) - (second?.pct ?? 0);
-  return tones[marginBand(margin)] ?? NEUTRAL_OTHER;
+  return tones[marginBand(standing.margin)] ?? NEUTRAL_OTHER;
 }
 
 /** Tom da legenda (faixa intermediária) de uma cor configurada. */

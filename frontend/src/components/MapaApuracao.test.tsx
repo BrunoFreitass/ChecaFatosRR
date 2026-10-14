@@ -38,7 +38,7 @@ function resposta() {
               ],
               secoes_pct: 87.25,
               final: false,
-              totalizado_em: null,
+              totalizado_em: null as string | null,
             },
     })),
   };
@@ -125,6 +125,31 @@ describe("MapaApuracao", () => {
     fireEvent.keyDown(roraima, { key: "Enter" });
     expect(screen.getByRole("status").textContent).toMatch(/Roraima/);
     expect(roraima.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("detalhe mostra quando o TSE atualizou o estado (horário de Boa Vista)", async () => {
+    const data = resposta();
+    const rr = data.estados.find((e) => e.uf === "rr")?.resultado;
+    if (rr) rr.totalizado_em = "2026-10-25T19:30:00-03:00";
+    api.apiFetch.mockResolvedValue(data);
+    render(<MapaApuracao />);
+    await screen.findByRole("group", { name: /Mapa do Brasil/ });
+
+    fireEvent.click(screen.getByRole("button", { name: "Roraima" }));
+    expect(screen.getByRole("status").textContent).toMatch(/Atualizado em 25\/10\/2026 às 18:30/);
+  });
+
+  it("empate aparece como empate na tabela e na legenda", async () => {
+    const data = resposta();
+    const rr = data.estados.find((e) => e.uf === "rr")?.resultado;
+    if (rr) for (const c of rr.candidatos) c.pct = 50;
+    api.apiFetch.mockResolvedValue(data);
+    render(<MapaApuracao />);
+    await screen.findByRole("group", { name: /Mapa do Brasil/ });
+
+    const linha = within(screen.getByRole("table")).getByText("Roraima").closest("tr");
+    expect(linha?.textContent).toMatch(/Empate/);
+    expect(screen.getByRole("list", { name: "Legenda do mapa" }).textContent).toMatch(/Empate/);
   });
 
   it("passar o mouse não muda o detalhe (região viva sem ruído)", async () => {

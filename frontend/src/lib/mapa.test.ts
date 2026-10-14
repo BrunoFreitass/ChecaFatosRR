@@ -8,6 +8,8 @@ import {
   NEUTRAL_OTHER,
   NO_DATA,
   rankedCandidates,
+  standingOf,
+  TIE,
   UF_NAMES,
 } from "./mapa.ts";
 
@@ -85,6 +87,25 @@ describe("mapa: cores e faixas", () => {
 
   it("ordena os candidatos por percentual, sem depender da ordem da API", () => {
     expect(rankedCandidates(resultado(30, 70)).map((c) => c.pct)).toEqual([70, 30]);
+  });
+
+  it("nada apurado (tudo 0%, seções 0) fica sem dados, nunca na cor de quem veio primeiro", () => {
+    const zerado = { ...resultado(0, 0), secoes_pct: 0 };
+    expect(fillFor(zerado, CORES)).toBe(NO_DATA);
+    expect(leaderOf(zerado)).toBeNull();
+    expect(fillFor({ ...resultado(60, 40), secoes_pct: null }, CORES)).toBe(NO_DATA);
+  });
+
+  it("só um candidato com percentual não vira vitória folgada", () => {
+    const um = { ...resultado(60, 40), candidatos: [{ numero: "13", nome: "LULA", pct: 60 }] };
+    expect(fillFor(um, CORES)).toBe(NO_DATA);
+  });
+
+  it("empate exato fica cinza de empate, sem líder", () => {
+    const empate = resultado(50, 50);
+    expect(fillFor(empate, CORES)).toBe(TIE);
+    expect(leaderOf(empate)).toBeNull();
+    expect(standingOf(empate).kind).toBe("tie");
   });
 
   it("número com nome de propriedade do objeto não vira cor", () => {
