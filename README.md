@@ -7,7 +7,7 @@ O site também mostra a apuração oficial do TSE.
 ## Estrutura
 
 ```
-backend/     API FastAPI (Python 3.12) — Cloud Run (Render como plano B)
+backend/     API FastAPI (Python 3.12) — Render (Cloud Run como plano B)
 frontend/    React + Vite + Tailwind — Cloudflare Pages
 supabase/    migrations/ (esquema do banco) · manual/ (SQL aplicado à mão)
 docs/        DEPLOY.md

@@ -33,11 +33,13 @@ export function buildCsp({ apiUrl, supabaseUrl }: CspInput): string {
   const supabase = origin("VITE_SUPABASE_URL", supabaseUrl);
   return [
     "default-src 'self'",
-    "script-src 'self'",
+    // Cloudflare Web Analytics (14/10/2026): o beacon vem deste host; sem cookies.
+    "script-src 'self' https://static.cloudflareinsights.com",
     "style-src 'self'",
     "img-src 'self' data:",
     "font-src 'self'",
-    `connect-src 'self' ${api} ${supabase}`,
+    // O beacon envia para o próprio site (injeção automática) ou para cloudflareinsights.com.
+    `connect-src 'self' ${api} ${supabase} https://cloudflareinsights.com`,
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",

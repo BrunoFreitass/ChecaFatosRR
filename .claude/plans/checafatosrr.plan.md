@@ -384,6 +384,10 @@ Plano: `.claude/plans/etapa-2-checagem.plan.md`. Mudanças em relação a este p
 - A partir de 22/10: prompt da IA congelado (ver §12).
 - Em 25/10 (2º turno): nenhum deploy.
 
+**Exceções ao congelamento (aprovadas pelo usuário em 14/10/2026; plano em `mapa-e-painel-admin.plan.md`, aguardando aprovação do plano):**
+- **A) Mapa do Brasil na Apuração:** as 27 UFs coloridas pelo líder, com a margem, um painel de detalhe e uma tabela acessível. Usa a tabela nova `tse_uf_snapshots` (migration), a chave `TSE_MAPA_ENABLED` e não mexe no Gemini. Prazo: **18/10**, validado no ensaio com `TSE_ELECTION_CODE=6257`.
+- **B) Painel mínimo do admin** (só leitura, agregados, sem rastrear tempo por pessoa), mais o Cloudflare Web Analytics, com ajuste na CSP. Prazo: **20/10**. Se apertar, B é cortado antes de A.
+
 **Pós-eleição (decidido NÃO fazer antes de 25/10):**
 - Função PL/pgSQL para o `begin_check`: faria os 3 comandos (lock do usuário + assunto; uso, cache e claim; pedido + claim) numa só chamada. Cada comando interno teria o próprio snapshot, então a garantia dos limites por conta se mantém. Medido localmente em 13/10, a 100–120 ms por ida e volta: `begin_check` ~1,55 s e `db_ms` ~2,3 s no caminho normal. A estimativa com a função é `begin_check` ~0,7 s e `db_ms` ~1,4 s.
   - **Por que fica para depois:** o ganho (~0,9 s numa checagem de 5–30 s) não justifica o risco nos limites por conta, nem uma migration a 12 dias do 2º turno.
