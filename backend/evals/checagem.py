@@ -3,7 +3,7 @@
 Uso (em backend/):
   python -m evals.checagem --replay evals/gravacoes/<arquivo>.json
       Reavalia respostas JÁ gravadas com a pós-validação atual. Não chama nada.
-  CHECAFATOS_EVAL_REAL=1 python -m evals.checagem --real --casos id1,id2,id3
+  CHECAFATOS_EVAL_REAL=1 CHECAFATOS_DOTENV=1 python -m evals.checagem --real --casos id1,id2,id3
       Chama o Gemini de verdade. Regra do projeto: só com autorização do usuário, no máximo
       3 chamadas por rodada (travado aqui: 3 casos, 1 modelo, sem novas tentativas, e uma
       reserva por chamada). Grava as respostas em evals/gravacoes/ para replay depois.
@@ -281,10 +281,11 @@ def budget_reserve(limit: int) -> tuple[Callable[[], Awaitable[bool]], Callable[
 async def run_real(cases: list[Case]) -> tuple[list[CaseResult], dict[str, str], int]:
     # A trava fica aqui (não só na CLI): quem chamar run_real direto também passa por ela.
     require_real_run([c.id for c in cases])
-    from app.config import Settings
+    from app.config import get_settings
     from app.services.gemini import google_generate
 
-    settings = Settings()  # nunca imprimir: carrega a chave
+    # Chave do ambiente, ou do arquivo local só com CHECAFATOS_DOTENV=1. Nunca imprimir.
+    settings = get_settings()
     if not settings.gemini_api_key:
         raise RealRunRefusedError("GEMINI_API_KEY ausente.")
     chain = google_generate(
