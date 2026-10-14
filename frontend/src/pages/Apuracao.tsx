@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent } from "react";
 
 import { Loading } from "../components/Loading.tsx";
 import { ApiError, apiFetch } from "../lib/api.ts";
@@ -15,6 +15,9 @@ import {
   type TseResult,
   type TseScope,
 } from "../lib/tse.ts";
+
+// Chunk separado: o contorno dos estados (~20 KB) não entra no bundle principal.
+const MapaApuracao = lazy(() => import("../components/MapaApuracao.tsx"));
 
 const SCOPES: TseScope[] = ["br", "rr"];
 const LINK_CLASS = "font-semibold text-brand-700 underline break-words";
@@ -185,6 +188,9 @@ export function Apuracao() {
               {scope === item && <ScopePanel result={resultOf(item)} />}
             </div>
           ))}
+          <Suspense fallback={null}>
+            <MapaApuracao />
+          </Suspense>
         </>
       )}
 

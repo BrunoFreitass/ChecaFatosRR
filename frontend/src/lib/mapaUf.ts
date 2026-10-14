@@ -1,6 +1,6 @@
-// Gerado por frontend/scripts/mapa_uf.py. Não edite à mão.
-// Fonte: Natural Earth, Admin 1 – States, Provinces, 1:50m.
-// Licença: domínio público (https://www.naturalearthdata.com/about/terms-of-use/).
+// Gerado por frontend/scripts/mapa_uf.py. NÃ£o edite Ã  mÃ£o.
+// Fonte: Natural Earth, Admin 1 â€“ States, Provinces, 1:50m.
+// LicenÃ§a: domÃ­nio pÃºblico (https://www.naturalearthdata.com/about/terms-of-use/).
 export const MAPA_VIEWBOX = "0 0 600 618";
 export const MAPA_UF: Record<string, string> = {
   ac: "M112.9,240.6 100.8,248.0 96.1,252.6 90.8,252.9 87.1,257.3 80.7,259.6 78.9,257.8 73.1,256.9 61.9,256.5 56.0,258.7 53.1,256.8 51.4,257.8 51.5,239.0 53.0,232.9 42.3,241.3 28.5,241.9 24.8,234.0 12.1,232.5 15.8,227.9 15.7,225.8 6.9,215.6 3.5,209.1 4.3,206.7 0.0,203.1 0.6,200.3 4.3,199.2 3.1,196.1 20.5,203.7 55.5,212.6Z",

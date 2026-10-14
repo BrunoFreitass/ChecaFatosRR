@@ -20,6 +20,12 @@ vi.mock("../lib/api.ts", () => ({
   apiFetch: api.apiFetch,
 }));
 
+// O mapa tem os próprios testes (MapaApuracao.test.tsx) e consulta /tse/mapa por conta própria;
+// aqui só importa que a página o carrega sob demanda.
+vi.mock("../components/MapaApuracao.tsx", () => ({
+  default: () => <p>mapa carregado</p>,
+}));
+
 const CANDIDATE_A: TseCandidate = { numero: "22", nome: "CANDIDATO A", partido: "PA", vice: "VICE A", votos: 56104503, pct: 52.63, situacao: "", eleito: false };
 const CANDIDATE_B: TseCandidate = { numero: "13", nome: "CANDIDATO B", partido: "PB", vice: "VICE B", votos: 900, pct: 47.37, situacao: "", eleito: false };
 
@@ -255,5 +261,12 @@ describe("Apuracao", () => {
     expect(api.apiFetch).toHaveBeenCalledTimes(2);
     await act(async () => release(response(result())));
   });
-});
 
+  it("carrega o mapa por estado sob demanda, depois do resultado", async () => {
+    api.apiFetch.mockResolvedValue(response(result()));
+    renderPage();
+
+    expect(await screen.findByText("mapa carregado")).toBeTruthy();
+    expect(api.apiFetch).toHaveBeenCalledTimes(1); // só /tse/resultado; o mapa faz a sua
+  });
+});
