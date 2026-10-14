@@ -18,29 +18,30 @@ export function Layout() {
       <RouteFocus targetId={MAIN_ID} />
 
       <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-5xl items-center justify-between gap-2 px-4">
+        {/* flex-wrap: em celular estreito o menu desce para a linha de baixo (sem rolagem lateral). */}
+        <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-x-2 px-4">
           <Link
             to="/"
             className="inline-flex min-h-12 items-center text-lg font-bold tracking-tight focus-visible:outline-2 focus-visible:outline-brand-700"
           >
             ChecaFatos<span className="text-brand-700">RR</span>
           </Link>
-          <nav aria-label="Principal" className="flex items-center gap-1">
+          <nav aria-label="Principal" className="-mx-2 flex min-w-0 flex-wrap items-center sm:mx-0 sm:gap-1">
             <Link
               to="/apuracao"
-              className="inline-flex min-h-11 items-center rounded-md px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand-700"
+              className="inline-flex min-h-11 items-center rounded-md px-2 sm:px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand-700"
             >
               Apuração
             </Link>
             <Link
               to="/ultimas"
-              className="inline-flex min-h-11 items-center rounded-md px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand-700"
+              className="inline-flex min-h-11 items-center rounded-md px-2 sm:px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand-700"
             >
               Últimas
             </Link>
             <Link
               to="/comunidade"
-              className="inline-flex min-h-11 items-center rounded-md px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand-700"
+              className="inline-flex min-h-11 items-center rounded-md px-2 sm:px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand-700"
             >
               Comunidade
             </Link>
