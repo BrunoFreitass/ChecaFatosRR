@@ -312,6 +312,45 @@ async def test_expired_value_is_served_at_once_while_one_background_refresh_runs
     assert await cache.get(loads.read, loads.refresh) == "tse2"
 
 
+async def test_slow_refresh_counts_the_ttl_from_its_end() -> None:
+    now = [0.0]
+    loads = Loads()
+    cache: TseCache[str] = TseCache(ttl=5.0, clock=lambda: now[0])
+    await cache.get(loads.read, loads.refresh)
+    await cache.idle()
+
+    now[0] = 6.0
+    loads.gate = asyncio.Event()
+    await cache.get(loads.read, loads.refresh)  # dispara a recarga
+    await asyncio.sleep(0)
+    now[0] = 20.0  # a recarga levou 14 s (TSE lento)
+    loads.gate.set()
+    await cache.idle()
+    await cache.get(loads.read, loads.refresh)  # logo depois: ainda dentro do TTL
+    await cache.idle()
+
+    assert loads.refreshes == 2
+
+
+async def test_save_failure_in_one_scope_keeps_the_other(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    repo, tse = FakeRepo(), FakeClient()
+    original = repo.save
+
+    async def broken_br(scope: str, payload: dict[str, Any], tse_updated_at: Any) -> None:
+        if scope == "br":
+            raise RuntimeError("banco recusou")
+        await original(scope, payload, tse_updated_at)
+
+    repo.save = broken_br  # type: ignore[method-assign]
+    with caplog.at_level(logging.ERROR, logger="app.services.tse.service"):
+        results = await load_results(repo, tse, SETTINGS)
+
+    assert [r.resultado is not None for r in results] == [False, True]
+    assert "tse_save_failed" in [r.getMessage() for r in caplog.records]
+
+
 async def test_fresh_value_does_not_start_a_refresh() -> None:
     now = [0.0]
     loads = Loads()

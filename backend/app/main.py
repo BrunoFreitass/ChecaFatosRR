@@ -21,11 +21,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        # Recarga do TSE em segundo plano ainda rodando: espera um pouco antes de fechar o banco.
-        for cache in (app.state.tse_cache, app.state.tse_map_cache):
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(cache.idle(), timeout=5)
-        await dispose_engine()
+        try:
+            # Recarga do TSE em segundo plano ainda rodando: espera até 5 s antes de fechar o
+            # banco (interrompida no meio, a UF/escopo fica para o próximo intervalo do claim).
+            caches = [getattr(app.state, n, None) for n in ("tse_cache", "tse_map_cache")]
+            pending = [cache.idle() for cache in caches if cache is not None]
+            with contextlib.suppress(TimeoutError):  # as duas juntas: no máximo 5 s
+                await asyncio.wait_for(asyncio.gather(*pending), timeout=5)
+        finally:
+            await dispose_engine()
 
 
 def create_app() -> FastAPI:

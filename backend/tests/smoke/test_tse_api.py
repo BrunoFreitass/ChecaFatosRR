@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from app.config import get_settings
 from app.repositories.tse import Snapshot
 from app.routers.tse import get_now, get_tse_client, get_tse_repos
+from app.services.tse.client import TseUnavailableError
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "tse" / "br-c0001-e006257-u.json"
 
@@ -219,21 +220,27 @@ def test_server_just_woken_answers_from_the_database_without_waiting_for_the_tse
 
 
 def test_tse_down_keeps_the_last_good_result_with_the_tse_timestamp(
-    api: TestClient, repo: Repo, tse: Tse, monkeypatch: pytest.MonkeyPatch
+    api: TestClient,
+    repo: Repo,
+    tse: Tse,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     before = poll(api).json()["escopos"][0]["resultado"]
-    tse.error = RuntimeError("TSE fora")
+    tse.error = TseUnavailableError("HTTP 503")
 
     async def always(scope: str, stale_seconds: int) -> bool:
         return True  # o refresh venceu: tenta o TSE de novo
 
     monkeypatch.setattr(repo, "claim", always)
     api.app.state.tse_cache._expires_at = float("-inf")  # type: ignore[attr-defined]
-    after = poll(api).json()["escopos"][0]["resultado"]
+    with caplog.at_level(logging.WARNING, logger="app.services.tse.service"):
+        after = poll(api).json()["escopos"][0]["resultado"]
 
     assert after == before
     # "Atualizado em…" continua o horário da totalização do TSE: o dado velho não parece novo.
     assert after["totalizado_em"] == "2026-10-05T12:51:05-03:00"
+    assert "tse_fetch_failed" in [r.getMessage() for r in caplog.records]
 
 
 def test_each_real_tse_fetch_is_logged_with_scope_and_duration(

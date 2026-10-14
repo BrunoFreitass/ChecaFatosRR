@@ -3,7 +3,8 @@
 Mesmo desenho da apuração BR/RR (service.py): busca preguiçosa (só quando alguém pede o mapa),
 sempre em segundo plano (TseCache: o usuário recebe o que está em memória) e claim no banco.
 Aqui o claim é em lote: até TSE_MAPA_LOTE UFs vencidas por recarga, cada UF no máximo 1
-busca a cada TSE_MAPA_REFRESH_SECONDS (com 1 visitante e polling de 60 s, as 27 em ~3 min).
+busca a cada TSE_MAPA_REFRESH_SECONDS (com 1 visitante e polling de 60 s, as 27 buscadas em
+~3 min; como a busca roda depois da resposta, o visitante vê cada lote no polling seguinte).
 Uma UF que falha no TSE fica com o último resumo bom (ou sem dado): nunca derruba as outras.
 O mapa nunca diz "Eleito": não existe eleito por UF na eleição presidencial.
 """

@@ -43,8 +43,12 @@ async def refresh_results(repo: TseRepository, client: TseClient, settings: Sett
     claimed = [s for s in scopes if await repo.claim(s, settings.tse_refresh_seconds)]
     fetched = await asyncio.gather(*(_fetch(client, s) for s in claimed))
     for scope, result in zip(claimed, fetched, strict=True):
-        if result is not None:
+        if result is None:
+            continue
+        try:  # falha ao gravar um escopo não perde o outro
             await repo.save(scope, to_payload(result), result.totalizado_em)
+        except Exception:
+            logger.exception("tse_save_failed", extra={"scope": scope})
 
 
 async def load_results(
@@ -129,6 +133,9 @@ class TseCache[T]:
             self._value = await read()
         except Exception:
             logger.warning("tse_load_failed", exc_info=True)
+        finally:
+            # Conta o TTL a partir do fim: recarga lenta (TSE ou banco) não emenda em outra.
+            self._expires_at = self._clock() + self._ttl
 
     async def idle(self) -> None:
         """Espera a recarga em andamento (testes e desligamento)."""
