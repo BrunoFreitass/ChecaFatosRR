@@ -91,7 +91,7 @@ describe("MapaApuracao", () => {
 
     fireEvent.click(mapa.querySelector('path[data-uf="rr"]') as Element);
 
-    const detalhe = screen.getByRole("region", { name: "Detalhe do estado" });
+    const detalhe = screen.getByRole("region", { name: /^Detalhe/ });
     expect(detalhe.textContent).toMatch(/Roraima/);
     expect(detalhe.textContent).toMatch(/FLAVIO BOLSONARO/);
     expect(detalhe.textContent).toMatch(/60,50%/);
@@ -138,7 +138,7 @@ describe("MapaApuracao", () => {
     const roraima = screen.getByRole("button", { name: "Roraima" });
     expect(roraima.getAttribute("tabindex")).toBe("0");
     fireEvent.keyDown(roraima, { key: "Enter" });
-    expect(screen.getByRole("region", { name: "Detalhe do estado" }).textContent).toMatch(/Roraima/);
+    expect(screen.getByRole("region", { name: /^Detalhe/ }).textContent).toMatch(/Roraima/);
     expect(roraima.getAttribute("aria-pressed")).toBe("true");
   });
 
@@ -151,7 +151,7 @@ describe("MapaApuracao", () => {
     await screen.findByRole("group", { name: /Mapa do Brasil/ });
 
     fireEvent.click(screen.getByRole("button", { name: "Roraima" }));
-    expect(screen.getByRole("region", { name: "Detalhe do estado" }).textContent).toMatch(/Atualizado em 25\/10\/2026 às 18:30/);
+    expect(screen.getByRole("region", { name: /^Detalhe/ }).textContent).toMatch(/Atualizado em 25\/10\/2026 às 18:30/);
   });
 
   it("empate aparece como empate na tabela e na legenda", async () => {
@@ -173,7 +173,7 @@ describe("MapaApuracao", () => {
     const mapa = await screen.findByRole("group", { name: /Mapa do Brasil/ });
 
     fireEvent.mouseEnter(mapa.querySelector('path[data-uf="rr"]') as Element);
-    expect(screen.getByRole("region", { name: "Detalhe do estado" }).textContent).not.toMatch(/Roraima/);
+    expect(screen.getByRole("region", { name: /^Detalhe/ }).textContent).not.toMatch(/Roraima/);
   });
 
   it("tabela e detalhe em ordem de percentual, mesmo se a API mandar fora de ordem", async () => {
@@ -236,8 +236,10 @@ describe("MapaApuracao", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Roraima" }));
 
-    const detalhe = screen.getByRole("region", { name: "Detalhe do estado" });
+    // Foco depois do render: o painel já tem o estado novo e se chama "Detalhe: Roraima".
+    const detalhe = screen.getByRole("region", { name: "Detalhe: Roraima" });
     expect(document.activeElement).toBe(detalhe);
+    expect(detalhe.textContent).toMatch(/FLAVIO BOLSONARO: 60,50%/);
     expect(scrolls.at(-1)).toMatchObject({ behavior: "smooth", block: "nearest" });
   });
 
@@ -247,7 +249,7 @@ describe("MapaApuracao", () => {
     render(<MapaApuracao />);
     await screen.findByRole("group", { name: /Mapa do Brasil/ });
 
-    fireEvent.keyDown(screen.getByRole("button", { name: "Roraima" }), { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "Roraima" }));
     expect(scrolls.at(-1)).toMatchObject({ behavior: "auto" });
   });
 
@@ -260,7 +262,7 @@ describe("MapaApuracao", () => {
     act(() => roraima.focus()); // o Tab do teclado
     expect(document.activeElement).toBe(roraima);
     expect(scrolls).toHaveLength(0);
-    expect(screen.getByRole("region", { name: "Detalhe do estado" }).textContent).toMatch(/Roraima/);
+    expect(screen.getByRole("region", { name: /^Detalhe/ }).textContent).toMatch(/Roraima/);
   });
 
   it("legenda de intensidade: 4 faixas, cada uma com as amostras de cor e o texto", async () => {
@@ -268,7 +270,7 @@ describe("MapaApuracao", () => {
     render(<MapaApuracao />);
     await screen.findByRole("group", { name: /Mapa do Brasil/ });
 
-    const faixas = screen.getByRole("list", { name: /Intensidade da cor/ });
+    const faixas = screen.getByRole("list", { name: /Cor mais forte/ });
     const itens = within(faixas).getAllByRole("listitem");
     expect(itens.map((i) => i.textContent)).toEqual(["até 5 pontos", "5 a 15 pontos", "15 a 30 pontos", "mais de 30 pontos"]);
     for (const item of itens) expect(item.querySelectorAll("svg rect")).toHaveLength(2); // vermelho e azul
@@ -292,5 +294,30 @@ describe("MapaApuracao", () => {
     render(<MapaApuracao />);
     await screen.findByRole("group", { name: /Mapa do Brasil/ });
     expect(screen.queryByText(/será preenchido conforme o TSE/)).toBeNull();
+  });
+
+  it("Enter seleciona e anuncia, mas o foco fica no mapa (não perde o lugar entre os 27)", async () => {
+    api.apiFetch.mockResolvedValue(resposta());
+    render(<MapaApuracao />);
+    await screen.findByRole("group", { name: /Mapa do Brasil/ });
+
+    const roraima = screen.getByRole("button", { name: "Roraima" });
+    act(() => roraima.focus());
+    fireEvent.keyDown(roraima, { key: "Enter" });
+
+    expect(document.activeElement).toBe(roraima);
+    expect(scrolls).toHaveLength(0);
+    expect(screen.getByRole("status").textContent).toBe(
+      "Roraima: FLAVIO BOLSONARO 60,50%, LULA 39,50%; 87,25% das urnas apuradas",
+    );
+  });
+
+  it("navegar com Tab anuncia os números do estado na região viva", async () => {
+    api.apiFetch.mockResolvedValue(resposta());
+    render(<MapaApuracao />);
+    await screen.findByRole("group", { name: /Mapa do Brasil/ });
+
+    act(() => screen.getByRole("button", { name: "Acre" }).focus());
+    expect(screen.getByRole("status").textContent).toBe("Acre: sem dados do TSE ainda");
   });
 });

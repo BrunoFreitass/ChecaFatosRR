@@ -31,6 +31,17 @@ export default function MapaApuracao() {
   const [state, setState] = useState<State>({ kind: "loading" });
   const [selected, setSelected] = useState<string | null>(null);
   const detailRef = useRef<HTMLElement>(null);
+  // Pedido de levar a tela até o detalhe (toque/clique): atendido depois do render, quando o
+  // painel já mostra o estado novo e tem a altura final.
+  const [focusRequest, setFocusRequest] = useState(0);
+
+  useEffect(() => {
+    const detail = detailRef.current;
+    if (focusRequest === 0 || !detail) return;
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    detail.scrollIntoView?.({ behavior: reduce ? "auto" : "smooth", block: "nearest" });
+    detail.focus({ preventScroll: true });
+  }, [focusRequest]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -97,23 +108,18 @@ export default function MapaApuracao() {
   // Antes da apuração o TSE manda tudo zerado (ou nada): o mapa fica cinza e explica por quê.
   const empty = data.estados.every((e) => standingOf(e.resultado).kind === "none");
 
-  /**
-   * Toque, clique, Enter ou espaço: mostra o estado e leva até o detalhe (no celular ele fica
-   * abaixo do mapa). Só o foco via Tab não puxa a tela nem tira o foco do mapa.
-   */
+  /** Toque ou clique: mostra o estado e leva a tela e o foco até o detalhe (no celular, abaixo). */
   function activate(uf: string) {
     setSelected(uf);
-    const detail = detailRef.current;
-    if (!detail) return;
-    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-    detail.scrollIntoView?.({ behavior: reduce ? "auto" : "smooth", block: "nearest" });
-    detail.focus({ preventScroll: true });
+    setFocusRequest((n) => n + 1);
   }
 
+  // Teclado (Tab, Enter, espaço): seleciona e a região viva anuncia, mas o foco fica no mapa
+  // para não perder o lugar entre os 27 estados.
   function onKey(event: KeyboardEvent<SVGPathElement>, uf: string) {
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
-    activate(uf);
+    setSelected(uf);
   }
 
   return (
@@ -168,12 +174,15 @@ export default function MapaApuracao() {
         )}
       </svg>
 
-      {/* Região focável (e não região viva): ao escolher um estado o foco vem para cá e o leitor
-          de tela lê o detalhe uma vez só. */}
+      {/* Resumo para leitor de tela a cada seleção (Tab, Enter ou toque). */}
+      <p role="status" aria-live="polite" className="sr-only">
+        {selected ? summaryOf(selected, byUf.get(selected) ?? null) : ""}
+      </p>
+      {/* Destino do toque: recebe o foco depois do render, já com o estado escolhido. */}
       <section
         ref={detailRef}
         tabIndex={-1}
-        aria-label="Detalhe do estado"
+        aria-label={selected ? `Detalhe: ${UF_NAMES[selected] ?? selected.toUpperCase()}` : "Detalhe do estado"}
         className="min-h-16 scroll-mt-4 rounded-lg bg-slate-50 p-3 text-sm focus:outline-2 focus:outline-brand-700"
       >
         {selected ? (
@@ -213,7 +222,7 @@ export default function MapaApuracao() {
           Cor mais forte = vantagem maior do primeiro sobre o segundo:
         </p>
         <ul
-          aria-label="Intensidade da cor: vantagem do primeiro sobre o segundo"
+          aria-labelledby="mapa-intensidade"
           className="flex flex-wrap gap-x-4 gap-y-2"
         >
           {BAND_LABELS.map((label, band) => (
@@ -237,6 +246,17 @@ export default function MapaApuracao() {
       </p>
     </section>
   );
+}
+
+/** "Roraima: FLAVIO BOLSONARO 71,06%, LULA 22,86%; 100,00% das urnas apuradas". */
+function summaryOf(uf: string, result: MapaResultado | null): string {
+  const name = UF_NAMES[uf] ?? uf.toUpperCase();
+  if (!result) return `${name}: sem dados do TSE ainda`;
+  const top = rankedCandidates(result)
+    .slice(0, 2)
+    .map((c) => `${c.nome} ${formatPct(c.pct)}`)
+    .join(", ");
+  return `${name}: ${top}; ${formatPct(result.secoes_pct)} das urnas apuradas`;
 }
 
 function candidateNames(data: MapaResponse): Map<string, string> {

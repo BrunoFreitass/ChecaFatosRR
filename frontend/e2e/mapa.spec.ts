@@ -108,7 +108,7 @@ test("mapa carrega em chunk separado, colore os estados e mostra o detalhe ao to
   await expect(mapa.locator('path[data-uf="rr"]')).toHaveAttribute("fill", "#2563eb"); // azul, 21 pontos
 
   await mapa.locator('path[data-uf="rr"]').click();
-  const detalhe = page.getByRole("region", { name: "Detalhe do estado" });
+  const detalhe = page.getByRole("region", { name: /^Detalhe/ });
   await expect(detalhe).toContainText("Roraima");
   await expect(detalhe).toContainText("CANDIDATO AZUL: 60,50%");
   await expect(detalhe).toContainText("Urnas apuradas: 87,25%");
@@ -179,7 +179,7 @@ test.describe("celular: Pixel 7 e 360 px", () => {
       await mockApi(page, "on");
       await page.goto("/apuracao");
 
-      const faixas = page.getByRole("list", { name: /Intensidade da cor/ });
+      const faixas = page.getByRole("list", { name: /Cor mais forte/ });
       await expect(faixas.getByRole("listitem")).toHaveCount(4);
       for (const label of ["até 5 pontos", "5 a 15 pontos", "15 a 30 pontos", "mais de 30 pontos"]) {
         const item = faixas.getByRole("listitem").filter({ hasText: label });
@@ -201,12 +201,12 @@ test.describe("celular: Pixel 7 e 360 px", () => {
       await page.goto("/apuracao");
       const mapa = page.getByRole("group", { name: /Mapa do Brasil/ });
       await page.evaluate(() => window.scrollTo(0, 0));
-      const antes = page.getByRole("region", { name: "Detalhe do estado" });
+      const antes = page.getByRole("region", { name: /^Detalhe/ });
       await expect(antes).not.toBeInViewport(); // o detalhe começa abaixo da dobra
 
       await mapa.locator('path[data-uf="rs"]').tap();
 
-      const detalhe = page.getByRole("region", { name: "Detalhe do estado" });
+      const detalhe = page.getByRole("region", { name: /^Detalhe/ });
       await expect(detalhe).toContainText("Rio Grande do Sul");
       await expect(detalhe).toBeFocused();
       await expect(detalhe).toBeInViewport();
@@ -221,12 +221,12 @@ test.describe("celular: Pixel 7 e 360 px", () => {
       await page.goto("/apuracao");
       const mapa = page.getByRole("group", { name: /Mapa do Brasil/ });
       await page.evaluate(() => window.scrollTo(0, 0));
-      const antes = page.getByRole("region", { name: "Detalhe do estado" });
+      const antes = page.getByRole("region", { name: /^Detalhe/ });
       await expect(antes).not.toBeInViewport(); // o detalhe começa abaixo da dobra
 
       await mapa.locator('path[data-uf="rs"]').tap();
 
-      const detalhe = page.getByRole("region", { name: "Detalhe do estado" });
+      const detalhe = page.getByRole("region", { name: /^Detalhe/ });
       await expect(detalhe).toBeFocused();
       await expect(detalhe).toBeInViewport();
       expect(await lastScroll(page)).toMatchObject({ behavior: "auto" });
@@ -246,9 +246,9 @@ test.describe("celular: Pixel 7 e 360 px", () => {
         .evaluateAll((paths) => [...new Set(paths.map((p) => p.getAttribute("fill")))]);
       expect(fills).toEqual(["#e2e8f0"]);
       await expect(page.getByRole("list", { name: "Legenda do mapa" })).toContainText("Sem dados");
-      await expect(page.getByRole("list", { name: /Intensidade da cor/ })).toBeVisible();
+      await expect(page.getByRole("list", { name: /Cor mais forte/ })).toBeVisible();
       expect(await mapOverflow(page)).toBeLessThanOrEqual(0);
-      expect(errors.filter((e) => !/404|Failed to load resource/.test(e)), "erros no console").toEqual([]);
+      expect(errors, "erros no console").toEqual([]);
     });
   }
 });
