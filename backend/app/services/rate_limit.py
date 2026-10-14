@@ -53,8 +53,9 @@ class RateLimiters:
         self.profile_create = SlidingWindowLimiter(limit=10, window_seconds=600)
         self.nickname_check = SlidingWindowLimiter(limit=30, window_seconds=60)
         # Leitura pública de comentários, por IP: contém robôs simples (o IP vem do
-        # X-Forwarded-For e pode ser forjado; não é a única defesa).
-        self.comments_read = SlidingWindowLimiter(limit=120, window_seconds=60)
+        # X-Forwarded-For e pode ser forjado; não é a única defesa). 600/min: no celular, muita
+        # gente sai pelo mesmo IP da operadora (CGNAT); a leitura repetida sai do ReadCache.
+        self.comments_read = SlidingWindowLimiter(limit=600, window_seconds=60)
         # Denúncias por usuário, folgado: o limite de 10/dia (no banco) só conta as aceitas;
         # este freia as recusadas (repetidas, inexistentes), que também custam uma consulta.
         self.comment_report = SlidingWindowLimiter(limit=30, window_seconds=600)

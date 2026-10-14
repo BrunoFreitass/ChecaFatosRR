@@ -284,6 +284,21 @@ Com domínio próprio e regra de cache do Cloudflare para `/tse/*`: inclua o cab
 na chave de cache (ou não crie a regra). Sem isso, uma resposta guardada sem o CORS (pedida por
 um monitor, sem `Origin`) quebra a página para todos. Sem a regra, o ganho vem do ETag/304.
 
+### 3.8 Caches em memória: **um processo só**
+
+Depois do teste de carga de 14/10/2026, as leituras públicas saem da memória do processo:
+- apuração e mapa: a resposta vem do que está em memória e a busca no TSE roda em segundo plano
+  (log `tse_fetch_ok` a cada busca real);
+- `/checks/latest` (15 s) e `/comments` (10 s): uma leitura do banco serve todos os pedidos; toda
+  escrita feita pela API (comentário, apagar, denúncia, moderação, banimento, excluir conta,
+  checagem nova) limpa o cache na hora.
+
+Isso **supõe um processo só**: um worker do uvicorn (Dockerfile) e **uma instância** no Render.
+Com mais de uma, a escrita limpa só o cache do próprio processo e as outras mostram a versão
+anterior por até 10–15 s (o autor pode não ver o próprio comentário de imediato). Não ligue
+autoscaling nem `--workers` sem mudar isso. Edição feita direto no Supabase (painel/SQL) também
+aparece só depois do TTL (até 15 s).
+
 ---
 
 ## 4. Plano B — Google Cloud Run

@@ -3,6 +3,7 @@ import json
 import logging
 import re
 from collections.abc import Callable, Iterator
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -15,7 +16,12 @@ from fastapi.testclient import TestClient
 from app.auth import TokenVerifier, get_token_verifier
 from app.repositories.checks import Limits, StoredCheck, SubjectRef, new_public_id
 from app.repositories.profiles import Profile
-from app.routers.checks import get_check_repository, get_check_settings, get_check_tools
+from app.routers.checks import (
+    get_check_repos,
+    get_check_repository,
+    get_check_settings,
+    get_check_tools,
+)
 from app.routers.profiles import get_profile_repository
 from app.services.check_service import CheckSettings, CheckTools
 from app.services.factcheck import AgencyCheck
@@ -113,6 +119,7 @@ def api(app: FastAPI, env: Env) -> Iterator[TestClient]:
     )
     app.dependency_overrides[get_profile_repository] = lambda: env.profiles
     app.dependency_overrides[get_check_repository] = lambda: env.checks
+    app.dependency_overrides[get_check_repos] = lambda: lambda: nullcontext(env.checks)
     app.dependency_overrides[get_check_tools] = env.tools
     app.dependency_overrides[get_check_settings] = lambda: env.settings
     with TestClient(app, raise_server_exceptions=False) as client:
@@ -287,6 +294,36 @@ def test_without_tokens_the_result_has_no_tokens_key(api: TestClient, env: Env) 
 
     assert api.post("/checks", json={"texto": MSG}, headers=headers).status_code == 200
     assert "tokens" not in env.checks.saved[0].result
+
+
+def test_latest_is_read_once_and_a_new_check_shows_at_once(
+    api: TestClient, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR cache-leitura: a home não vai ao banco a cada visita, mas checagem nova aparece já."""
+    calls = 0
+    original = env.checks.latest
+
+    async def counting(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(env.checks, "latest", counting)
+    _, headers = env.login()
+    assert api.get("/checks/latest").json()["items"] == []
+    assert api.get("/checks/latest").json()["items"] == []
+    assert calls == 1  # a 2ª visita saiu da memória
+
+    created = api.post("/checks", json={"url": LINK}, headers=headers).json()["id"]
+
+    assert [i["id"] for i in api.get("/checks/latest").json()["items"]] == [created]
+    assert calls == 2
+
+
+def test_latest_pages_are_cached_separately(api: TestClient, env: Env) -> None:
+    assert api.get("/checks/latest", params={"limit": 5}).status_code == 200
+    assert api.get("/checks/latest", params={"limit": 10}).status_code == 200
+    assert api.get("/checks/latest", params={"cursor": "lixo"}).status_code == 422  # antes do cache
 
 
 def test_text_check_masks_personal_data_and_stays_unlisted(api: TestClient, env: Env) -> None:

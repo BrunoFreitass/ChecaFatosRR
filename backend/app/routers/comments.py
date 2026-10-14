@@ -2,6 +2,9 @@
 fila de moderação do admin (só ADMIN_EMAIL)."""
 
 import ipaddress
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from datetime import datetime
 from functools import lru_cache
 from typing import Annotated, Any
 
@@ -10,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser, current_user, require_admin
 from app.config import Settings, get_settings
-from app.db import get_session
+from app.db import get_session, session_scope
 from app.errors import AppError
 from app.repositories.checks import SqlCheckRepository
 from app.repositories.comments import SqlCommentRepository, StoredComment, Thread
@@ -39,6 +42,7 @@ from app.services.comments import (
     report_comment,
 )
 from app.services.moderation.pipeline import AiUnavailable
+from app.services.read_cache import ReadCaches, get_read_caches
 
 router = APIRouter(tags=["comentários"])
 PAGE_SIZE = 20
@@ -78,6 +82,21 @@ def get_comment_repos(session: Annotated[AsyncSession, Depends(get_session)]) ->
 
 
 Repos = Annotated[CommentRepos, Depends(get_comment_repos)]
+OwnRepos = Callable[[], AbstractAsyncContextManager[CommentRepos]]
+
+
+@asynccontextmanager
+async def _own_comment_repos() -> AsyncIterator[CommentRepos]:
+    async with session_scope() as session:
+        yield get_comment_repos(session)
+
+
+def get_own_comment_repos() -> OwnRepos:
+    """Repositórios com sessão própria para a leitura do cache (servida a vários pedidos)."""
+    return _own_comment_repos
+
+
+Caches = Annotated[ReadCaches, Depends(get_read_caches)]
 User = Annotated[CurrentUser, Depends(current_user)]
 Admin = Annotated[CurrentUser, Depends(require_admin)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
@@ -145,12 +164,27 @@ def _thread_out(thread: Thread) -> CommentOut:
 
 @router.get("/comments", response_model=CommentListOut, dependencies=[Depends(_read_limit)])
 async def list_comments(
-    repos: Repos,
+    repos: Annotated[OwnRepos, Depends(get_own_comment_repos)],
     response: Response,
+    caches: Caches,
     checagem: PublicId | None = None,
     cursor: Annotated[str | None, Query(max_length=200)] = None,
 ) -> CommentListOut:
-    position = _decode_cursor(cursor) if cursor else None
+    position = _decode_cursor(cursor) if cursor else None  # cursor inválido: 400 antes do cache
+    response.headers["Cache-Control"] = "no-store"
+
+    async def load() -> CommentListOut:
+        async with repos() as own:
+            return await _list(own, checagem, position)
+
+    # Resposta pública e igual para todos (sem campo por usuário): cache curto, invalidado em
+    # toda escrita abaixo.
+    return await caches.comments.get((checagem, position), load)  # cursor já decodificado
+
+
+async def _list(
+    repos: CommentRepos, checagem: str | None, position: tuple[datetime, str] | None
+) -> CommentListOut:
     if checagem is not None:
         found = await repos.comments.threads_of_check(checagem, position, PAGE_SIZE + 1)
         if found is None:
@@ -160,7 +194,6 @@ async def list_comments(
         threads = await repos.comments.threads(None, position, PAGE_SIZE + 1)
     page, more = threads[:PAGE_SIZE], len(threads) > PAGE_SIZE
     last = page[-1].root if page else None
-    response.headers["Cache-Control"] = "no-store"
     return CommentListOut(
         items=[_thread_out(t) for t in page],
         next_cursor=_encode_cursor(last.created_at, last.public_id) if more and last else None,
@@ -174,21 +207,25 @@ async def create_comment(
     repos: Repos,
     settings: AppSettings,
     moderator: Annotated[Moderator, Depends(get_moderator)],
+    caches: Caches,
 ) -> CommentOut:
-    created = await post_comment(
-        user_id=user.id,
-        body=payload.texto,
-        checagem=payload.checagem,
-        resposta_a=payload.resposta_a,
-        repos=repos,
-        moderator=moderator,
-        limits=CommentLimits(
-            min_interval_seconds=settings.comment_min_interval_seconds,
-            daily=settings.comments_daily_limit,
-            gemini_daily_moderation=settings.gemini_daily_moderation,
-        ),
-        ban_salt=settings.ban_hash_salt,
-    )
+    try:
+        created = await post_comment(
+            user_id=user.id,
+            body=payload.texto,
+            checagem=payload.checagem,
+            resposta_a=payload.resposta_a,
+            repos=repos,
+            moderator=moderator,
+            limits=CommentLimits(
+                min_interval_seconds=settings.comment_min_interval_seconds,
+                daily=settings.comments_daily_limit,
+                gemini_daily_moderation=settings.gemini_daily_moderation,
+            ),
+            ban_salt=settings.ban_hash_salt,
+        )
+    finally:
+        caches.comments.invalidate()  # o autor vê o próprio comentário na hora (e strikes)
     return _out(created)
 
 
@@ -197,14 +234,22 @@ async def create_comment(
     response_model=ReportOut,
     dependencies=[Depends(_report_limit)],
 )
-async def report(public_id: PublicId, payload: ReportIn, user: User, repos: Repos) -> ReportOut:
-    status = await report_comment(repos, public_id, user.id, payload.motivo)
+async def report(
+    public_id: PublicId, payload: ReportIn, user: User, repos: Repos, caches: Caches
+) -> ReportOut:
+    try:
+        status = await report_comment(repos, public_id, user.id, payload.motivo)
+    finally:
+        caches.comments.invalidate()  # a 3ª denúncia oculta o comentário
     return ReportOut(status=status)  # type: ignore[arg-type]
 
 
 @router.delete("/comments/{public_id}", status_code=204)
-async def delete(public_id: PublicId, user: User, repos: Repos) -> Response:
-    await delete_comment(repos, public_id, user.id)
+async def delete(public_id: PublicId, user: User, repos: Repos, caches: Caches) -> Response:
+    try:
+        await delete_comment(repos, public_id, user.id)
+    finally:
+        caches.comments.invalidate()
     return Response(status_code=204)
 
 
@@ -260,6 +305,17 @@ async def moderation_action(
     _admin: Admin,
     repos: Repos,
     settings: AppSettings,
+    caches: Caches,
+) -> AdminActionOut:
+    try:
+        return await _apply_action(queue_id, payload, repos, settings)
+    finally:
+        # Aprovar, remover, banir (some tudo do usuário), confirmar strike: a lista muda.
+        caches.comments.invalidate()
+
+
+async def _apply_action(
+    queue_id: int, payload: AdminActionIn, repos: CommentRepos, settings: Settings
 ) -> AdminActionOut:
     item = await repos.moderation.queue_item(queue_id)
     if item is None:

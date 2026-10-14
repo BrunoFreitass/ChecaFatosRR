@@ -3,6 +3,8 @@ import binascii
 import json
 import logging
 import re
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Annotated
@@ -12,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser, current_user
 from app.config import Settings, get_settings
-from app.db import get_session
+from app.db import get_session, session_scope
 from app.errors import AppError
 from app.legal import CURRENT_TERMS_VERSION
 from app.repositories.checks import (
@@ -36,6 +38,7 @@ from app.services.factcheck import AgencyCheck, HttpFactCheckClient
 from app.services.fetcher import HttpPageFetcher
 from app.services.gemini import PROMPT_VERSION, GeminiAnalyzer, google_generate
 from app.services.model_limits import ModelLimits
+from app.services.read_cache import ReadCaches, get_read_caches
 from app.services.verdict_policy import neutral_summary, read_verdict
 
 logger = logging.getLogger(__name__)
@@ -144,6 +147,19 @@ async def current_profile(
 
 
 Repo = Annotated[CheckRepository, Depends(get_check_repository)]
+CheckRepos = Callable[[], AbstractAsyncContextManager[CheckRepository]]
+
+
+@asynccontextmanager
+async def _own_check_repo() -> AsyncIterator[CheckRepository]:
+    async with session_scope() as session:
+        yield SqlCheckRepository(session)
+
+
+def get_check_repos() -> CheckRepos:
+    """Repositório com sessão própria: a leitura do cache serve vários pedidos ao mesmo tempo
+    e não pode usar a sessão de um deles (fecharia se ele desistisse)."""
+    return _own_check_repo
 
 
 def to_out(check: StoredCheck, settings: CheckSettings, *, cached: bool = False) -> CheckOut:
@@ -206,30 +222,48 @@ async def create_check(
     repo: Repo,
     tools: Annotated[CheckTools, Depends(get_check_tools)],
     settings: Annotated[CheckSettings, Depends(get_check_settings)],
+    caches: Annotated[ReadCaches, Depends(get_read_caches)],
 ) -> CheckOut:
     # Suspensão vale para comentários; banido não usa o site.
     if profile.effective_status(datetime.now(UTC)) == "banned":
         raise AppError(
             403, "conta_banida", "Esta conta foi banida por violar as regras do ChecaFatosRR."
         )
-    outcome = await run_check(
-        user_id=profile.id,
-        url=payload.url,
-        texto=payload.texto,
-        repo=repo,
-        tools=tools,
-        settings=settings,
-    )
+    try:
+        outcome = await run_check(
+            user_id=profile.id,
+            url=payload.url,
+            texto=payload.texto,
+            repo=repo,
+            tools=tools,
+            settings=settings,
+        )
+    finally:
+        caches.latest.invalidate()  # checagem nova aparece na home na hora
     return to_out(outcome.check, settings, cached=outcome.cached)
 
 
 @router.get("/checks/latest", response_model=LatestChecksOut)
 async def latest_checks(
-    repo: Repo,
+    repos: Annotated[CheckRepos, Depends(get_check_repos)],
+    caches: Annotated[ReadCaches, Depends(get_read_caches)],
     cursor: Annotated[str | None, Query(max_length=200)] = None,
     limit: Annotated[int, Query(ge=1, le=50)] = _LATEST_PAGE,
 ) -> LatestChecksOut:
-    items = await repo.latest(_decode_cursor(cursor) if cursor else None, limit)
+    position = _decode_cursor(cursor) if cursor else None  # cursor inválido: 400 antes do cache
+
+    async def load() -> LatestChecksOut:
+        async with repos() as repo:
+            return await _latest(repo, position, limit)
+
+    # Lista pública, igual para todos: a mesma leitura serve todo mundo por alguns segundos.
+    return await caches.latest.get((position, limit), load)  # cursor já decodificado
+
+
+async def _latest(
+    repo: CheckRepository, position: tuple[datetime, str] | None, limit: int
+) -> LatestChecksOut:
+    items = await repo.latest(position, limit)
     next_cursor = (
         _encode_cursor(items[-1].created_at, items[-1].public_id) if len(items) == limit else None
     )
