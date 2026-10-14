@@ -57,6 +57,7 @@ SCHEMA_MARKERS: dict[str, tuple[str, str, str | None]] = {
     "20261013000000_comentarios": ("column", "public.comments", "public_id"),
     "20261013000001_gemini_model_usage": ("table", "public.gemini_model_usage", None),
     "20261014000000_ajustes_moderacao": ("table", "public.deleted_account_strikes", None),
+    "20261015000000_tse_mapa": ("table", "public.tse_uf_snapshots", None),
 }
 
 _MISSING_MIGRATIONS = """

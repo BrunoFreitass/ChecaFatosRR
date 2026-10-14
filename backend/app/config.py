@@ -32,6 +32,8 @@ DEFAULT_OPEN_PLATFORMS: tuple[str, ...] = (
 )
 
 # Arquivo de resultado do TSE em 2026 (conferido em 11/10/2026 com o 1º turno, eleição 6257).
+# Cores do mapa (mesmo contraste nos dois tons; o frontend define os tons).
+TSE_MAP_COLORS = frozenset({"vermelho", "azul"})
 TSE_URL_TEMPLATE = (
     "https://resultados.tse.jus.br/oficial/ele2026/{eleicao}/dados/{escopo}/"
     "{escopo}-c{cargo:04d}-e{eleicao:06d}-u.json"
@@ -144,6 +146,14 @@ class Settings(BaseSettings):
     tse_election_code: int = Field(default=6258, ge=1, le=999_999)
     tse_scopes: str = "br,rr"
     tse_refresh_seconds: int = Field(default=30, ge=10, le=600)
+    # Mapa do Brasil na Apuração (plano mapa-e-painel-admin): desliga sem deploy. Até LOTE UFs
+    # vencidas por requisição; cada UF no máximo 1 busca a cada REFRESH segundos.
+    tse_mapa_enabled: bool = True
+    tse_mapa_refresh_seconds: int = Field(default=120, ge=60, le=600)
+    tse_mapa_lote: int = Field(default=9, ge=1, le=27)
+    # Cor por número de candidato. 13 (LULA) e 22 (FLAVIO BOLSONARO): lidos do arquivo oficial
+    # do TSE (eleição 6257) e confirmados pelo usuário em 14/10/2026. Sem cor = cinza neutro.
+    tse_mapa_cores: str = "13=vermelho,22=azul"
     # Banner da home (horário de Boa Vista): 16h de 25/10 (17h de Brasília) até o fim de 26/10.
     tse_banner_inicio: datetime = datetime(2026, 10, 25, 16, 0, tzinfo=_BOA_VISTA)
     tse_banner_fim: datetime = datetime(2026, 10, 27, 0, 0, tzinfo=_BOA_VISTA)
@@ -226,6 +236,20 @@ class Settings(BaseSettings):
             raise ValueError("TSE_SCOPES: br e/ou rr, separados por vírgula")
         return ",".join(dict.fromkeys(items))
 
+    @field_validator("tse_mapa_cores")
+    @classmethod
+    def _map_colors(cls, value: str) -> str:
+        pairs = [item.strip() for item in value.split(",") if item.strip()]
+        numbers: list[str] = []
+        for pair in pairs:
+            number, _, color = pair.partition("=")
+            if not number.isdigit() or color not in TSE_MAP_COLORS:
+                raise ValueError("TSE_MAPA_CORES: número=vermelho|azul, separados por vírgula")
+            numbers.append(number)
+        if len(numbers) != len(set(numbers)):
+            raise ValueError("TSE_MAPA_CORES: número de candidato repetido")
+        return ",".join(pairs)
+
     @field_validator("tse_banner_inicio", "tse_banner_fim")
     @classmethod
     def _banner_has_timezone(cls, value: datetime) -> datetime:
@@ -266,6 +290,10 @@ class Settings(BaseSettings):
     @property
     def tse_scope_list(self) -> tuple[str, ...]:
         return tuple(self.tse_scopes.split(","))
+
+    @property
+    def tse_mapa_color_map(self) -> dict[str, str]:
+        return dict(pair.split("=", 1) for pair in self.tse_mapa_cores.split(",") if pair)
 
     @property
     def open_platforms(self) -> tuple[str, ...]:
