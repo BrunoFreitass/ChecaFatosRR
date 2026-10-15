@@ -9,4 +9,104 @@
 
 html {
   -webkit-text-size-adjust: 100%;
+  /* O botão de acessibilidade fica fixo no canto de baixo: o foco do teclado e as rolagens até um
+     elemento param acima dele (WCAG 2.4.11). */
+  scroll-padding-bottom: 5rem;
+}
+
+/* ---------- Menu de acessibilidade (src/lib/a11y.ts; classes no <html>) ----------
+   Aplicadas antes da 1ª pintura por /a11y-init.js. Tudo em rem: mudar a fonte do <html> escala
+   o site inteiro. Os filtros (inverter, cinza) vão no #root: o botão e o painel ficam fora dele
+   (portal no <body>), e filtro no <html> quebraria o position: fixed do botão. */
+
+html.a11y-fonte-menos {
+  font-size: 87.5%;
+}
+html.a11y-fonte-1 {
+  font-size: 112.5%;
+}
+html.a11y-fonte-2 {
+  font-size: 125%;
+}
+html.a11y-fonte-3 {
+  font-size: 150%;
+}
+
+/* Alto contraste: texto branco no preto, links amarelos, bordas visíveis. */
+html.a11y-contraste body,
+html.a11y-contraste body *:not(svg, svg *) {
+  background-color: #000 !important;
+  color: #fff !important;
+  border-color: #fff !important;
+}
+html.a11y-contraste body a,
+html.a11y-contraste body a * {
+  color: #ffeb3b !important;
+}
+/* Barras de progresso da apuração: trilho com borda branca e preenchimento amarelo. */
+html.a11y-contraste [data-barra] {
+  border: 1px solid #fff !important;
+}
+html.a11y-contraste [data-barra] > div {
+  background-color: #ffeb3b !important;
+}
+html.a11y-contraste body :focus-visible {
+  outline: 3px solid #ffeb3b !important;
+  outline-offset: 2px;
+}
+
+html.a11y-inverter #root {
+  filter: invert(1) hue-rotate(180deg);
+}
+html.a11y-cinza #root {
+  filter: grayscale(1);
+}
+html.a11y-inverter.a11y-cinza #root {
+  filter: invert(1) hue-rotate(180deg) grayscale(1);
+}
+
+html.a11y-links a {
+  text-decoration: underline !important;
+  text-underline-offset: 0.15em;
+}
+
+/* WCAG 1.4.12 (espaçamento de texto): linhas 1,5×, parágrafos 2×, letras 0,12em, palavras 0,16em. */
+html.a11y-espaco body * {
+  line-height: 1.5 !important;
+  letter-spacing: 0.12em !important;
+  word-spacing: 0.16em !important;
+  /* Com o texto mais largo, palavra longa (ou o ponto depois de um link) quebra em vez de rolar para
+     o lado. break-word (e não anywhere) não muda a largura mínima de botões e células. */
+  overflow-wrap: break-word;
+}
+html.a11y-espaco body p {
+  margin-bottom: 2em !important;
+}
+
+/* Pausar animações: pelo menu ou pela preferência do sistema. */
+html.a11y-pausar,
+html.a11y-pausar *,
+html.a11y-pausar *::before,
+html.a11y-pausar *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+html.a11y-cursor,
+html.a11y-cursor * {
+  cursor:
+    url("/a11y-cursor.svg") 4 2,
+    auto !important;
 }

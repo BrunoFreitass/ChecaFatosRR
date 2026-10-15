@@ -387,6 +387,12 @@ Plano: `.claude/plans/etapa-2-checagem.plan.md`. Mudanças em relação a este p
 **Exceções ao congelamento (aprovadas pelo usuário em 14/10/2026; plano em `mapa-e-painel-admin.plan.md`, aguardando aprovação do plano):**
 - **A) Mapa do Brasil na Apuração:** as 27 UFs coloridas pelo líder, com a margem, um painel de detalhe e uma tabela acessível. Usa a tabela nova `tse_uf_snapshots` (migration), a chave `TSE_MAPA_ENABLED` e não mexe no Gemini. Prazo: **18/10**, validado no ensaio com `TSE_ELECTION_CODE=6257`.
 - **B) Painel mínimo do admin** (só leitura, agregados, sem rastrear tempo por pessoa), mais o Cloudflare Web Analytics, com ajuste na CSP. Prazo: **20/10**. Se apertar, B é cortado antes de A.
+- **C) Menu de acessibilidade próprio** (exceção aprovada pelo usuário em 16/10/2026; só frontend). Prazo: **18/10**.
+  - **Opções:** fonte maior ou menor em passos de rem; alto contraste, inverter cores e tons de cinza; sublinhar links; espaçamento WCAG 1.4.12; pausar animações (respeita `prefers-reduced-motion`); cursor grande; "Ouvir" (Web Speech API, só voz pt-BR do aparelho); restaurar padrão.
+  - **Restrições:** código e design nossos, sem script de terceiros; CSP e Política de Privacidade inalteradas. Preferências no localStorage, aplicadas antes da 1ª pintura por `public/a11y-init.js`.
+  - **Peso:** o painel é um chunk separado.
+  - **Fora do escopo:** descrição de imagens e resumo da página por IA (Gemini), e o VLibras (ver pós-eleição).
+  - **Diferencial de inclusão:** a acessibilidade é um dos diferenciais de inclusão do projeto. O projeto será inscrito na **FAPERR (edital 002/2026)** como "ChecaFatosRR".
 
 **Pós-eleição (decidido NÃO fazer antes de 25/10):**
 - Função PL/pgSQL para o `begin_check`: faria os 3 comandos (lock do usuário + assunto; uso, cache e claim; pedido + claim) numa só chamada. Cada comando interno teria o próprio snapshot, então a garantia dos limites por conta se mantém. Medido localmente em 13/10, a 100–120 ms por ida e volta: `begin_check` ~1,55 s e `db_ms` ~2,3 s no caminho normal. A estimativa com a função é `begin_check` ~0,7 s e `db_ms` ~1,4 s.
@@ -397,6 +403,7 @@ Plano: `.claude/plans/etapa-2-checagem.plan.md`. Mudanças em relação a este p
     - testes de integração com requisições simultâneas;
     - migration acompanhada do alerta de migration pendente e de uma marca no `/health/ready`.
 - Juntar os comandos 1 e 2 do `begin_check` num SQL comum é **inseguro**: em READ COMMITTED, o snapshot seria tirado antes do lock do usuário. Não fazer.
+- **VLibras** (tradução para Libras, do governo federal): fica para depois da eleição. Carrega script e recursos de terceiros, então exige mudar a CSP e a Política de Privacidade, além de teste de desempenho no celular. Complementa o menu de acessibilidade (exceção C).
 - A latência de fundo continua: a API está na Virgínia (Render) e o banco em São Paulo (Supabase), e cada transação custa ~0,7 s. Isso só muda colocando os dois na mesma região, avaliado depois da eleição.
 
 

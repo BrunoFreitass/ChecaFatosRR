@@ -1,5 +1,6 @@
 import { Link, Outlet } from "react-router";
 
+import { A11yButton } from "./A11yButton.tsx";
 import { RouteFocus } from "./RouteFocus.tsx";
 import { UserMenu } from "./UserMenu.tsx";
 
@@ -55,7 +56,7 @@ export function Layout() {
       </main>
 
       <footer className="border-t border-slate-200 bg-white">
-        <div className="mx-auto max-w-5xl space-y-2 px-4 py-4 text-sm text-slate-600">
+        <div className="mx-auto max-w-5xl space-y-2 px-4 pt-4 pb-20 text-sm text-slate-600">
           <p>Projeto apartidário de combate à desinformação nas eleições · Roraima</p>
           <nav aria-label="Informações legais" className="flex flex-wrap gap-x-4">
             <Link to="/termos" className={FOOTER_LINK}>
@@ -67,6 +68,8 @@ export function Layout() {
           </nav>
         </div>
       </footer>
+      {/* Menu de acessibilidade: botão fixo no canto inferior esquerdo (pb-20 no rodapé: no fim da página ele não cobre nenhum link). */}
+      <A11yButton />
     </div>
   );
 }
