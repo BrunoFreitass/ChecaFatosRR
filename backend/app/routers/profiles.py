@@ -130,4 +130,5 @@ async def delete_me(
         # Os comentários da conta somem do banco (cascade): sai das listas na hora.
         caches.comments.invalidate()
         caches.latest.invalidate()
+        caches.checks.invalidate()
     return Response(status_code=204)

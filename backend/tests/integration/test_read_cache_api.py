@@ -181,3 +181,76 @@ async def test_shared_read_never_uses_the_request_session(api: Api) -> None:
         del api.app.dependency_overrides[get_session]
 
     assert response.status_code == 200
+
+
+# ---------- página pública da checagem (PR cache-checagem) ----------
+
+
+async def test_check_page_never_uses_the_request_session(api: Api) -> None:
+    from app.db import get_session
+
+    author = await member(api)
+    check_id = await link_check(api, author)
+
+    async def no_request_session() -> Any:
+        raise AssertionError("a leitura do cache usou a sessão da requisição")
+        yield  # pragma: no cover
+
+    api.app.dependency_overrides[get_session] = no_request_session
+    try:
+        response = await api.http.get(f"/checks/{check_id}")
+    finally:
+        del api.app.dependency_overrides[get_session]
+
+    assert response.status_code == 200
+    assert response.json()["id"] == check_id
+
+
+async def test_deleted_account_clears_the_check_pages_at_once(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.repositories.checks import SqlCheckRepository
+    from app.services.supabase_admin import get_supabase_admin
+
+    author = await member(api)
+    api.as_user(author)
+    check_id = await link_check(api, author)
+    assert (await api.http.get(f"/checks/{check_id}")).status_code == 200  # cache aquecido
+
+    reads = 0
+    original = SqlCheckRepository.get
+
+    async def counting(self: SqlCheckRepository, public_id: str) -> Any:
+        nonlocal reads
+        reads += 1
+        return await original(self, public_id)
+
+    monkeypatch.setattr(SqlCheckRepository, "get", counting)
+    api.app.dependency_overrides[get_supabase_admin] = lambda: _DeletingAdmin(api)
+    assert (await api.http.delete("/me")).status_code == 204
+
+    response = await api.http.get(f"/checks/{check_id}")
+    assert reads == 1  # foi ao banco de novo, não serviu a página guardada
+    assert response.status_code == 200  # a checagem continua pública (sem dado do autor)
+
+
+async def test_viral_check_page_goes_to_the_database_once(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.repositories.checks import SqlCheckRepository
+
+    check_id = await link_check(api, await member(api))
+    api.app.state.read_caches.checks.invalidate()
+    reads = 0
+    original = SqlCheckRepository.get
+
+    async def counting(self: SqlCheckRepository, public_id: str) -> Any:
+        nonlocal reads
+        reads += 1
+        return await original(self, public_id)
+
+    monkeypatch.setattr(SqlCheckRepository, "get", counting)
+    responses = await asyncio.gather(*(api.http.get(f"/checks/{check_id}") for _ in range(30)))
+
+    assert all(r.status_code == 200 for r in responses)
+    assert reads == 1  # 30 acessos simultâneos ao mesmo link, 1 consulta

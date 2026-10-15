@@ -240,6 +240,8 @@ async def create_check(
         )
     finally:
         caches.latest.invalidate()  # checagem nova aparece na home na hora
+        # Reanálise do mesmo link pode mudar título/data que as páginas antigas mostram.
+        caches.checks.invalidate()
     return to_out(outcome.check, settings, cached=outcome.cached)
 
 
@@ -286,16 +288,24 @@ async def _latest(
 @router.get("/checks/{public_id}", response_model=CheckOut)
 async def read_check(
     public_id: str,
-    repo: Repo,
+    repos: Annotated[CheckRepos, Depends(get_check_repos)],
     settings: Annotated[CheckSettings, Depends(get_check_settings)],
+    caches: Annotated[ReadCaches, Depends(get_read_caches)],
 ) -> CheckOut:
     # Formato inválido (ex.: /checks/1) nem chega ao banco.
     if not _PUBLIC_ID.match(public_id):
         raise _not_found()
-    check = await repo.get(public_id)
-    if check is None:
-        raise _not_found()
-    return to_out(check, settings)
+
+    async def load() -> CheckOut:
+        async with repos() as repo:
+            check = await repo.get(public_id)
+        if check is None:
+            raise _not_found()  # não fica no cache: o próximo pedido procura de novo
+        return to_out(check, settings)
+
+    # Página pública, igual para todos (o handler não lê login): pode ser compartilhada. A versão
+    # do prompt entra na chave: "análise anterior" depende dela (troca de versão = página nova).
+    return await caches.checks.get((public_id, settings.limits.prompt_version), load)
 
 
 def _not_found() -> AppError:
