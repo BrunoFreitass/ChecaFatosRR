@@ -399,3 +399,11 @@ Plano: `.claude/plans/etapa-2-checagem.plan.md`. Mudanças em relação a este p
 - Juntar os comandos 1 e 2 do `begin_check` num SQL comum é **inseguro**: em READ COMMITTED, o snapshot seria tirado antes do lock do usuário. Não fazer.
 - A latência de fundo continua: a API está na Virgínia (Render) e o banco em São Paulo (Supabase), e cada transação custa ~0,7 s. Isso só muda colocando os dois na mesma região, avaliado depois da eleição.
 
+
+## 15. Infraestrutura para o 2º turno (decisões do usuário, 15/10/2026)
+
+Depois dos testes de carga (14/10, 30 usuários; 15/10, 150 usuários: 0% de erro, p95 0,93 s, nenhum 503):
+- **Render continua no plano Free (custo zero).** O UptimeRobot mantém a instância acordada (`/health` a cada 5 min). Risco aceito: o Free dorme por inatividade (até ~50 s na 1ª requisição) e tem pouca CPU; o teste de 300 usuários mede o teto real nesse plano.
+- **Uma instância só, sem autoscaling e sem `--workers`:** os caches em memória (apuração, mapa, `/checks/latest`, `/comments`, página da checagem) supõem um processo só (`docs/DEPLOY.md` §3.8).
+- **Aprovado (15/10):** cache curto de `GET /checks/{id}` (página pública da checagem), com invalidação imediata a cada checagem nova e na exclusão de conta.
+- **Teste de 300 usuários autorizado** depois do deploy desse cache: só GET, com acessos repetidos a uma mesma checagem (link viral).
