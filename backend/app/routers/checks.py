@@ -229,6 +229,7 @@ async def create_check(
         raise AppError(
             403, "conta_banida", "Esta conta foi banida por violar as regras do ChecaFatosRR."
         )
+    outcome = None
     try:
         outcome = await run_check(
             user_id=profile.id,
@@ -240,8 +241,11 @@ async def create_check(
         )
     finally:
         caches.latest.invalidate()  # checagem nova aparece na home na hora
-        # Reanálise do mesmo link pode mudar título/data que as páginas antigas mostram.
-        caches.checks.invalidate()
+        # Análise nova (inclusive reanálise do mesmo link) pode mudar título/data que as páginas
+        # antigas mostram; falha no meio também limpa, por segurança. Reaproveitar a análise
+        # existente (cached) não muda nada: não esvazia o cache num pico de acessos.
+        if outcome is None or not outcome.cached:
+            caches.checks.invalidate()
     return to_out(outcome.check, settings, cached=outcome.cached)
 
 

@@ -339,6 +339,46 @@ def test_a_new_analysis_invalidates_the_check_pages_at_once(
     assert calls == [first, first]  # a 2ª leitura foi à fonte de novo
 
 
+def test_reusing_an_existing_analysis_keeps_the_check_pages(
+    api: TestClient, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Num pico, muita gente checa o mesmo link: a análise é reaproveitada e nada muda."""
+    _, headers = env.login()
+    first = api.post("/checks", json={"url": LINK}, headers=headers).json()["id"]
+    calls = _count_gets(env, monkeypatch)
+    api.get(f"/checks/{first}")
+
+    again = api.post("/checks", json={"url": LINK}, headers=headers).json()
+    api.get(f"/checks/{first}")
+
+    assert again["cache"] is True  # reaproveitou a análise de antes
+    assert calls == [first]  # a página continuou saindo da memória
+
+
+def test_check_page_route_never_reads_the_login() -> None:
+    """A página vai para um cache compartilhado: se a rota passar a ler o login (perfil, token),
+    a resposta pode virar pessoal. Este teste falha nesse dia."""
+    from fastapi.routing import APIRoute
+
+    from app.auth import current_user
+    from app.routers.checks import current_profile, router
+
+    route = next(
+        r
+        for r in router.routes
+        if isinstance(r, APIRoute) and r.path == "/checks/{public_id}" and "GET" in r.methods
+    )
+
+    def calls(dependant: Any) -> set[Any]:
+        found = {dependant.call}
+        for sub in dependant.dependencies:
+            found |= calls(sub)
+        return found
+
+    used = calls(route.dependant)
+    assert current_user not in used and current_profile not in used
+
+
 def test_check_page_is_the_same_for_everyone(api: TestClient, env: Env) -> None:
     """Nada do usuário logado na página: logado ou não, a mesma resposta (vai para o cache)."""
     _, headers = env.login()

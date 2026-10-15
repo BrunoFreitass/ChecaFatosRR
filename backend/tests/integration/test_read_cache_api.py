@@ -254,3 +254,59 @@ async def test_viral_check_page_goes_to_the_database_once(
 
     assert all(r.status_code == 200 for r in responses)
     assert reads == 1  # 30 acessos simultâneos ao mesmo link, 1 consulta
+
+
+async def test_reanalysis_with_a_new_title_reaches_the_old_page(api: Api) -> None:
+    """Por que toda análise nova limpa o cache: a página antiga lê o título do link (join), e a
+    reanálise listada atualiza esse título. Sem limpar, a página antiga mostraria o título velho."""
+    import hashlib
+    from datetime import date
+
+    from app.repositories.checks import (
+        Limits,
+        LinkSubject,
+        NewCheck,
+        SqlCheckRepository,
+        Started,
+    )
+
+    url = "https://exemplo.com.br/eleicoes/reanalise-" + api.app.state.__class__.__name__
+    subject = LinkSubject(
+        url=url, url_hash=hashlib.sha256(url.encode()).digest(), domain="exemplo.com.br"
+    )
+    author = await member(api)
+    repo = SqlCheckRepository(api.session)
+
+    async def analyse(version: str, title: str) -> str:
+        limits = Limits(
+            cache_hours=24, checks_per_hour=10, lookups_per_hour=60, prompt_version=version
+        )
+        started = await repo.begin_check(author, subject, limits)
+        assert isinstance(started, Started)
+        saved = await repo.save_result(
+            NewCheck(
+                prompt_version=version,
+                subject=started.subject,
+                user_id=author,
+                veredito="falso",
+                confianca=90,
+                result={"resumo": "A votação não foi adiada."},
+                model="gemini-teste",
+                listed=True,
+                title=title,
+                published_at=date(2026, 10, 1),
+                claim_token=started.claim_token,
+            )
+        )
+        return saved.public_id
+
+    old = await analyse("v-antiga", "Título antigo")
+    assert (await api.http.get(f"/checks/{old}")).json()["title"] == "Título antigo"  # aquecido
+
+    await analyse("v-nova", "Título novo")  # reanálise listada do mesmo link
+    cached = (await api.http.get(f"/checks/{old}")).json()["title"]
+    api.app.state.read_caches.checks.invalidate()  # o que o POST /checks faz após análise nova
+    fresh = (await api.http.get(f"/checks/{old}")).json()["title"]
+
+    assert cached == "Título antigo"  # sem invalidar, o cache ainda serve o velho
+    assert fresh == "Título novo"  # invalidado: a página antiga já mostra o título atual
