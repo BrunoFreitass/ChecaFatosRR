@@ -279,7 +279,7 @@ function CandidateRow({ candidate }: { candidate: TseCandidate }) {
       </div>
       <p className="text-sm text-slate-600">{details}</p>
       {/* Barra neutra (sem cor de partido); largura via CSSOM, permitido pela CSP. */}
-      <div className="h-2 w-full rounded bg-slate-200" aria-hidden="true">
+      <div className="h-2 w-full rounded bg-slate-200" aria-hidden="true" data-barra>
         <div className="h-2 rounded bg-slate-600" style={{ width: `${width}%` }} />
       </div>
       <p className="text-sm text-slate-700">

@@ -18,6 +18,7 @@ import {
   type MapaResponse,
   type MapaResultado,
 } from "../lib/mapa.ts";
+import { motionReduced } from "../lib/a11y.ts";
 import { formatDateTime } from "../lib/format.ts";
 import { MAPA_UF, MAPA_VIEWBOX } from "../lib/mapaUf.ts";
 import { formatPct, POLL_MS, POLL_SLACK_MS } from "../lib/tse.ts";
@@ -38,8 +39,7 @@ export default function MapaApuracao() {
   useEffect(() => {
     const detail = detailRef.current;
     if (focusRequest === 0 || !detail) return;
-    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-    detail.scrollIntoView?.({ behavior: reduce ? "auto" : "smooth", block: "nearest" });
+    detail.scrollIntoView?.({ behavior: motionReduced() ? "auto" : "smooth", block: "nearest" });
     detail.focus({ preventScroll: true });
   }, [focusRequest]);
 
@@ -183,7 +183,7 @@ export default function MapaApuracao() {
         ref={detailRef}
         tabIndex={-1}
         aria-label={selected ? `Detalhe: ${UF_NAMES[selected] ?? selected.toUpperCase()}` : "Detalhe do estado"}
-        className="min-h-16 scroll-mt-4 rounded-lg bg-slate-50 p-3 text-sm focus:outline-2 focus:outline-brand-700"
+        className="min-h-16 scroll-mt-4 scroll-mb-24 rounded-lg bg-slate-50 p-3 text-sm focus:outline-2 focus:outline-brand-700"
       >
         {selected ? (
           <Detail uf={selected} result={byUf.get(selected) ?? null} />

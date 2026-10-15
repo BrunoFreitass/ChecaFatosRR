@@ -19,8 +19,8 @@ export default defineConfig({
   },
   projects: [
     { name: "celular", use: { ...devices["Pixel 7"] } },
-    // O mapa e o painel do admin também são usados no computador (clique e teclado).
-    { name: "desktop", use: { ...devices["Desktop Chrome"] }, testMatch: /(mapa|painel)\.spec\.ts$/ },
+    // O mapa, o painel do admin e o menu de acessibilidade também são usados no computador.
+    { name: "desktop", use: { ...devices["Desktop Chrome"] }, testMatch: /(mapa|painel|acessibilidade)\.spec\.ts$/ },
   ],
   webServer: {
     // Build de PRODUÇÃO servido pelo vite preview, com a mesma CSP do Cloudflare Pages
