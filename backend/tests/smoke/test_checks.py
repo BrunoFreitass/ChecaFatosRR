@@ -296,6 +296,112 @@ def test_without_tokens_the_result_has_no_tokens_key(api: TestClient, env: Env) 
     assert "tokens" not in env.checks.saved[0].result
 
 
+def _count_gets(env: Env, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    calls: list[str] = []
+    original = env.checks.get
+
+    async def counting(public_id: str) -> Any:
+        calls.append(public_id)
+        return await original(public_id)
+
+    monkeypatch.setattr(env.checks, "get", counting)
+    return calls
+
+
+def test_public_check_page_is_read_once(
+    api: TestClient, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR cache-checagem: link viral = muitas leituras da mesma checagem, uma ida ao banco."""
+    _, headers = env.login()
+    created = api.post("/checks", json={"url": LINK}, headers=headers).json()
+    calls = _count_gets(env, monkeypatch)
+
+    bodies = [api.get(f"/checks/{created['id']}").json() for _ in range(5)]
+
+    assert calls == [created["id"]]
+    assert all(b == bodies[0] for b in bodies)
+    assert bodies[0]["id"] == created["id"]
+
+
+def test_a_new_analysis_invalidates_the_check_pages_at_once(
+    api: TestClient, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Checagem nova (inclusive reanálise do mesmo link) pode mudar o título/data do link que as
+    páginas antigas mostram: o cache de páginas de checagem é limpo na hora."""
+    _, headers = env.login()
+    first = api.post("/checks", json={"url": LINK}, headers=headers).json()["id"]
+    calls = _count_gets(env, monkeypatch)
+    api.get(f"/checks/{first}")
+
+    api.post("/checks", json={"texto": MSG}, headers=headers)
+    api.get(f"/checks/{first}")
+
+    assert calls == [first, first]  # a 2ª leitura foi à fonte de novo
+
+
+def test_reusing_an_existing_analysis_keeps_the_check_pages(
+    api: TestClient, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Num pico, muita gente checa o mesmo link: a análise é reaproveitada e nada muda."""
+    _, headers = env.login()
+    first = api.post("/checks", json={"url": LINK}, headers=headers).json()["id"]
+    calls = _count_gets(env, monkeypatch)
+    api.get(f"/checks/{first}")
+
+    again = api.post("/checks", json={"url": LINK}, headers=headers).json()
+    api.get(f"/checks/{first}")
+
+    assert again["cache"] is True  # reaproveitou a análise de antes
+    assert calls == [first]  # a página continuou saindo da memória
+
+
+def test_check_page_route_never_reads_the_login() -> None:
+    """A página vai para um cache compartilhado: se a rota passar a ler o login (perfil, token),
+    a resposta pode virar pessoal. Este teste falha nesse dia."""
+    from fastapi.routing import APIRoute
+
+    from app.auth import current_user
+    from app.routers.checks import current_profile, router
+
+    route = next(
+        r
+        for r in router.routes
+        if isinstance(r, APIRoute) and r.path == "/checks/{public_id}" and "GET" in r.methods
+    )
+
+    def calls(dependant: Any) -> set[Any]:
+        found = {dependant.call}
+        for sub in dependant.dependencies:
+            found |= calls(sub)
+        return found
+
+    used = calls(route.dependant)
+    assert current_user not in used and current_profile not in used
+
+
+def test_check_page_is_the_same_for_everyone(api: TestClient, env: Env) -> None:
+    """Nada do usuário logado na página: logado ou não, a mesma resposta (vai para o cache)."""
+    _, headers = env.login()
+    created = api.post("/checks", json={"url": LINK}, headers=headers).json()["id"]
+
+    anonymous = api.get(f"/checks/{created}")
+    logged = api.get(f"/checks/{created}", headers=headers)
+
+    assert anonymous.status_code == logged.status_code == 200
+    assert anonymous.json() == logged.json()
+
+
+def test_unknown_check_is_404_and_not_cached(
+    api: TestClient, env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _count_gets(env, monkeypatch)
+
+    assert api.get("/checks/abcdefghjkmn").status_code == 404
+    assert api.get("/checks/abcdefghjkmn").status_code == 404
+    assert api.get("/checks/1").status_code == 404  # formato inválido nem chega ao banco
+    assert len(calls) == 2
+
+
 def test_latest_is_read_once_and_a_new_check_shows_at_once(
     api: TestClient, env: Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:

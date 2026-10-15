@@ -25,13 +25,16 @@ from dataclasses import dataclass, field
 
 from fastapi import Request
 
-from app.schemas.checks import LatestChecksOut
+from app.schemas.checks import CheckOut, LatestChecksOut
 from app.schemas.comments import CommentListOut
 
 # Teste de carga: home e Comunidade a cada visita. 15 s para a lista de checagens (só muda com
 # checagem nova, e essa invalida na hora); 10 s para comentários.
 LATEST_TTL = 15.0
 COMMENTS_TTL = 10.0
+# Página pública de uma checagem (link viral = muitas leituras da mesma): 15 s. Toda checagem
+# nova limpa na hora (ela pode mudar o título/data do link que as páginas antigas mostram).
+CHECK_TTL = 15.0
 LOAD_TIMEOUT = 10.0
 
 
@@ -92,6 +95,7 @@ class ReadCaches:
 
     latest: ReadCache[LatestChecksOut] = field(default_factory=lambda: ReadCache(ttl=LATEST_TTL))
     comments: ReadCache[CommentListOut] = field(default_factory=lambda: ReadCache(ttl=COMMENTS_TTL))
+    checks: ReadCache[CheckOut] = field(default_factory=lambda: ReadCache(ttl=CHECK_TTL))
 
 
 def get_read_caches(request: Request) -> ReadCaches:
