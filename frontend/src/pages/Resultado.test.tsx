@@ -168,3 +168,41 @@ describe("comentários", () => {
     expect(screen.queryByText(/comentários de/)).toBeNull();
   });
 });
+
+describe("metodologia e transparência", () => {
+  it("mostra a seção de metodologia e transparência quando o campo está presente", () => {
+    renderResult(
+      check({
+        transparencia: {
+          extrator: "trafilatura",
+          plataformas_consultadas: ["Web (g1.globo.com)", "Google Fact Check Tools API", "Google Gemini (gemini-3.8-flash)"],
+          fontes_identificadas: ["g1.globo.com"],
+          etapas: [
+            {
+              etapa: "Extração de Conteúdo Web",
+              descricao: "Conteúdo e metadados extraídos via Trafilatura a partir de g1.globo.com.",
+              status: "sucesso",
+            },
+            {
+              etapa: "Cruzamento com Base de Checagens",
+              descricao: "Base de checagens consultada. Nenhuma checagem prévia localizada.",
+              status: "informativo",
+            },
+          ],
+        },
+      }),
+    );
+    expect(screen.getByText("Metodologia e Transparência da Análise")).toBeTruthy();
+    expect(screen.getByText("Plataformas e Serviços Consultados")).toBeTruthy();
+    expect(screen.getByText("Web (g1.globo.com)")).toBeTruthy();
+    expect(screen.getByText("Google Fact Check Tools API")).toBeTruthy();
+    expect(screen.getByText("Extração de Conteúdo Web")).toBeTruthy();
+    expect(screen.getByText(/Domínios referenciados no conteúdo:/)).toBeTruthy();
+    expect(screen.getByText("g1.globo.com")).toBeTruthy();
+  });
+
+  it("não mostra a seção de transparência quando ausente na checagem", () => {
+    renderResult(check({ transparencia: undefined }));
+    expect(screen.queryByText("Metodologia e Transparência da Análise")).toBeNull();
+  });
+});

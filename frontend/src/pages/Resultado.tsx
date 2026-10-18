@@ -304,6 +304,91 @@ function ResultadoDaChecagem({ slug }: { slug: string }) {
         </section>
       )}
 
+      {check.transparencia && (
+        <section aria-labelledby="transparencia" className="space-y-3">
+          <details className="group rounded-xl border border-slate-200 bg-white p-4 shadow-xs" open>
+            <summary className="min-h-11 cursor-pointer font-bold text-lg text-slate-900 flex items-center justify-between">
+              <span id="transparencia" className="flex items-center gap-2">
+                <svg aria-hidden="true" viewBox="0 0 24 24" className="size-5 text-brand-700" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10" />
+                  <path d="m9 12 2 2 4-4" />
+                </svg>
+                Metodologia e Transparência da Análise
+              </span>
+              <span className="text-xs font-normal text-slate-500">
+                (clique para recolher/expandir)
+              </span>
+            </summary>
+
+            <div className="mt-4 space-y-4 border-t border-slate-100 pt-3 text-sm text-slate-700">
+              <p>
+                O ChecaFatosRR segue uma metodologia apartidária e automatizada com rastreabilidade
+                completa das etapas e das bases consultadas:
+              </p>
+
+              {check.transparencia.plataformas_consultadas.length > 0 && (
+                <div>
+                  <h3 className="font-semibold text-slate-900">Plataformas e Serviços Consultados</h3>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {check.transparencia.plataformas_consultadas.map((plat, idx) => (
+                      <span
+                        key={idx}
+                        className="inline-flex items-center rounded-md bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-800"
+                      >
+                        {plat}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {check.transparencia.etapas.length > 0 && (
+                <div>
+                  <h3 className="font-semibold text-slate-900">Trilha de Verificação Executada</h3>
+                  <ol className="mt-2 space-y-2">
+                    {check.transparencia.etapas.map((step, idx) => (
+                      <li
+                        key={idx}
+                        className="flex items-start gap-2.5 rounded-lg border border-slate-100 bg-slate-50 p-2.5"
+                      >
+                        <span
+                          className={`mt-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
+                            step.status === "sucesso"
+                              ? "bg-emerald-100 text-emerald-800"
+                              : step.status === "alerta"
+                                ? "bg-amber-100 text-amber-800"
+                                : "bg-blue-100 text-blue-800"
+                          }`}
+                          aria-hidden="true"
+                        >
+                          {step.status === "sucesso" ? "✓" : step.status === "alerta" ? "!" : "i"}
+                        </span>
+                        <div>
+                          <p className="font-semibold text-slate-900">{step.etapa}</p>
+                          <p className="text-slate-600">{step.descricao}</p>
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+
+              {check.transparencia.fontes_identificadas.length > 0 && (
+                <div>
+                  <h3 className="font-semibold text-slate-900">Origens Identificadas</h3>
+                  <p className="mt-1 text-slate-600">
+                    Domínios referenciados no conteúdo:{" "}
+                    <span className="font-medium text-slate-900">
+                      {check.transparencia.fontes_identificadas.join(", ")}
+                    </span>
+                  </p>
+                </div>
+              )}
+            </div>
+          </details>
+        </section>
+      )}
+
       <p className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-950">{DISCLAIMER}</p>
 
       <section aria-labelledby="compartilhar" className="space-y-2">

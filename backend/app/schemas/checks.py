@@ -29,6 +29,19 @@ class AgencyCheckOut(BaseModel):
     data: str | None = None
 
 
+class VerificationStepOut(BaseModel):
+    etapa: str
+    descricao: str
+    status: Literal["sucesso", "alerta", "informativo"] = "sucesso"
+
+
+class TransparencyOut(BaseModel):
+    extrator: str | None = None
+    etapas: list[VerificationStepOut] = Field(default_factory=list)
+    plataformas_consultadas: list[str] = Field(default_factory=list)
+    fontes_identificadas: list[str] = Field(default_factory=list)
+
+
 class CheckOut(BaseModel):
     # id é o public_id aleatório; o id numérico do banco nunca sai da API.
     id: str
@@ -57,6 +70,8 @@ class CheckOut(BaseModel):
     # "agencias": Gemini sem cota ou no limite; só o que as agências publicaram, sem IA
     # (selo neutro "Análise automática indisponível agora").
     modo: Literal["ia", "agencias"] = "ia"
+    # Rastro de transparência e auditoria das etapas executadas.
+    transparencia: TransparencyOut | None = None
 
 
 class CheckSummaryOut(BaseModel):

@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import date, datetime
+from typing import Any
 from uuid import UUID
 
 from app.config import DEFAULT_OPEN_PLATFORMS
@@ -337,9 +338,11 @@ async def _analyze(
 ) -> CheckOutcome:
     published_at: date | None = None
     listed = False
+    final_domain: str | None = None
     if isinstance(parsed, LinkInput):
         read = await _read_link(parsed, tools, timer, settings.open_platforms)
         data, published_at = read.data, read.data.published_at
+        final_domain = read.final_domain
         # Redirect para outro domínio (ex.: redirect aberto num site conhecido): o conteúdo
         # não é daquele domínio, então não vai para "Últimas" com o nome dele.
         same_site = read.final_domain == parsed.url.domain
@@ -397,6 +400,14 @@ async def _analyze(
             reason,
         )
 
+    transparencia = build_transparency_metadata(
+        data=data,
+        final_domain=final_domain,
+        agency_checks=agency_checks,
+        agencies_failed=agencies_failed,
+        model=result.model or settings.model,
+        agencies_only=False,
+    )
     with timer.stage("db"):
         saved = await repo.save_result(
             NewCheck(
@@ -412,6 +423,7 @@ async def _analyze(
                     "title": data.title,
                     "model": result.model,
                     **({"tokens": result.tokens} if result.tokens else {}),
+                    "transparencia": transparencia,
                 },
                 model=result.model or settings.model,
                 listed=listed,
@@ -422,6 +434,98 @@ async def _analyze(
             )
         )
     return CheckOutcome(check=saved, cached=False)
+
+
+def build_transparency_metadata(
+    data: AnalysisInput,
+    final_domain: str | None,
+    agency_checks: list[AgencyCheck],
+    agencies_failed: bool,
+    model: str | None,
+    *,
+    agencies_only: bool = False,
+) -> dict[str, Any]:
+    """Metadados de transparência sobre as etapas, extratores e serviços consultados."""
+    etapas: list[dict[str, str]] = []
+    plataformas: list[str] = []
+    fontes: list[str] = []
+
+    # 1. Extração / Leitura do Conteúdo
+    if data.kind == "link":
+        domain = final_domain or data.source_domain or "web"
+        if domain not in fontes:
+            fontes.append(domain)
+        plataformas.append(f"Web ({domain})")
+        etapas.append({
+            "etapa": "Extração de Conteúdo Web",
+            "descricao": f"Conteúdo e metadados extraídos via Trafilatura a partir de {domain}.",
+            "status": "sucesso",
+        })
+    else:
+        etapas.append({
+            "etapa": "Processamento de Mensagem",
+            "descricao": f"Higienização de texto ({len(data.content)} caracteres) e sanitização de dados sensíveis.",
+            "status": "sucesso",
+        })
+        for u in data.content_urls:
+            try:
+                from urllib.parse import urlparse
+
+                host = urlparse(u).netloc
+                if host and host not in fontes:
+                    fontes.append(host)
+                    plataformas.append(f"Link citado ({host})")
+            except Exception:
+                pass
+
+    # 2. Fact Check Tools API
+    plataformas.append("Google Fact Check Tools API")
+    agency_names = sorted(list({c.agencia for c in agency_checks if c.agencia}))
+    for ag in agency_names:
+        if ag not in plataformas:
+            plataformas.append(f"Agência {ag}")
+
+    if agencies_failed:
+        etapas.append({
+            "etapa": "Cruzamento com Base de Checagens",
+            "descricao": "Consulta de checagens oficiais temporariamente indisponível.",
+            "status": "alerta",
+        })
+    elif agency_checks:
+        etapas.append({
+            "etapa": "Cruzamento com Base de Checagens",
+            "descricao": f"Base de checagens consultada: {len(agency_checks)} registro(s) encontrado(s) ({', '.join(agency_names)}).",
+            "status": "sucesso",
+        })
+    else:
+        etapas.append({
+            "etapa": "Cruzamento com Base de Checagens",
+            "descricao": "Base de checagens consultada. Nenhuma checagem prévia localizada para os termos analisados.",
+            "status": "informativo",
+        })
+
+    # 3. Análise Cognitiva
+    if agencies_only:
+        etapas.append({
+            "etapa": "Consolidação de Evidências",
+            "descricao": "Modo de contingência ativo: consolidação direta baseada no histórico de agências (IA indisponível).",
+            "status": "alerta",
+        })
+    else:
+        model_name = model or "Google Gemini"
+        plataformas.append(f"Google Gemini ({model_name})")
+        etapas.append({
+            "etapa": "Validação Cognitiva e Consistência",
+            "descricao": f"Análise contextual, detecção de inconsistências e síntese apartidária via {model_name}.",
+            "status": "sucesso",
+        })
+
+    return {
+        "extrator": "trafilatura" if data.kind == "link" else "texto_direto",
+        "etapas": etapas,
+        "plataformas_consultadas": plataformas,
+        "fontes_identificadas": fontes,
+    }
 
 
 @dataclass(frozen=True)
@@ -445,6 +549,18 @@ async def _agencies_only(
     tem link público, nunca vira cache e não é "Últimas". O pedido vira consulta: não conta
     no limite de checagens com IA, mas conta no de consultas (Gemini fora não libera geral)."""
     data, started = job.data, job.started
+    transparencia = build_transparency_metadata(
+        data=data,
+        final_domain=data.source_domain if data.kind == "link" else None,
+        agency_checks=data.agency_checks,
+        agencies_failed=job.search_failed,
+        model=None,
+        agencies_only=True,
+    )
+    res_dict = agencies_only_result(
+        data.agency_checks, data.title, search_failed=job.search_failed
+    )
+    res_dict["transparencia"] = transparencia
     try:
         with timer.stage("db"):
             # Vira consulta e grava numa transação só (~0,7 s a menos que em duas).
@@ -457,9 +573,7 @@ async def _agencies_only(
                     user_id=job.user_id,
                     veredito="nao_verificavel",
                     confianca=0,
-                    result=agencies_only_result(
-                        data.agency_checks, data.title, search_failed=job.search_failed
-                    ),
+                    result=res_dict,
                     model=AGENCIES_ONLY_VERSION,
                     listed=False,
                     title=data.title,

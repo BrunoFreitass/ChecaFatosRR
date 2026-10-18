@@ -26,6 +26,19 @@ export interface AgencyCheck {
   data: string | null;
 }
 
+export interface VerificationStep {
+  etapa: string;
+  descricao: string;
+  status: "sucesso" | "alerta" | "informativo";
+}
+
+export interface Transparency {
+  extrator?: string | null;
+  etapas: VerificationStep[];
+  plataformas_consultadas: string[];
+  fontes_identificadas: string[];
+}
+
 /** Resultado de uma checagem. `id` é o identificador público aleatório. */
 export interface Check {
   id: string;
@@ -53,6 +66,8 @@ export interface Check {
   checagens_relacionadas?: AgencyCheck[];
   /** "agencias": Gemini indisponível, só o que as agências publicaram (sem IA). API antiga: ausente. */
   modo?: "ia" | "agencias";
+  /** Metadados de transparência das etapas e serviços de verificação. */
+  transparencia?: Transparency;
 }
 
 export interface CheckSummary {

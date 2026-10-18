@@ -32,6 +32,8 @@ from app.schemas.checks import (
     CheckOut,
     CheckSummaryOut,
     LatestChecksOut,
+    TransparencyOut,
+    VerificationStepOut,
 )
 from app.services.check_service import CheckSettings, CheckTools, run_check
 from app.services.factcheck import AgencyCheck, HttpFactCheckClient
@@ -162,6 +164,84 @@ def get_check_repos() -> CheckRepos:
     return _own_check_repo
 
 
+def _build_fallback_transparency(check: StoredCheck, settings: CheckSettings) -> TransparencyOut:
+    agencies_only = check.prompt_version == AGENCIES_ONLY_VERSION
+    agencies = [item for item in check.result.get("checagens_agencias") or [] if isinstance(item, dict)]
+    agency_names = sorted(list({str(a.get("agencia")) for a in agencies if a.get("agencia")}))
+
+    plataformas = []
+    fontes = []
+    etapas: list[VerificationStepOut] = []
+
+    if check.kind == "link":
+        domain = check.domain or "web"
+        fontes.append(domain)
+        plataformas.append(f"Web ({domain})")
+        etapas.append(
+            VerificationStepOut(
+                etapa="Extração de Conteúdo Web",
+                descricao=f"Conteúdo e metadados extraídos via Trafilatura a partir de {domain}.",
+                status="sucesso",
+            )
+        )
+    else:
+        etapas.append(
+            VerificationStepOut(
+                etapa="Processamento de Mensagem",
+                descricao="Texto recebido e higienizado diretamente pelo sistema.",
+                status="sucesso",
+            )
+        )
+
+    plataformas.append("Google Fact Check Tools API")
+    for ag in agency_names:
+        if ag not in plataformas:
+            plataformas.append(f"Agência {ag}")
+
+    if agencies:
+        etapas.append(
+            VerificationStepOut(
+                etapa="Cruzamento com Base de Checagens",
+                descricao=f"Base de checagens consultada: {len(agencies)} registro(s) encontrado(s) ({', '.join(agency_names)}).",
+                status="sucesso",
+            )
+        )
+    else:
+        etapas.append(
+            VerificationStepOut(
+                etapa="Cruzamento com Base de Checagens",
+                descricao="Base de checagens consultada. Nenhuma checagem prévia localizada para os termos analisados.",
+                status="informativo",
+            )
+        )
+
+    if agencies_only:
+        etapas.append(
+            VerificationStepOut(
+                etapa="Consolidação de Evidências",
+                descricao="Modo de contingência ativo: consolidação direta baseada no histórico de agências (IA indisponível).",
+                status="alerta",
+            )
+        )
+    else:
+        model_name = str(check.result.get("model") or settings.model)
+        plataformas.append(f"Google Gemini ({model_name})")
+        etapas.append(
+            VerificationStepOut(
+                etapa="Validação Cognitiva e Consistência",
+                descricao=f"Análise contextual, detecção de inconsistências e síntese apartidária via {model_name}.",
+                status="sucesso",
+            )
+        )
+
+    return TransparencyOut(
+        extrator="trafilatura" if check.kind == "link" else "texto_direto",
+        etapas=etapas,
+        plataformas_consultadas=plataformas,
+        fontes_identificadas=fontes,
+    )
+
+
 def to_out(check: StoredCheck, settings: CheckSettings, *, cached: bool = False) -> CheckOut:
     result = check.result
     agencies_only = check.prompt_version == AGENCIES_ONLY_VERSION
@@ -183,6 +263,16 @@ def to_out(check: StoredCheck, settings: CheckSettings, *, cached: bool = False)
             confirmed_origin=isinstance(origin, str),
             agency_checks=bool(agencies),
         )
+
+    transparencia_raw = result.get("transparencia")
+    if transparencia_raw and isinstance(transparencia_raw, dict):
+        try:
+            transparencia = TransparencyOut.model_validate(transparencia_raw)
+        except Exception:
+            transparencia = _build_fallback_transparency(check, settings)
+    else:
+        transparencia = _build_fallback_transparency(check, settings)
+
     return CheckOut(
         id=check.public_id,
         tipo=check.kind,
@@ -212,6 +302,7 @@ def to_out(check: StoredCheck, settings: CheckSettings, *, cached: bool = False)
         # "só agências" não é análise, nem anterior.
         analise_anterior=not agencies_only
         and check.prompt_version != settings.limits.prompt_version,
+        transparencia=transparencia,
     )
 
 
