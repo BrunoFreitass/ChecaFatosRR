@@ -170,8 +170,8 @@ def _search_status(result: dict[str, Any], agencies_only: bool) -> Literal["ok",
     """Status gravado na checagem. Antigas do modo "só agências" (de antes do registro) têm o
     resumo honesto, escrito por nós, que já distinguia a falha; as outras antigas: None."""
     status = result.get("busca_agencias")
-    if status == "ok" or status == "falhou":
-        return status
+    if status in ("ok", "falhou"):
+        return status  # type: ignore[no-any-return]
     if agencies_only:
         return "falhou" if result.get("resumo") == AGENCIES_ONLY_SEARCH_FAILED else "ok"
     return None

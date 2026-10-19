@@ -113,3 +113,38 @@ def test_ai_text_is_not_rewritten_when_the_model_did_not_say_true() -> None:
     # Só o texto neutro (nosso) é refeito; o resumo da IA para "falso" fica como está.
     check = stored({"veredito_ia": "falso", "busca_agencias": "falhou", "resumo": "Texto da IA."})
     assert to_out(check, SETTINGS).resumo == "Texto da IA."
+
+
+def test_pasted_text_true_with_failed_search_gets_only_the_failure_sentence() -> None:
+    check = replace(
+        stored({"veredito_ia": "verdadeiro", "busca_agencias": "falhou", "resumo": "x"}),
+        kind="texto",
+        url=None,
+        domain=None,
+        texto="Mensagem colada.",
+        veredito="nao_verificavel",
+    )
+    assert (
+        to_out(check, SETTINGS).resumo == "A busca nas agências de checagem falhou nesta análise."
+    )
+
+
+def test_failed_status_with_agencies_present_is_not_rewritten() -> None:
+    agency = {
+        "agencia": "Lupa",
+        "titulo": "t",
+        "veredito": "Falso",
+        "url": "https://lupa.uol.com.br/x",
+    }
+    check = replace(
+        stored(
+            {
+                "veredito_ia": "verdadeiro",
+                "busca_agencias": "falhou",
+                "checagens_agencias": [agency],
+                "resumo": "Texto gravado.",
+            }
+        ),
+        veredito="nao_verificavel",
+    )
+    assert to_out(check, SETTINGS).resumo == "Texto gravado."
