@@ -81,6 +81,10 @@ def _words(text: str) -> list[str]:
     return _WORD.findall(text)
 
 
+class FactCheckUnavailableError(Exception):
+    """A API não respondeu direito (rede, chave, cota, 5xx, JSON inválido)."""
+
+
 class HttpFactCheckClient:
     def __init__(
         self,
@@ -97,10 +101,21 @@ class HttpFactCheckClient:
         async with httpx.AsyncClient(
             timeout=self._timeout, transport=self._transport, trust_env=False
         ) as client:
+            # Sem nenhuma consulta (texto curto demais), a busca não aconteceu: não é "não
+            # encontramos".
+            failed = not queries
             for query in queries[:2]:
-                results = await self._search_one(client, query)
+                try:
+                    results = await self._search_one(client, query)
+                except FactCheckUnavailableError:
+                    failed = True  # tenta a outra consulta; achou algo, vale
+                    continue
                 if results:
                     return results
+        # Nada encontrado: só é "não encontramos" se TODAS as consultas responderam. Com
+        # alguma falha, a busca não foi feita por inteiro, e a página diz que ela falhou.
+        if failed:
+            raise FactCheckUnavailableError
         return []
 
     async def _search_one(self, client: httpx.AsyncClient, query: str) -> list[AgencyCheck]:
@@ -116,15 +131,18 @@ class HttpFactCheckClient:
             )
         except httpx.HTTPError as exc:
             logger.warning("factcheck_unavailable", extra={"error": type(exc).__name__})
-            return []
+            raise FactCheckUnavailableError from exc
         if response.status_code != 200:
             logger.warning("factcheck_unavailable", extra={"status": response.status_code})
-            return []
+            raise FactCheckUnavailableError
         try:
             payload = response.json()
-        except ValueError:
+        except ValueError as exc:
             logger.warning("factcheck_unavailable", extra={"error": "json"})
-            return []
+            raise FactCheckUnavailableError from exc
+        if not isinstance(payload, dict):  # 200 fora do formato da API não é "nada encontrado"
+            logger.warning("factcheck_unavailable", extra={"error": "formato"})
+            raise FactCheckUnavailableError
         return parse_claims(payload)
 
 
