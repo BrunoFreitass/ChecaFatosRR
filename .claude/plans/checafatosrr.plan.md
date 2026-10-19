@@ -404,6 +404,16 @@ Plano: `.claude/plans/etapa-2-checagem.plan.md`. Mudanças em relação a este p
     - migration acompanhada do alerta de migration pendente e de uma marca no `/health/ready`.
 - Juntar os comandos 1 e 2 do `begin_check` num SQL comum é **inseguro**: em READ COMMITTED, o snapshot seria tirado antes do lock do usuário. Não fazer.
 - **VLibras** (tradução para Libras, do governo federal): fica para depois da eleição. Carrega script e recursos de terceiros, então exige mudar a CSP e a Política de Privacidade, além de teste de desempenho no celular. Complementa o menu de acessibilidade (exceção C).
+- **Transparência e trilha de auditoria da checagem** (commit `9b9343d`, guardado no branch `transparencia-pos-eleicao`; decisão do usuário na auditoria de 19/10: NÃO vai para produção antes de 25/10). É relevante para o projeto FAPERR (edital 002/2026). Problemas que as revisões acharam e que precisam ser resolvidos antes de publicar:
+  - trilha **montada na hora** para checagens antigas, sem registro real: pode afirmar "Nenhuma checagem prévia localizada" quando a busca nas agências falhou (a falha não fica gravada no resultado);
+  - etapas marcadas como **"sucesso" sem medição** (extração, IA);
+  - **`except Exception` sem log** em `to_out`, que esconde dado corrompido e cai no fallback;
+  - texto **"rastreabilidade completa"** (promete mais do que entrega);
+  - **status só por cor** (o ícone está `aria-hidden`; o leitor de tela e o alto contraste não distinguem alerta de sucesso);
+  - **plataformas abertas aparecem como "fonte"** (contraria a regra de não atribuir origem a quem só hospeda);
+  - **"Link citado"** em "Plataformas consultadas", mas o sistema nunca acessa esses links;
+  - **ruff vermelho** (14 erros e 2 arquivos sem formatação).
+- **Identidade visual nova da página:** fica para depois de 25/10 (decisão de 19/10).
 - A latência de fundo continua: a API está na Virgínia (Render) e o banco em São Paulo (Supabase), e cada transação custa ~0,7 s. Isso só muda colocando os dois na mesma região, avaliado depois da eleição.
 
 

@@ -73,7 +73,7 @@ A cada 30–60 minutos:
 
 **Render (dashboard → `checafatosrr-api`)**
 - **Events**: reinícios e deploys. No dia 25 **não deve aparecer deploy**. Reinício só se você mudou uma variável.
-- **Metrics**: CPU e memória. Picos curtos são normais.
+- **Metrics**: no plano Free o Render não mostra CPU nem memória. Para a saúde da API, use o UptimeRobot e os logs abaixo.
 - **Logs**: digite o nome na busca.
 
 | Nome no log | O que quer dizer | Preocupa? |
