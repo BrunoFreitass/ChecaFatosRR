@@ -101,7 +101,9 @@ class HttpFactCheckClient:
         async with httpx.AsyncClient(
             timeout=self._timeout, transport=self._transport, trust_env=False
         ) as client:
-            failed = False
+            # Sem nenhuma consulta (texto curto demais), a busca não aconteceu: não é "não
+            # encontramos".
+            failed = not queries
             for query in queries[:2]:
                 try:
                     results = await self._search_one(client, query)
@@ -138,6 +140,9 @@ class HttpFactCheckClient:
         except ValueError as exc:
             logger.warning("factcheck_unavailable", extra={"error": "json"})
             raise FactCheckUnavailableError from exc
+        if not isinstance(payload, dict):  # 200 fora do formato da API não é "nada encontrado"
+            logger.warning("factcheck_unavailable", extra={"error": "formato"})
+            raise FactCheckUnavailableError
         return parse_claims(payload)
 
 

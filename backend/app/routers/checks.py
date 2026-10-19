@@ -34,7 +34,7 @@ from app.schemas.checks import (
     LatestChecksOut,
 )
 from app.services.check_service import CheckSettings, CheckTools, run_check
-from app.services.factcheck import AgencyCheck, HttpFactCheckClient
+from app.services.factcheck import AgencyCheck, FactCheckUnavailableError, HttpFactCheckClient
 from app.services.fetcher import HttpPageFetcher
 from app.services.gemini import PROMPT_VERSION, GeminiAnalyzer, google_generate
 from app.services.model_limits import ModelLimits
@@ -59,10 +59,11 @@ def get_check_repository(
 
 
 class _NoFactCheck:
-    """Sem GOOGLE_FACTCHECK_API_KEY: segue sem checagens de agências."""
+    """Sem GOOGLE_FACTCHECK_API_KEY: a checagem segue, mas a busca nas agências NÃO foi feita,
+    então fica registrada como falha (nunca como "não encontramos")."""
 
     async def search(self, queries: list[str]) -> list[AgencyCheck]:
-        return []
+        raise FactCheckUnavailableError
 
 
 @lru_cache(maxsize=2)

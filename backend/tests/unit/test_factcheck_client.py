@@ -56,6 +56,10 @@ def broken_json(_: httpx.Request) -> httpx.Response:
     return httpx.Response(200, content=b"{nao e json")
 
 
+def not_an_object(_: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, json=["fora", "do", "formato"])
+
+
 async def test_found_checks_are_returned() -> None:
     found = await client([ok(CLAIM)]).search(["votação adiada"])
     assert [c.agencia for c in found] == ["Lupa"]
@@ -67,8 +71,8 @@ async def test_search_that_worked_and_found_nothing_is_an_empty_list() -> None:
 
 @pytest.mark.parametrize(
     "failure",
-    [status(403), status(429), status(500), status(503), network_error, broken_json],
-    ids=["403-chave", "429-cota", "500", "503", "rede", "json"],
+    [status(403), status(429), status(500), status(503), network_error, broken_json, not_an_object],
+    ids=["403-chave", "429-cota", "500", "503", "rede", "json", "formato"],
 )
 async def test_api_failure_is_an_error_not_an_empty_list(
     failure: Callable[[httpx.Request], httpx.Response],
@@ -88,3 +92,34 @@ async def test_incomplete_search_without_results_is_a_failure(order: str) -> Non
     steps = [status(503), ok({})] if order == "falha-depois-vazio" else [ok({}), status(503)]
     with pytest.raises(FactCheckUnavailableError):
         await client(steps).search(["a", "b"])
+
+
+async def test_both_queries_are_tried_when_the_first_fails() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.params["query"])
+        return httpx.Response(503) if len(seen) == 1 else httpx.Response(200, json={})
+
+    fc = HttpFactCheckClient("chave-de-teste", transport=httpx.MockTransport(handler))
+    with pytest.raises(FactCheckUnavailableError):
+        await fc.search(["primeira", "segunda"])
+    assert seen == ["primeira", "segunda"]
+
+
+async def test_the_api_key_is_never_logged(caplog: pytest.LogCaptureFixture) -> None:
+    with pytest.raises(FactCheckUnavailableError):
+        await client([status(429), status(429)]).search(["a", "b"])
+    assert "chave-de-teste" not in caplog.text
+
+
+async def test_no_query_at_all_is_not_a_search_that_found_nothing() -> None:
+    with pytest.raises(FactCheckUnavailableError):
+        await client([]).search([])
+
+
+async def test_without_an_api_key_the_search_is_recorded_as_not_done() -> None:
+    from app.routers.checks import _NoFactCheck
+
+    with pytest.raises(FactCheckUnavailableError):
+        await _NoFactCheck().search(["a"])
