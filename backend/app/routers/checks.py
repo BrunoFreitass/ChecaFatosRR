@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,7 +39,11 @@ from app.services.fetcher import HttpPageFetcher
 from app.services.gemini import PROMPT_VERSION, GeminiAnalyzer, google_generate
 from app.services.model_limits import ModelLimits
 from app.services.read_cache import ReadCaches, get_read_caches
-from app.services.verdict_policy import neutral_summary, read_verdict
+from app.services.verdict_policy import (
+    AGENCIES_ONLY_SEARCH_FAILED,
+    neutral_summary,
+    read_verdict,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["checagem"])
@@ -162,9 +166,21 @@ def get_check_repos() -> CheckRepos:
     return _own_check_repo
 
 
+def _search_status(result: dict[str, Any], agencies_only: bool) -> Literal["ok", "falhou"] | None:
+    """Status gravado na checagem. Antigas do modo "só agências" (de antes do registro) têm o
+    resumo honesto, escrito por nós, que já distinguia a falha; as outras antigas: None."""
+    status = result.get("busca_agencias")
+    if status == "ok" or status == "falhou":
+        return status
+    if agencies_only:
+        return "falhou" if result.get("resumo") == AGENCIES_ONLY_SEARCH_FAILED else "ok"
+    return None
+
+
 def to_out(check: StoredCheck, settings: CheckSettings, *, cached: bool = False) -> CheckOut:
     result = check.result
     agencies_only = check.prompt_version == AGENCIES_ONLY_VERSION
+    busca_agencias = _search_status(result, agencies_only)
     agencies = [item for item in result.get("checagens_agencias") or [] if isinstance(item, dict)]
     # Regras de hoje também na leitura: corrige checagens salvas antes delas (ex.: "verdadeiro"
     # sem agência), sem mexer no banco.
@@ -172,9 +188,18 @@ def to_out(check: StoredCheck, settings: CheckSettings, *, cached: bool = False)
         check.veredito, [str(item.get("veredito", "")) for item in agencies]
     )
     resumo = str(result.get("resumo", ""))
-    if downgraded:
-        # Só checagens de antes de 11/10 chegam aqui: elas não guardaram o domínio final
-        # (redirect), então nada de "origem confirmada" sem esse dado.
+    # "Verdadeiro" já rebaixado pelo finalize (gravado como nao_verificavel com o texto neutro
+    # "não encontramos"), mas com a busca nas agências FALHADA: refaz o texto neutro dizendo
+    # que a busca falhou. Na leitura, com o que está gravado (finalize e prompt intocados).
+    rewritten_failed_search = (
+        busca_agencias == "falhou"
+        and veredito == "nao_verificavel"
+        and result.get("veredito_ia") == "verdadeiro"
+        and not agencies
+    )
+    if downgraded or rewritten_failed_search:
+        # Checagens de antes de 11/10 não guardaram o domínio final (redirect): sem esse dado,
+        # nada de "origem confirmada".
         origin = result.get("origem_confirmada")
         resumo = neutral_summary(
             check.kind,
@@ -182,6 +207,7 @@ def to_out(check: StoredCheck, settings: CheckSettings, *, cached: bool = False)
             check.title,
             confirmed_origin=isinstance(origin, str),
             agency_checks=bool(agencies),
+            search_failed=busca_agencias == "falhou",
         )
     return CheckOut(
         id=check.public_id,
@@ -212,6 +238,7 @@ def to_out(check: StoredCheck, settings: CheckSettings, *, cached: bool = False)
         # "só agências" não é análise, nem anterior.
         analise_anterior=not agencies_only
         and check.prompt_version != settings.limits.prompt_version,
+        busca_agencias=busca_agencias,
     )
 
 

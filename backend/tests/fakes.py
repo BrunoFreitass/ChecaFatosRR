@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 from app.repositories.checks import (
     AGENCIES_ONLY_VERSION,
+    FAILED_SEARCH_CACHE_MINUTES,
     CacheHit,
     CheckSummary,
     LimitExceededError,
@@ -210,11 +211,22 @@ class FakeCheckRepository:
         self._next_id += 1
         return self._next_id
 
+    def advance(self, delta: timedelta) -> None:
+        """Avança o relógio do fake (idade das checagens salvas)."""
+        self._clock += delta
+
+    def _reusable(self, row: _FakeRow) -> bool:
+        # Como no SQL: análise com a busca nas agências falhada vale como cache só por pouco tempo.
+        if row.check.result.get("busca_agencias") != "falhou":
+            return True
+        age = self._clock - row.check.created_at
+        return age < timedelta(minutes=FAILED_SEARCH_CACHE_MINUTES)  # como o ">" do SQL
+
     def _fresh(self, ref: SubjectRef, prompt_version: str) -> StoredCheck | None:
         matches = [
             row.check
             for row in self.rows
-            if row.ref == ref and row.prompt_version == prompt_version
+            if row.ref == ref and row.prompt_version == prompt_version and self._reusable(row)
         ]
         return matches[-1] if matches else None
 
@@ -277,7 +289,9 @@ class FakeCheckRepository:
         matches = [
             row.check
             for row in self.rows
-            if row.ref == subject and row.prompt_version != AGENCIES_ONLY_VERSION
+            if row.ref == subject
+            and row.prompt_version != AGENCIES_ONLY_VERSION
+            and self._reusable(row)
         ]
         return matches[-1] if matches else None
 

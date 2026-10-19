@@ -149,6 +149,44 @@ describe("modo só agências (Gemini indisponível)", () => {
     });
   });
 
+  it("busca nas agências falhou (modo com IA): diz que falhou, nunca 'não encontramos'", () => {
+    renderResult(check({ checagens_agencias: [], busca_agencias: "falhou" }));
+    const heading = screen.getByRole("heading", { name: "O que dizem as agências de checagem" });
+    const section = heading.closest("section");
+    expect(section?.textContent).toContain(
+      "A busca nas agências de checagem falhou nesta análise. Tente novamente mais tarde.",
+    );
+    expect(section?.textContent).not.toMatch(/não encontramos/i);
+  });
+
+  it("busca falhou e sem veredito (\"Ainda sem checagem\"): nenhuma frase da página diz 'não encontramos'", () => {
+    renderResult(check({ veredito: "nao_verificavel", checagens_agencias: [], busca_agencias: "falhou" }));
+    expect(screen.getAllByText(/A busca nas agências de checagem falhou nesta análise/).length).toBeGreaterThanOrEqual(2);
+    expect(document.body.textContent).not.toMatch(/não encontramos/i);
+  });
+
+  it("busca nas agências falhou (modo só agências): também diz que falhou", () => {
+    renderResult(
+      check({ modo: "agencias", confianca: 0, checagens_agencias: [], busca_agencias: "falhou", resumo: "x" }),
+    );
+    const heading = screen.getByRole("heading", { name: "Checagens de agências encontradas" });
+    const section = heading.closest("section");
+    expect(section?.textContent).toContain("A busca nas agências de checagem falhou nesta análise.");
+    expect(section?.textContent).not.toMatch(/não encontramos/i);
+  });
+
+  it("busca ok e nada encontrado: 'não encontramos'", () => {
+    renderResult(check({ checagens_agencias: [], busca_agencias: "ok" }));
+    expect(screen.getByText("Não encontramos checagens de agências sobre este conteúdo.")).toBeTruthy();
+    expect(screen.queryByText(/A busca nas agências de checagem falhou/)).toBeNull();
+  });
+
+  it("checagem antiga sem o registro da busca: o texto de antes (nada inventado)", () => {
+    renderResult(check({ checagens_agencias: [] }));
+    expect(screen.getByText("Não encontramos checagens de agências sobre este conteúdo.")).toBeTruthy();
+    expect(screen.queryByText(/A busca nas agências de checagem falhou/)).toBeNull();
+  });
+
   it("checagem sem o campo modo (API antiga) segue com o veredito de sempre", () => {
     renderResult(check({ veredito: "falso", confianca: 85, checagens_agencias: [AGENCY] }));
     expect(screen.queryByText("Análise automática indisponível agora")).toBeNull();

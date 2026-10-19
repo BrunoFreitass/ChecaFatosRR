@@ -67,6 +67,9 @@ def _subject(title: str | None) -> str:
     return text.strip().rstrip(".")
 
 
+SEARCH_FAILED_SENTENCE = "A busca nas agências de checagem falhou nesta análise."
+
+
 def neutral_summary(
     kind: Literal["link", "texto"],
     domain: str | None,
@@ -74,15 +77,20 @@ def neutral_summary(
     *,
     confirmed_origin: bool,
     agency_checks: bool = False,
+    search_failed: bool = False,
 ) -> str:
     """Texto que substitui o resumo do modelo quando "verdadeiro" vira "Ainda sem checagem".
 
     confirmed_origin: o servidor baixou a página desse domínio e ele não é plataforma aberta.
     agency_checks: há checagens citadas, mas nenhuma confirma o conteúdo.
+    search_failed: a busca nas agências falhou (não é "não encontramos").
     """
-    ending = (
-        "As checagens de agências encontradas não confirmam o conteúdo." if agency_checks else None
-    )
+    if agency_checks:
+        ending: str | None = "As checagens de agências encontradas não confirmam o conteúdo."
+    elif search_failed:
+        ending = SEARCH_FAILED_SENTENCE
+    else:
+        ending = None
     if kind != "link" or not domain:
         return ending or "Não encontramos checagens de agências sobre este conteúdo."
     where = f"{domain} (origem confirmada)" if confirmed_origin else domain
@@ -124,6 +132,7 @@ def agencies_only_result(
     return {
         "modo": "agencias",
         "resumo": resumo,
+        "busca_agencias": "falhou" if search_failed else "ok",
         "pontos_suspeitos": [],
         "contexto_faltante": None,
         "checagens_agencias": [c.as_json() for c in checks],

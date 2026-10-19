@@ -21,6 +21,9 @@ import {
 } from "../lib/format.ts";
 import type { AgencyCheck, Check } from "../lib/types.ts";
 
+// Busca nas agências falhada: nunca "não encontramos" (a página é pública).
+const SEARCH_FAILED = "A busca nas agências de checagem falhou nesta análise. Tente novamente mais tarde.";
+
 const DISCLAIMER =
   "Análise automatizada. Confira também as agências de checagem e o site do TSE.";
 const EXTERNAL = { target: "_blank", rel: "noopener noreferrer nofollow ugc" } as const;
@@ -157,6 +160,8 @@ function ResultadoDaChecagem({ slug }: { slug: string }) {
   const hosts = trustedHosts([...check.checagens_agencias, ...related].map((item) => item.url));
   // Gemini indisponível (sem cota ou no limite): só o que as agências publicaram, sem veredito.
   const agenciesOnly = check.modo === "agencias";
+  // Status da busca nas agências gravado na hora da checagem (antigas: sem registro).
+  const searchFailed = check.busca_agencias === "falhou";
   // Não verificável sem checagem de agência: neutro ("Ainda sem checagem"), nunca "parece falso".
   const awaiting =
     !agenciesOnly && isAwaitingCheck(check.veredito, check.checagens_agencias.length);
@@ -190,7 +195,9 @@ function ResultadoDaChecagem({ slug }: { slug: string }) {
         )}
         {awaiting && (
           <p className="rounded-lg bg-slate-100 p-3 text-slate-800">
-            Não encontramos checagens sobre este conteúdo. Isso não significa que seja falso.
+            {searchFailed
+              ? `${SEARCH_FAILED} Isso não significa que o conteúdo seja falso.`
+              : "Não encontramos checagens sobre este conteúdo. Isso não significa que seja falso."}
           </p>
         )}
         {!agenciesOnly && check.rebaixado_por_confianca && (
@@ -270,7 +277,9 @@ function ResultadoDaChecagem({ slug }: { slug: string }) {
         </h2>
         {check.checagens_agencias.length === 0 ? (
           <p className="text-slate-700">
-            Não encontramos checagens de agências sobre este conteúdo.
+            {/* Falha da busca não é "não encontramos" (o link é público): o status é o gravado
+                na hora da checagem. */}
+            {searchFailed ? SEARCH_FAILED : "Não encontramos checagens de agências sobre este conteúdo."}
           </p>
         ) : (
           <AgencyList items={check.checagens_agencias} />

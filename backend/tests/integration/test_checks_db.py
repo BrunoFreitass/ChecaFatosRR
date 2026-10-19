@@ -502,6 +502,70 @@ async def test_previous_analysis_of_any_prompt_version(session: AsyncSession) ->
     assert (await repo.find_fresh(started.subject, 24, "outra-versao")) is None
 
 
+async def _age(session: AsyncSession, public_id: str, minutes: int) -> None:
+    async with session.begin():
+        await session.execute(
+            text(
+                "update public.checks set created_at = now() - make_interval(mins => :m) "
+                "where public_id = :p"
+            ),
+            {"m": minutes, "p": public_id},
+        )
+
+
+async def test_failed_agency_search_is_cache_only_for_a_short_time(session: AsyncSession) -> None:
+    repo = SqlCheckRepository(session)
+    user_id = await new_user(session)
+    subject = link()
+    started = await repo.begin_check(user_id, subject, LIMITS)
+    assert isinstance(started, Started)
+    stored = await repo.save_result(
+        NewCheck(
+            prompt_version=VERSION,
+            subject=started.subject,
+            user_id=user_id,
+            veredito="falso",
+            confianca=80,
+            result={"resumo": "r", "busca_agencias": "falhou"},
+            model="m",
+            listed=True,
+            title="Título",
+            claim_token=started.claim_token,
+        )
+    )
+
+    await _age(session, stored.public_id, 10)
+    assert isinstance(await repo.begin_check(user_id, subject, LIMITS), CacheHit)
+    assert (await repo.find_previous(started.subject, 24)) is not None
+
+    await _age(session, stored.public_id, 31)
+    assert (await repo.find_fresh(started.subject, 24, VERSION)) is None
+    assert (await repo.find_previous(started.subject, 24)) is None
+    assert isinstance(await repo.begin_check(user_id, subject, LIMITS), Started)
+    assert (await repo.get(stored.public_id)) is not None  # a página continua pelo link
+
+
+async def test_successful_agency_search_keeps_the_24h_cache(session: AsyncSession) -> None:
+    repo = SqlCheckRepository(session)
+    user_id = await new_user(session)
+    started = await repo.begin_check(user_id, link(), LIMITS)
+    assert isinstance(started, Started)
+    stored = await finish(repo, started, user_id, token=started.claim_token)
+    async with session.begin():
+        await session.execute(
+            text(
+                "update public.checks "
+                "set result = result || jsonb_build_object('busca_agencias', 'ok') "
+                "where public_id = :p"
+            ),
+            {"p": stored.public_id},
+        )
+    await _age(session, stored.public_id, 23 * 60)
+
+    assert (await repo.find_fresh(started.subject, 24, VERSION)) is not None
+    assert (await repo.find_previous(started.subject, 24)) is not None
+
+
 async def test_latest_has_one_item_per_link(session: AsyncSession) -> None:
     repo = SqlCheckRepository(session)
     user_id = await new_user(session)

@@ -1167,6 +1167,67 @@ def test_agencies_only_says_when_the_fact_check_api_failed(api: TestClient, env:
     assert "não encontramos" not in body["resumo"]
 
 
+def test_ai_mode_records_and_shows_that_the_agency_search_failed(api: TestClient, env: Env) -> None:
+    # Bug de honestidade (auditoria 19/10): com IA, a busca falhada virava "não encontramos".
+    env.factcheck.error = TimeoutError()
+    _, headers = env.login()
+
+    body = api.post("/checks", json={"url": LINK}, headers=headers).json()
+
+    assert body["modo"] == "ia"
+    assert body["busca_agencias"] == "falhou"
+    assert env.checks.saved[-1].result["busca_agencias"] == "falhou"
+    page = api.get(f"/checks/{body['id']}").json()
+    assert page["busca_agencias"] == "falhou"
+
+
+def test_ai_mode_records_a_successful_agency_search(api: TestClient, env: Env) -> None:
+    _, headers = env.login()
+
+    body = api.post("/checks", json={"url": LINK}, headers=headers).json()
+
+    assert body["busca_agencias"] == "ok"
+    assert env.checks.saved[-1].result["busca_agencias"] == "ok"
+
+
+def test_agencies_only_records_the_failed_search(api: TestClient, env: Env) -> None:
+    env.factcheck.error = TimeoutError()
+    env.analyzer.error = GeminiRateLimitedError("rpm")
+    _, headers = env.login()
+
+    body = api.post("/checks", json={"url": LINK}, headers=headers).json()
+
+    assert body["modo"] == "agencias"
+    assert body["busca_agencias"] == "falhou"
+
+
+def test_failed_search_analysis_is_reused_only_for_a_short_time(api: TestClient, env: Env) -> None:
+    # Busca falhada não fica 24 h em cache: depois de 30 min a próxima checagem refaz a busca
+    # (antes disso reaproveita, para não gastar a cota do Gemini a cada pedido de link viral).
+    env.factcheck.error = TimeoutError()
+    _, headers = env.login()
+    first = api.post("/checks", json={"url": LINK}, headers=headers).json()
+
+    again = api.post("/checks", json={"url": LINK}, headers=headers).json()
+    assert again["id"] == first["id"] and again["cache"] is True
+
+    env.checks.advance(timedelta(minutes=31))
+    env.factcheck.error = None
+    fresh = api.post("/checks", json={"url": LINK}, headers=headers).json()
+    assert fresh["id"] != first["id"]
+    assert fresh["busca_agencias"] == "ok"
+
+
+def test_successful_search_analysis_keeps_the_normal_cache(api: TestClient, env: Env) -> None:
+    _, headers = env.login()
+    first = api.post("/checks", json={"url": LINK}, headers=headers).json()
+
+    env.checks.advance(timedelta(hours=2))
+    again = api.post("/checks", json={"url": LINK}, headers=headers).json()
+
+    assert again["id"] == first["id"] and again["cache"] is True
+
+
 def test_agencies_only_save_failure_gives_the_limit_back(api: TestClient, env: Env) -> None:
     env.analyzer.error = GeminiRateLimitedError("rpm")
 
