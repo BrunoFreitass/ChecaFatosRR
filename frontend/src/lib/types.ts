@@ -53,6 +53,8 @@ export interface Check {
   checagens_relacionadas?: AgencyCheck[];
   /** "agencias": Gemini indisponível, só o que as agências publicaram (sem IA). API antiga: ausente. */
   modo?: "ia" | "agencias";
+  /** Busca nas agências desta análise, gravada na hora da checagem. Ausente/null: checagem antiga. */
+  busca_agencias?: "ok" | "falhou" | null;
 }
 
 export interface CheckSummary {

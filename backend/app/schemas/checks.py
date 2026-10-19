@@ -57,6 +57,9 @@ class CheckOut(BaseModel):
     # "agencias": Gemini sem cota ou no limite; só o que as agências publicaram, sem IA
     # (selo neutro "Análise automática indisponível agora").
     modo: Literal["ia", "agencias"] = "ia"
+    # Busca nas agências desta análise, gravada no momento da checagem. None = checagem antiga,
+    # sem esse registro (não se inventa: a página mostra só o que está gravado).
+    busca_agencias: Literal["ok", "falhou"] | None = None
 
 
 class CheckSummaryOut(BaseModel):

@@ -22,6 +22,10 @@ _PUBLIC_ID_ATTEMPTS = 3
 # Versão reservada do resultado "só agências" (Gemini sem cota ou no limite por minuto):
 # nunca é cache (a chave é a versão do prompt) nem "análise anterior" (não é análise de IA).
 AGENCIES_ONLY_VERSION = "agencias"
+# Análise com a busca nas agências FALHADA (result.busca_agencias = "falhou") vale como cache
+# só por este tempo, não pelas 24 h normais: a próxima checagem do mesmo conteúdo refaz a
+# busca, e o curto prazo evita gastar a cota do Gemini a cada pedido de um link viral.
+FAILED_SEARCH_CACHE_MINUTES = 30
 
 
 class GlobalQuotaRefused:
@@ -192,6 +196,13 @@ from public.checks c
 left join public.links l on l.id = c.link_id
 left join public.texts t on t.id = c.text_id
 """
+
+# Filtro de reaproveitamento (cache e "análise anterior"): busca nas agências falhada só vale
+# por FAILED_SEARCH_CACHE_MINUTES. Constante inteira do próprio código (não vem da entrada).
+_REUSABLE = (
+    "and ((c.result ->> 'busca_agencias') is distinct from 'falhou' "
+    f"or c.created_at > now() - interval '{FAILED_SEARCH_CACHE_MINUTES} minutes') "
+)
 
 # Cada ida ao banco custa ~130 ms (Render na Virginia, Supabase em São Paulo; o ensaio de
 # 12/10/2026 mediu db_ms=5252). Por isso o begin_check faz 3 comandos numa transação e o
@@ -501,7 +512,8 @@ class SqlCheckRepository:
             "and c.created_at > now() - make_interval(hours => :hours) "
             # Prompt mudou = resultado antigo não é cache (null também não).
             "and c.prompt_version = :prompt_version "
-            "order by c.created_at desc limit 1"
+            + _REUSABLE
+            + "order by c.created_at desc limit 1"
         )
 
     async def _find_fresh(
@@ -537,7 +549,8 @@ class SqlCheckRepository:
                             _SELECT_CHECK + f"where c.{column} = :sid "
                             "and c.created_at > now() - make_interval(hours => :hours) "
                             "and c.prompt_version is distinct from :agencies "
-                            "order by c.created_at desc limit 1"
+                            + _REUSABLE
+                            + "order by c.created_at desc limit 1"
                         ),
                         {
                             "sid": subject.id,

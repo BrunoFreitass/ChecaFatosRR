@@ -412,6 +412,9 @@ async def _analyze(
                     "title": data.title,
                     "model": result.model,
                     **({"tokens": result.tokens} if result.tokens else {}),
+                    # Status REAL da busca nas agências, gravado agora: a página diz "a busca
+                    # falhou" em vez de "não encontramos", e o cache dela é curto.
+                    "busca_agencias": "falhou" if agencies_failed else "ok",
                 },
                 model=result.model or settings.model,
                 listed=listed,
