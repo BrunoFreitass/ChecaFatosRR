@@ -37,12 +37,12 @@ describe("preferências de acessibilidade", () => {
     expect(classesFor(DEFAULT_PREFS)).toEqual([]);
   });
 
-  it("cada opção vira uma classe no <html>", () => {
+  it("cada opção vira uma classe no <html> (contraste vence inverter: juntos, a página ficaria branca)", () => {
+    expect(classesFor({ ...DEFAULT_PREFS, inverter: true })).toEqual(["a11y-inverter"]);
     expect(classesFor(ALL_ON).sort()).toEqual(
       [
         "a11y-fonte-3",
         "a11y-contraste",
-        "a11y-inverter",
         "a11y-cinza",
         "a11y-links",
         "a11y-espaco",
@@ -97,11 +97,21 @@ describe("preferências de acessibilidade", () => {
     expect([...document.documentElement.classList].sort()).toEqual(classesFor(ALL_ON).sort());
   });
 
+  it("contraste e inverter salvos juntos (versão anterior): fica só o contraste, sem página branca", () => {
+    localStorage.setItem(A11Y_KEY, JSON.stringify({ contraste: true, inverter: true }));
+    expect(loadPrefs()).toMatchObject({ contraste: true, inverter: false });
+
+    new Function(initScript)();
+    expect(document.documentElement.classList.contains("a11y-contraste")).toBe(true);
+    expect(document.documentElement.classList.contains("a11y-inverter")).toBe(false);
+  });
+
   it("o script de antes da 1ª pintura e o loadPrefs concordam em valores variados", () => {
     const cases: unknown[] = [
       { fonte: -1 }, { fonte: 0 }, { fonte: 1 }, { fonte: 2 }, { fonte: 1.5 }, { fonte: 4 }, { fonte: -2 },
       { fonte: "2" }, { contraste: "true" }, { contraste: 1 }, { links: true, fonte: 2 }, [], null, 7, "x",
       { cursor: true, pausar: false, espaco: true },
+      { contraste: true, inverter: true }, { contraste: true, inverter: true, cinza: true, fonte: 3 },
     ];
     for (const value of cases) {
       localStorage.setItem(A11Y_KEY, JSON.stringify(value));

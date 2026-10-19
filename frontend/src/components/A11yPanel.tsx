@@ -55,6 +55,15 @@ function trapFocus(dialog: HTMLElement, event: KeyboardEvent) {
   }
 }
 
+/** Liga ou desliga uma opção. Alto contraste e inverter cores se excluem: juntos, a inversão
+ * do fundo preto do contraste deixaria a página branca. */
+function toggle(prefs: A11yPrefs, key: Toggle): A11yPrefs {
+  const next = { ...prefs, [key]: !prefs[key] };
+  if (key === "contraste" && next.contraste) next.inverter = false;
+  if (key === "inverter" && next.inverter) next.contraste = false;
+  return next;
+}
+
 type Speech = "idle" | "speaking" | "paused";
 
 /** Texto selecionado na página agora (seleção dentro do próprio painel não conta). */
@@ -71,17 +80,16 @@ function pageSelection(dialog: HTMLElement | null): string {
 export default function A11yPanel({
   id,
   onClose,
-  initialSelection = "",
+  capturedSelection = "",
 }: {
   id: string;
   onClose: () => void;
-  initialSelection?: string;
+  /** Seleção feita antes de abrir (o botão a descarta ao fechar, ao trocar de página e ao tocar fora). */
+  capturedSelection?: string;
 }) {
   const [prefs, setPrefs] = useState<A11yPrefs>(loadPrefs);
   const dialogRef = useRef<HTMLDivElement>(null);
 
-  // Seleção feita antes de abrir o menu (capturada pelo botão ou lida na abertura).
-  const [selectionAtOpen] = useState(() => initialSelection || pageSelection(null));
   const synth = "speechSynthesis" in window ? window.speechSynthesis : null;
   // undefined = ainda procurando; null = sem voz pt-BR (ou navegador sem Web Speech).
   const [voice, setVoice] = useState<SpeechSynthesisVoice | null | undefined>(synth ? undefined : null);
@@ -145,7 +153,8 @@ export default function A11yPanel({
     if (!synth || !voice) return;
     stopSpeech(synth);
     const run = runRef.current;
-    const selected = pageSelection(dialogRef.current) || selectionAtOpen;
+    // Só a seleção atual: a feita agora na página ou a capturada nesta abertura (ainda válida).
+    const selected = pageSelection(dialogRef.current) || capturedSelection;
     const parts = splitForSpeech(selected || mainText(document));
     if (parts.length === 0) {
       setSpeech("idle");
@@ -251,7 +260,7 @@ export default function A11yPanel({
             <button
               type="button"
               aria-pressed={prefs[key]}
-              onClick={() => update({ ...prefs, [key]: !prefs[key] })}
+              onClick={() => update(toggle(prefs, key))}
               className={`${BUTTON} w-full justify-between gap-2 text-left aria-pressed:border-brand-700 aria-pressed:bg-brand-50`}
             >
               <span>{label}</span>
