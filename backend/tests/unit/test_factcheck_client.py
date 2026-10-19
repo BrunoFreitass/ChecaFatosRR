@@ -2,49 +2,46 @@
 
 Falha da API (rede, 403 de chave, 429 de cota, 5xx, JSON quebrado) não pode virar lista
 vazia: "não encontramos" e "a busca falhou" são mensagens diferentes na página pública.
+As consultas (até 3) rodam em paralelo; as respostas simuladas são por consulta.
 """
 
+import asyncio
 from collections.abc import Callable
 
 import httpx
 import pytest
 
-from app.services.factcheck import FactCheckUnavailableError, HttpFactCheckClient
+from app.services.factcheck import MAX_RESULTS, FactCheckUnavailableError, HttpFactCheckClient
 
 pytestmark = pytest.mark.anyio
 
-CLAIM = {
-    "claims": [
-        {
-            "text": "A votação foi adiada",
-            "claimReview": [
-                {
-                    "publisher": {"name": "Lupa", "site": "lupa.uol.com.br"},
-                    "url": "https://lupa.uol.com.br/jornalismo/2026/10/20/votacao",
-                    "title": "É falso que a votação foi adiada",
-                    "textualRating": "Falso",
-                    "reviewDate": "2026-10-20T10:00:00Z",
-                }
-            ],
-        }
-    ]
-}
+Reply = Callable[[httpx.Request], httpx.Response]
 
 
-def client(responses: list[Callable[[httpx.Request], httpx.Response]]) -> HttpFactCheckClient:
-    calls = iter(responses)
+def claim(n: int, agency: str = "Lupa") -> dict[str, object]:
+    return {
+        "text": f"Alegação {n}",
+        "claimReview": [
+            {
+                "publisher": {"name": agency},
+                "url": f"https://{agency.lower().replace(' ', '')}.com.br/checagem/{n}",
+                "title": f"Checagem {n}",
+                "textualRating": "Falso",
+                "reviewDate": "2026-10-20T10:00:00Z",
+            }
+        ],
+    }
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return next(calls)(request)
 
-    return HttpFactCheckClient("chave-de-teste", transport=httpx.MockTransport(handler))
-
-
-def ok(body: object) -> Callable[[httpx.Request], httpx.Response]:
-    return lambda _: httpx.Response(200, json=body)
+def found(*numbers: int, agency: str = "Lupa") -> Reply:
+    return lambda _: httpx.Response(200, json={"claims": [claim(n, agency) for n in numbers]})
 
 
-def status(code: int) -> Callable[[httpx.Request], httpx.Response]:
+def empty(_: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, json={})
+
+
+def status(code: int) -> Reply:
     return lambda _: httpx.Response(code, json={"error": {"code": code}})
 
 
@@ -60,13 +57,23 @@ def not_an_object(_: httpx.Request) -> httpx.Response:
     return httpx.Response(200, json=["fora", "do", "formato"])
 
 
+def client(by_query: dict[str, Reply], seen: list[str] | None = None) -> HttpFactCheckClient:
+    def handler(request: httpx.Request) -> httpx.Response:
+        query = request.url.params["query"]
+        if seen is not None:
+            seen.append(query)
+        return by_query[query](request)
+
+    return HttpFactCheckClient("chave-de-teste", transport=httpx.MockTransport(handler))
+
+
 async def test_found_checks_are_returned() -> None:
-    found = await client([ok(CLAIM)]).search(["votação adiada"])
-    assert [c.agencia for c in found] == ["Lupa"]
+    result = await client({"a": found(1)}).search(["a"])
+    assert [c.url for c in result] == ["https://lupa.com.br/checagem/1"]
 
 
 async def test_search_that_worked_and_found_nothing_is_an_empty_list() -> None:
-    assert await client([ok({}), ok({"claims": []})]).search(["a", "b"]) == []
+    assert await client({"a": empty, "b": empty, "c": empty}).search(["a", "b", "c"]) == []
 
 
 @pytest.mark.parametrize(
@@ -74,48 +81,80 @@ async def test_search_that_worked_and_found_nothing_is_an_empty_list() -> None:
     [status(403), status(429), status(500), status(503), network_error, broken_json, not_an_object],
     ids=["403-chave", "429-cota", "500", "503", "rede", "json", "formato"],
 )
-async def test_api_failure_is_an_error_not_an_empty_list(
-    failure: Callable[[httpx.Request], httpx.Response],
-) -> None:
+async def test_api_failure_is_an_error_not_an_empty_list(failure: Reply) -> None:
     with pytest.raises(FactCheckUnavailableError):
-        await client([failure, failure]).search(["a", "b"])
+        await client({"a": failure, "b": failure}).search(["a", "b"])
 
 
-async def test_second_query_finds_after_the_first_failed() -> None:
-    found = await client([status(503), ok(CLAIM)]).search(["a", "b"])
-    assert len(found) == 1
+async def test_results_from_one_query_win_over_the_failure_of_another() -> None:
+    result = await client({"a": status(503), "b": found(1), "c": network_error}).search(
+        ["a", "b", "c"]
+    )
+    assert len(result) == 1
 
 
-@pytest.mark.parametrize("order", ["falha-depois-vazio", "vazio-depois-falha"])
-async def test_incomplete_search_without_results_is_a_failure(order: str) -> None:
-    # Uma das consultas não chegou a ser feita: não dá para dizer "não encontramos".
-    steps = [status(503), ok({})] if order == "falha-depois-vazio" else [ok({}), status(503)]
+@pytest.mark.parametrize("failed", ["a", "b", "c"])
+async def test_incomplete_search_without_results_is_a_failure(failed: str) -> None:
+    # Uma das consultas não chegou a responder: não dá para dizer "não encontramos".
+    replies: dict[str, Reply] = {"a": empty, "b": empty, "c": empty}
+    replies[failed] = status(503)
     with pytest.raises(FactCheckUnavailableError):
-        await client(steps).search(["a", "b"])
+        await client(replies).search(["a", "b", "c"])
 
 
-async def test_both_queries_are_tried_when_the_first_fails() -> None:
+async def test_results_are_merged_in_query_order_without_repeated_links() -> None:
+    result = await client({"a": found(1, 2), "b": found(2, 3), "c": found(4, 1)}).search(
+        ["a", "b", "c"]
+    )
+    assert [c.url.rsplit("/", 1)[1] for c in result] == ["1", "2", "3", "4"]
+
+
+async def test_at_most_ten_checks_in_total() -> None:
+    result = await client(
+        {"a": found(*range(0, 8)), "b": found(*range(8, 16)), "c": found(*range(16, 24))}
+    ).search(["a", "b", "c"])
+    assert len(result) == MAX_RESULTS
+    assert [c.url.rsplit("/", 1)[1] for c in result] == [str(n) for n in range(10)]
+
+
+async def test_at_most_three_queries_are_sent() -> None:
     seen: list[str] = []
+    replies = {q: empty for q in "abcde"}
+    await client(replies, seen).search(list("abcde"))
+    assert sorted(seen) == ["a", "b", "c"]
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(request.url.params["query"])
-        return httpx.Response(503) if len(seen) == 1 else httpx.Response(200, json={})
+
+async def test_queries_run_in_parallel() -> None:
+    # Cada resposta só sai quando as 3 consultas já chegaram: em série, travaria.
+    arrived: list[str] = []
+    all_in = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        arrived.append(request.url.params["query"])
+        if len(arrived) == 3:
+            all_in.set()
+        await asyncio.wait_for(all_in.wait(), timeout=2)
+        return httpx.Response(200, json={})
 
     fc = HttpFactCheckClient("chave-de-teste", transport=httpx.MockTransport(handler))
-    with pytest.raises(FactCheckUnavailableError):
-        await fc.search(["primeira", "segunda"])
-    assert seen == ["primeira", "segunda"]
+    assert await fc.search(["a", "b", "c"]) == []
+    assert sorted(arrived) == ["a", "b", "c"]
 
 
-async def test_the_api_key_is_never_logged(caplog: pytest.LogCaptureFixture) -> None:
-    with pytest.raises(FactCheckUnavailableError):
-        await client([status(429), status(429)]).search(["a", "b"])
-    assert "chave-de-teste" not in caplog.text
+async def test_timeout_of_the_caller_is_not_swallowed() -> None:
+    async def slow(_: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(5)
+        return httpx.Response(200, json={})
+
+    fc = HttpFactCheckClient("chave-de-teste", transport=httpx.MockTransport(slow))
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.1):
+            await fc.search(["a", "b"])
 
 
 async def test_no_query_at_all_is_not_a_search_that_found_nothing() -> None:
     with pytest.raises(FactCheckUnavailableError):
-        await client([]).search([])
+        await client({}).search([])
 
 
 async def test_without_an_api_key_the_search_is_recorded_as_not_done() -> None:
@@ -123,3 +162,9 @@ async def test_without_an_api_key_the_search_is_recorded_as_not_done() -> None:
 
     with pytest.raises(FactCheckUnavailableError):
         await _NoFactCheck().search(["a"])
+
+
+async def test_the_api_key_is_never_logged(caplog: pytest.LogCaptureFixture) -> None:
+    with pytest.raises(FactCheckUnavailableError):
+        await client({"a": status(429), "b": status(429)}).search(["a", "b"])
+    assert "chave-de-teste" not in caplog.text

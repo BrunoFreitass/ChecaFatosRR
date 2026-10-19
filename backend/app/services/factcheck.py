@@ -4,6 +4,7 @@ Falha aqui nunca derruba a checagem: sem resposta, o Gemini analisa só o conte�
 `nao_verificavel`. A chave vai no cabeçalho X-Goog-Api-Key (nunca na URL).
 """
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
@@ -15,8 +16,29 @@ logger = logging.getLogger(__name__)
 
 SEARCH_URL = "https://factchecktools.googleapis.com/v1alpha1/claims:search"
 MAX_RESULTS = 10
+# Até 3 consultas por checagem, em paralelo (diagnóstico de 19/10/2026: a frase longa só acha
+# quando é quase igual ao título da checagem; palavras-chave acham muito mais).
+MAX_QUERIES = 3
 _QUERY_WORDS = 20
 _MIN_SENTENCE_WORDS = 8
+_KEYWORDS = 5
+
+# Palavras vazias e frases prontas de checagem/notícia ("é falso que", "veja", "repassem"): não
+# ajudam a achar a checagem e atrapalham a busca por palavras.
+_STOPWORDS = frozenset(
+    """
+    a o as os um uma uns umas de da do das dos em no na nos nas num numa por pelo pela pelos pelas
+    para pra pro com sem sob sobre entre até ate e ou mas que se não nao sim é e ser foi foram são
+    sao era está esta estão estao estava ao aos à às só so quem qual quais como quando onde já ja
+    mais menos muito muita muitos muitas isso isto esse essa esses essas este estes aquele aquela
+    seu sua seus suas meu minha ele ela eles elas nós nos você voce vocês voces lhe há ha tem têm
+    ter agora outro outra outros outras todo toda todos todas também tambem aqui ali vai vão vao
+    diz dizem segundo
+    falso falsa falsos falsas verdade verdadeiro verdadeira enganoso enganosa boato boatos fake
+    checamos checagem veja entenda resultado repassem repasse compartilhe compartilhem urgente
+    atenção atencao
+    """.split()
+)
 
 _URL = re.compile(r"https?://\S+")
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n+")
@@ -47,20 +69,48 @@ class FactCheckClient(Protocol):
 
 
 def build_queries(title: str | None, text: str) -> list[str]:
-    """Até duas buscas: a frase principal (ou o título) e, se ela não achar nada, as
-    palavras mais longas do texto (nomes próprios e termos específicos)."""
+    """Até 3 consultas, sem repetição, nesta ordem:
+    1. a frase principal (o título ou a 1ª frase do texto), como antes;
+    2. as palavras-chave dela (sem palavras vazias nem frases prontas, na ordem do texto);
+    3. as palavras-chave do texto: a 1ª frase do conteúdo (link) ou a frase seguinte (texto colado).
+    """
+    clean = _URL.sub(" ", text)
+    sentences = [s for s in _SENTENCE_END.split(clean) if s.strip()]
+    main = (_first_sentence(title) if title else None) or _first_sentence(text)
+    if title:
+        second, third = keywords(title), keywords(sentences[0] if sentences else None)
+    else:
+        first = sentences[0] if sentences else None
+        rest = " ".join(sentences[1:]) or None
+        second, third = keywords(first), keywords(rest)
     queries: list[str] = []
-    main = _first_sentence(title) if title else None
-    main = main or _first_sentence(text)
-    if main:
-        queries.append(main)
-    words = _words(_URL.sub(" ", text))
-    longest = sorted(dict.fromkeys(w for w in words if len(w) >= 6), key=len, reverse=True)[:8]
-    if len(longest) >= 3:
-        fallback = " ".join(longest)
-        if fallback != main:
-            queries.append(fallback)
-    return queries
+    for query in (main, second, third):
+        if query and query.casefold() not in {q.casefold() for q in queries}:
+            queries.append(query)
+    return queries[:MAX_QUERIES]
+
+
+def keywords(text: str | None, limit: int = _KEYWORDS) -> str | None:
+    """As primeiras `limit` palavras de conteúdo, na ordem do texto: sem palavras vazias nem
+    frases prontas, sem repetir; ficam nomes, siglas (TV, TSE) e números. Menos de 2: None."""
+    if not text:
+        return None
+    picked: list[str] = []
+    seen: set[str] = set()
+    for word in _words(_URL.sub(" ", text)):
+        key = word.casefold()
+        if key in _STOPWORDS or key in seen:
+            continue
+        keep = (
+            len(word) >= 3 or any(c.isdigit() for c in word) or (len(word) >= 2 and word.isupper())
+        )
+        if not keep:
+            continue
+        seen.add(key)
+        picked.append(word)
+        if len(picked) == limit:
+            break
+    return " ".join(picked) if len(picked) >= 2 else None
 
 
 def _first_sentence(text: str | None) -> str | None:
@@ -98,22 +148,30 @@ class HttpFactCheckClient:
         self._transport = transport
 
     async def search(self, queries: list[str]) -> list[AgencyCheck]:
+        """As consultas em paralelo (o teto de tempo é o de quem chama). Resultados na ordem das
+        consultas, sem repetir link, até MAX_RESULTS. Nada encontrado: só é "não encontramos" se
+        TODAS responderam; com alguma falha (ou sem consulta nenhuma), a busca falhou."""
+        selected = queries[:MAX_QUERIES]
+        if not selected:
+            raise FactCheckUnavailableError
         async with httpx.AsyncClient(
             timeout=self._timeout, transport=self._transport, trust_env=False
         ) as client:
-            # Sem nenhuma consulta (texto curto demais), a busca não aconteceu: não é "não
-            # encontramos".
-            failed = not queries
-            for query in queries[:2]:
-                try:
-                    results = await self._search_one(client, query)
-                except FactCheckUnavailableError:
-                    failed = True  # tenta a outra consulta; achou algo, vale
-                    continue
-                if results:
-                    return results
-        # Nada encontrado: só é "não encontramos" se TODAS as consultas responderam. Com
-        # alguma falha, a busca não foi feita por inteiro, e a página diz que ela falhou.
+            outcomes = await asyncio.gather(
+                *(self._search_one(client, query) for query in selected), return_exceptions=True
+            )
+        merged: dict[str, AgencyCheck] = {}
+        failed = False
+        for outcome in outcomes:
+            if isinstance(outcome, FactCheckUnavailableError):
+                failed = True
+                continue
+            if isinstance(outcome, BaseException):
+                raise outcome  # cancelamento/timeout de quem chama, ou bug: não engolir
+            for check in outcome:
+                merged.setdefault(check.url, check)
+        if merged:
+            return list(merged.values())[:MAX_RESULTS]
         if failed:
             raise FactCheckUnavailableError
         return []
