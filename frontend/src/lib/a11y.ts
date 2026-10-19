@@ -41,7 +41,9 @@ const FONT_CLASS: Record<number, string> = {
 };
 
 export function classesFor(prefs: A11yPrefs): string[] {
-  const classes = TOGGLES.filter((key) => prefs[key]).map((key) => `a11y-${key}`);
+  // Contraste e inverter se excluem (juntos, a página fica branca): vale o contraste.
+  const on = (key: (typeof TOGGLES)[number]) => prefs[key] && !(key === "inverter" && prefs.contraste);
+  const classes = TOGGLES.filter(on).map((key) => `a11y-${key}`);
   const font = FONT_CLASS[prefs.fonte];
   return font ? [font, ...classes] : classes;
 }
@@ -73,6 +75,8 @@ export function loadPrefs(): A11yPrefs {
     const value = data[key];
     if (typeof value === "boolean") prefs[key] = value;
   }
+  // Salvos juntos por uma versão anterior: fica só o contraste (juntos, a página fica branca).
+  if (prefs.contraste) prefs.inverter = false;
   return prefs;
 }
 

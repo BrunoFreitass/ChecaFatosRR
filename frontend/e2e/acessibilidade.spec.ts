@@ -176,23 +176,30 @@ test("cada opção liga e desliga; ligada, continua após recarregar (antes do J
     await expect(toggle).toHaveAttribute("aria-pressed", "false");
     expect(await htmlClasses(page)).not.toContain(cls);
   }
+  // Todas, em ordem: "Inverter cores" (2ª) desliga "Alto contraste" (1ª) — as duas se excluem.
   for (const [label] of TOGGLES) await dialog.getByRole("button", { name: label, exact: false }).click();
   await dialog.getByRole("button", { name: "Aumentar o texto" }).click();
+  const persisted = TOGGLES.filter(([, cls]) => cls !== "a11y-contraste");
 
   // Sem o bundle do site (React), as classes já estão no <html>: quem aplica é o a11y-init.js,
   // antes da 1ª pintura (sem piscar).
   await page.route(/\/assets\/index-[^/]+\.js$/, (route) => route.abort());
   await page.reload();
   const classes = await htmlClasses(page);
-  for (const [, cls] of TOGGLES) expect(classes).toContain(cls);
+  for (const [, cls] of persisted) expect(classes).toContain(cls);
+  expect(classes).not.toContain("a11y-contraste");
   expect(classes).toContain("a11y-fonte-1");
 
   await page.unroute(/\/assets\/index-[^/]+\.js$/);
   await page.reload();
   const again = await openMenu(page);
-  for (const [label] of TOGGLES) {
+  for (const [label] of persisted) {
     await expect(again.getByRole("button", { name: label, exact: false })).toHaveAttribute("aria-pressed", "true");
   }
+  await expect(again.getByRole("button", { name: "Alto contraste", exact: false })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
   await again.getByRole("button", { name: "Restaurar padrão" }).click();
   expect(await htmlClasses(page)).toEqual([]);
   await page.reload();
@@ -344,3 +351,113 @@ test("pausar animações: o mapa rola até o detalhe sem animação", async ({ p
   expect(last).toMatchObject({ behavior: "auto" });
 });
 
+test("alto contraste e inverter cores se excluem: a página nunca fica branca", async ({ page }) => {
+  await mockApi(page);
+  await page.goto("/");
+  const dialog = await openMenu(page);
+  const contraste = dialog.getByRole("button", { name: "Alto contraste", exact: false });
+  const inverter = dialog.getByRole("button", { name: "Inverter cores", exact: false });
+
+  await contraste.click();
+  await inverter.click();
+  await expect(contraste).toHaveAttribute("aria-pressed", "false");
+  expect(await htmlClasses(page)).not.toContain("a11y-contraste");
+
+  await contraste.click();
+  await expect(inverter).toHaveAttribute("aria-pressed", "false");
+  const classes = await htmlClasses(page);
+  expect(classes).toContain("a11y-contraste");
+  expect(classes).not.toContain("a11y-inverter");
+  // Fundo preto de verdade (sem a inversão por cima): o #root não tem filtro.
+  expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe("rgb(0, 0, 0)");
+  expect(await page.evaluate(() => getComputedStyle(document.getElementById("root") as HTMLElement).filter)).toBe(
+    "none",
+  );
+
+  // Preferência antiga com as duas salvas: fica só o contraste, já antes do JavaScript do site.
+  await page.evaluate((key) => localStorage.setItem(key, JSON.stringify({ contraste: true, inverter: true })), KEY);
+  await page.route(/\/assets\/index-[^/]+\.js$/, (route) => route.abort());
+  await page.reload();
+  const early = await htmlClasses(page);
+  expect(early).toContain("a11y-contraste");
+  expect(early).not.toContain("a11y-inverter");
+});
+
+test("Ouvir: a seleção não fica presa — reabrir sem seleção e trocar de página leem a página", async ({ page }) => {
+  // Voz pt-BR simulada (o Chromium de teste não tem vozes): registra o que seria falado.
+  await page.addInitScript(() => {
+    const spoken: string[] = [];
+    (window as unknown as { __spoken: string[] }).__spoken = spoken;
+    const voice = { lang: "pt-BR", name: "Teste", localService: true, default: true, voiceURI: "teste" };
+    const fake = {
+      getVoices: () => [voice],
+      speak: (u: SpeechSynthesisUtterance) => spoken.push(u.text),
+      cancel: () => undefined,
+      pause: () => undefined,
+      resume: () => undefined,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    };
+    Object.defineProperty(window, "speechSynthesis", { value: fake, configurable: true });
+    // A fala real só aceita vozes reais (TypeError com a simulada).
+    class FakeUtterance {
+      lang = "";
+      voice: unknown = null;
+      onend: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(readonly text: string) {}
+    }
+    Object.defineProperty(window, "SpeechSynthesisUtterance", { value: FakeUtterance, configurable: true });
+  });
+  const spoken = () => page.evaluate(() => (window as unknown as { __spoken: string[] }).__spoken.join(" "));
+  const clearSpoken = () => page.evaluate(() => ((window as unknown as { __spoken: string[] }).__spoken.length = 0));
+  await mockApi(page);
+  await page.goto("/termos");
+  await expect(page.locator("main h1")).toBeVisible();
+
+  // Seleciona só o título e abre o menu: lê o trecho selecionado.
+  await page.evaluate(() => {
+    const range = document.createRange();
+    range.selectNodeContents(document.querySelector("main h1") as HTMLElement);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+  });
+  const title = (await page.locator("main h1").innerText()).trim();
+  let dialog = await openMenu(page);
+  await dialog.getByRole("button", { name: "Ouvir" }).click();
+  await expect(dialog.getByText("Lendo o trecho selecionado.")).toBeVisible();
+  expect(await spoken()).toBe(title);
+
+  // Fecha, desfaz a seleção e reabre: lê a página inteira, não o trecho antigo.
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => window.getSelection()?.removeAllRanges());
+  await clearSpoken();
+  dialog = await openMenu(page);
+  await dialog.getByRole("button", { name: "Ouvir" }).click();
+  await expect(dialog.getByText("Lendo o conteúdo da página.")).toBeVisible();
+  expect((await spoken()).length).toBeGreaterThan(title.length);
+
+  // Seleção de novo, abre e troca de página (pelo histórico, sem tocar na página): a seleção
+  // capturada não vale na página nova.
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => {
+    const range = document.createRange();
+    range.selectNodeContents(document.querySelector("main h1") as HTMLElement);
+    window.getSelection()?.addRange(range);
+  });
+  dialog = await openMenu(page);
+  await page.evaluate(() => {
+    window.getSelection()?.removeAllRanges();
+    history.pushState(null, "", "/privacidade");
+    dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await expect(page).toHaveURL(/\/privacidade$/);
+  const privacyTitle = (await page.locator("main h1").innerText()).trim();
+  expect(privacyTitle).not.toBe(title);
+  await clearSpoken();
+  await dialog.getByRole("button", { name: "Ouvir" }).click();
+  await expect(dialog.getByText("Lendo o conteúdo da página.")).toBeVisible();
+  // Lê a página nova inteira (com o título dela), não o trecho guardado da página anterior.
+  expect(await spoken()).toContain(privacyTitle);
+  expect(await spoken()).not.toBe(title);
+});

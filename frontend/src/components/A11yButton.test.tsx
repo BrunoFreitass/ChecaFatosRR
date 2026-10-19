@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { MemoryRouter, useNavigate } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { A11Y_KEY } from "../lib/a11y.ts";
@@ -45,11 +46,53 @@ function install(langs: string[] | null) {
   return fake;
 }
 
+/** Troca de página sem tocar na página (navegação do próprio app, como um link seguido pelo teclado). */
+function GoElsewhere() {
+  const navigate = useNavigate();
+  return (
+    <>
+      <button type="button" onClick={() => void navigate("/outra")}>
+        ir para outra página
+      </button>
+      <button type="button" onClick={() => void navigate(-1)}>
+        voltar
+      </button>
+    </>
+  );
+}
+
+function renderButton() {
+  render(
+    <MemoryRouter initialEntries={["/"]}>
+      <A11yButton />
+      <GoElsewhere />
+    </MemoryRouter>,
+  );
+}
+
+const menuButton = () => screen.getByRole("button", { name: /^Acessibilidade/ });
+
+/** Toque/clique no botão do menu: pointerdown (captura a seleção antes de o toque desfazê-la) + click. */
+function pressMenu() {
+  fireEvent.pointerDown(menuButton());
+  fireEvent.click(menuButton());
+}
+
 async function openPanel() {
-  render(<A11yButton />);
-  fireEvent.click(screen.getByRole("button", { name: /Acessibilidade/ }));
+  renderButton();
+  pressMenu();
   return screen.findByRole("dialog", { name: "Acessibilidade" });
 }
+
+function select(id: string) {
+  const range = document.createRange();
+  range.selectNodeContents(document.getElementById(id) as HTMLElement);
+  const sel = window.getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+}
+
+const PAGE = '<main id="conteudo"><p>Texto da página inteira.</p><p id="trecho">Só este trecho.</p></main>';
 
 beforeEach(() => {
   localStorage.clear();
@@ -136,6 +179,25 @@ describe("Painel: opções", () => {
     for (let i = 0; i < 4; i++) fireEvent.click(menos);
     expect(document.documentElement.classList.contains("a11y-fonte-menos")).toBe(true);
     expect(menos.getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("alto contraste e inverter cores se excluem: ligar um desliga o outro (sem página branca)", async () => {
+    await openPanel();
+    const contraste = screen.getByRole("button", { name: /^Alto contraste/ });
+    const inverter = screen.getByRole("button", { name: /^Inverter cores/ });
+
+    fireEvent.click(contraste);
+    fireEvent.click(inverter);
+    expect(inverter.getAttribute("aria-pressed")).toBe("true");
+    expect(contraste.getAttribute("aria-pressed")).toBe("false");
+    expect(document.documentElement.classList.contains("a11y-contraste")).toBe(false);
+    expect(document.documentElement.classList.contains("a11y-inverter")).toBe(true);
+
+    fireEvent.click(contraste);
+    expect(contraste.getAttribute("aria-pressed")).toBe("true");
+    expect(inverter.getAttribute("aria-pressed")).toBe("false");
+    expect(document.documentElement.classList.contains("a11y-inverter")).toBe(false);
+    expect(JSON.parse(localStorage.getItem(A11Y_KEY) ?? "{}")).toMatchObject({ contraste: true, inverter: false });
   });
 
   it("tons de cinza mostra o aviso do “Ver em tabela”", async () => {
@@ -274,6 +336,104 @@ describe("Painel: Ouvir", () => {
     expect(fake?.spoken.map((u) => u.text)).toEqual(["Só este trecho."]);
     expect(screen.getByText("Lendo o trecho selecionado.")).toBeTruthy();
     window.getSelection()?.removeAllRanges();
+  });
+
+  it("reabrir sem seleção lê a página (a seleção da abertura anterior não fica guardada)", async () => {
+    const fake = install(["pt-BR"]);
+    document.body.insertAdjacentHTML("beforeend", PAGE);
+    select("trecho");
+    await openPanel();
+    fireEvent.keyDown(document, { key: "Escape" });
+    window.getSelection()?.removeAllRanges();
+
+    pressMenu();
+    await screen.findByRole("dialog", { name: "Acessibilidade" });
+    fireEvent.click(screen.getByRole("button", { name: "Ouvir" }));
+
+    expect(fake?.spoken.map((u) => u.text).join(" ")).toContain("Texto da página inteira.");
+    expect(screen.getByText("Lendo o conteúdo da página.")).toBeTruthy();
+    expect(screen.queryByText("Lendo o trecho selecionado.")).toBeNull();
+  });
+
+  it("trocar de página com o painel aberto limpa a seleção capturada", async () => {
+    const fake = install(["pt-BR"]);
+    document.body.insertAdjacentHTML("beforeend", PAGE);
+    select("trecho");
+    await openPanel();
+    window.getSelection()?.removeAllRanges();
+
+    fireEvent.click(screen.getByRole("button", { name: "ir para outra página" })); // sem pointerdown
+    fireEvent.click(screen.getByRole("button", { name: "Ouvir" }));
+
+    expect(fake?.spoken.map((u) => u.text).join(" ")).toContain("Texto da página inteira.");
+    expect(screen.getByText("Lendo o conteúdo da página.")).toBeTruthy();
+  });
+
+  it("ir para outra página e voltar (painel aberto) não ressuscita a seleção capturada", async () => {
+    const fake = install(["pt-BR"]);
+    document.body.insertAdjacentHTML("beforeend", PAGE);
+    select("trecho");
+    await openPanel();
+    window.getSelection()?.removeAllRanges();
+
+    fireEvent.click(screen.getByRole("button", { name: "ir para outra página" }));
+    fireEvent.click(screen.getByRole("button", { name: "voltar" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ouvir" }));
+
+    expect(fake?.spoken.map((u) => u.text).join(" ")).toContain("Texto da página inteira.");
+    expect(screen.getByText("Lendo o conteúdo da página.")).toBeTruthy();
+  });
+
+  it("toque no botão sem click não vaza a seleção para uma abertura posterior pelo teclado", async () => {
+    const fake = install(["pt-BR"]);
+    document.body.insertAdjacentHTML("beforeend", PAGE);
+    const now = vi.spyOn(performance, "now").mockReturnValue(1000);
+    try {
+      select("trecho");
+      renderButton();
+      fireEvent.pointerDown(menuButton()); // arrastou para fora: não houve click
+      window.getSelection()?.removeAllRanges();
+
+      now.mockReturnValue(10_000); // bem depois, abre pelo teclado (Enter = click sem pointerdown)
+      fireEvent.click(menuButton());
+      await screen.findByRole("dialog", { name: "Acessibilidade" });
+      fireEvent.click(screen.getByRole("button", { name: "Ouvir" }));
+
+      expect(fake?.spoken.map((u) => u.text).join(" ")).toContain("Texto da página inteira.");
+      expect(screen.getByText("Lendo o conteúdo da página.")).toBeTruthy();
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("tocar na página fora do painel descarta a seleção capturada na abertura", async () => {
+    const fake = install(["pt-BR"]);
+    document.body.insertAdjacentHTML("beforeend", PAGE);
+    select("trecho");
+    await openPanel();
+    window.getSelection()?.removeAllRanges();
+
+    fireEvent.pointerDown(document.getElementById("conteudo") as HTMLElement);
+    fireEvent.click(screen.getByRole("button", { name: "Ouvir" }));
+
+    expect(fake?.spoken.map((u) => u.text).join(" ")).toContain("Texto da página inteira.");
+    expect(screen.getByText("Lendo o conteúdo da página.")).toBeTruthy();
+  });
+
+  it("seleção desfeita pelo toque no botão (celular) ainda é lida nessa abertura", async () => {
+    const fake = install(["pt-BR"]);
+    document.body.insertAdjacentHTML("beforeend", PAGE);
+    select("trecho");
+    renderButton();
+    fireEvent.pointerDown(menuButton());
+    window.getSelection()?.removeAllRanges(); // o toque desfez a seleção antes do click
+    fireEvent.click(menuButton());
+    await screen.findByRole("dialog", { name: "Acessibilidade" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Ouvir" }));
+
+    expect(fake?.spoken.map((u) => u.text)).toEqual(["Só este trecho."]);
+    expect(screen.getByText("Lendo o trecho selecionado.")).toBeTruthy();
   });
 
   it("sem voz pt-BR: aviso e botão Ouvir desabilitado", async () => {

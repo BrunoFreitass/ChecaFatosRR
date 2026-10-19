@@ -1,5 +1,6 @@
-import { lazy, Suspense, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useLocation } from "react-router";
 
 // Menu de acessibilidade (exceção ao congelamento, 16/10/2026): só o botão fica no bundle
 // principal; o painel é carregado sob demanda. Portal no <body>, fora do #root: os filtros de
@@ -8,25 +9,74 @@ const A11yPanel = lazy(() => import("./A11yPanel.tsx"));
 
 export const A11Y_PANEL_ID = "a11y-painel";
 
+function currentSelection(): string {
+  return window.getSelection()?.toString().trim() ?? "";
+}
+
+// A seleção guardada no toque só vale para o click que vem logo depois (toque e soltar). Um
+// toque sem click (arrastou para fora, cancelou) não vaza para uma abertura posterior.
+const POINTER_TO_CLICK_MS = 1500;
+
 export function A11yButton() {
   const [open, setOpen] = useState(false);
-  const [selection, setSelection] = useState("");
+  // Seleção capturada ao abrir o painel (o "Ouvir" a lê se não houver seleção viva).
+  const [captured, setCaptured] = useState("");
+  // Qualquer navegação (outra página, voltar, só a query) descarta a seleção capturada: o
+  // "Ouvir" nunca lê texto de outra página. location.key é por entrada do histórico (voltar
+  // restaura a mesma) e fica "default" em entradas criadas fora do router, então compara chave,
+  // caminho e query com os da última renderização (ajuste de estado no render, sem efeito).
+  const loc = useLocation();
+  const locationKey = `${loc.key}|${loc.pathname}|${loc.search}`;
+  const [seenKey, setSeenKey] = useState(locationKey);
+  if (seenKey !== locationKey) {
+    setSeenKey(locationKey);
+    setCaptured("");
+  }
+  // No celular, o toque no botão desfaz a seleção antes do click: o pointerdown a guarda antes.
+  const pointerSelection = useRef({ text: "", at: 0 });
   const buttonRef = useRef<HTMLButtonElement>(null);
+
+  function takePointerSelection(): string {
+    const { text, at } = pointerSelection.current;
+    pointerSelection.current = { text: "", at: 0 };
+    return performance.now() - at <= POINTER_TO_CLICK_MS ? text : "";
+  }
+
+  function clearSelection() {
+    pointerSelection.current = { text: "", at: 0 };
+    setCaptured("");
+  }
 
   function handleToggle() {
     if (open) {
       close();
-    } else {
-      const sel = window.getSelection()?.toString().trim() ?? "";
-      setSelection((prev) => prev || sel);
-      setOpen(true);
+      return;
     }
+    const pointerText = takePointerSelection();
+    setCaptured(currentSelection() || pointerText);
+    setOpen(true);
   }
 
   function close() {
     setOpen(false);
+    clearSelection();
     buttonRef.current?.focus();
   }
+
+  // Painel aberto: tocar na página (fora do painel e do botão) pode mudar a seleção, então a
+  // capturada na abertura deixa de valer; o "Ouvir" passa a usar só a seleção do momento.
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (document.getElementById(A11Y_PANEL_ID)?.contains(target) || buttonRef.current?.contains(target)) return;
+      pointerSelection.current = { text: "", at: 0 };
+      setCaptured("");
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [open]);
 
   return createPortal(
     <>
@@ -38,10 +88,7 @@ export function A11yButton() {
         aria-expanded={open}
         aria-controls={open ? A11Y_PANEL_ID : undefined}
         onPointerDown={() => {
-          if (!open) {
-            const sel = window.getSelection()?.toString().trim() ?? "";
-            if (sel) setSelection(sel);
-          }
+          if (!open) pointerSelection.current = { text: currentSelection(), at: performance.now() };
         }}
         onClick={handleToggle}
         className="fixed bottom-3 left-3 z-50 inline-flex size-12 items-center justify-center rounded-full border-2 border-white bg-brand-700 text-white shadow-lg hover:bg-brand-800 focus-visible:outline-4 focus-visible:outline-offset-2 focus-visible:outline-slate-900"
@@ -55,7 +102,7 @@ export function A11yButton() {
       </button>
       {open && (
         <Suspense fallback={null}>
-          <A11yPanel id={A11Y_PANEL_ID} onClose={close} initialSelection={selection} />
+          <A11yPanel id={A11Y_PANEL_ID} onClose={close} capturedSelection={captured} />
         </Suspense>
       )}
     </>,

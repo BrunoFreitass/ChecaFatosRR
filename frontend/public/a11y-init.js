@@ -10,6 +10,8 @@
     if (typeof raw.fonte === "number" && fonts[raw.fonte]) root.classList.add(fonts[raw.fonte]);
     var toggles = ["contraste", "inverter", "cinza", "links", "espaco", "pausar", "cursor"];
     for (var i = 0; i < toggles.length; i++) {
+      // Contraste e inverter se excluem (juntos, a página fica branca): vale o contraste.
+      if (toggles[i] === "inverter" && raw.contraste === true) continue;
       if (raw[toggles[i]] === true) root.classList.add("a11y-" + toggles[i]);
     }
   } catch (e) {
