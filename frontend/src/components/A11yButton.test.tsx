@@ -50,9 +50,14 @@ function install(langs: string[] | null) {
 function GoElsewhere() {
   const navigate = useNavigate();
   return (
-    <button type="button" onClick={() => void navigate("/outra")}>
-      ir para outra página
-    </button>
+    <>
+      <button type="button" onClick={() => void navigate("/outra")}>
+        ir para outra página
+      </button>
+      <button type="button" onClick={() => void navigate(-1)}>
+        voltar
+      </button>
+    </>
   );
 }
 
@@ -362,6 +367,40 @@ describe("Painel: Ouvir", () => {
 
     expect(fake?.spoken.map((u) => u.text).join(" ")).toContain("Texto da página inteira.");
     expect(screen.getByText("Lendo o conteúdo da página.")).toBeTruthy();
+  });
+
+  it("ir para outra página e voltar (painel aberto) não ressuscita a seleção capturada", async () => {
+    const fake = install(["pt-BR"]);
+    document.body.insertAdjacentHTML("beforeend", PAGE);
+    select("trecho");
+    await openPanel();
+    window.getSelection()?.removeAllRanges();
+
+    fireEvent.click(screen.getByRole("button", { name: "ir para outra página" }));
+    fireEvent.click(screen.getByRole("button", { name: "voltar" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ouvir" }));
+
+    expect(fake?.spoken.map((u) => u.text).join(" ")).toContain("Texto da página inteira.");
+    expect(screen.getByText("Lendo o conteúdo da página.")).toBeTruthy();
+  });
+
+  it("toque no botão sem click não vaza a seleção para uma abertura posterior pelo teclado", async () => {
+    const fake = install(["pt-BR"]);
+    document.body.insertAdjacentHTML("beforeend", PAGE);
+    const now = vi.spyOn(performance, "now").mockReturnValue(1000);
+    select("trecho");
+    renderButton();
+    fireEvent.pointerDown(menuButton()); // arrastou para fora: não houve click
+    window.getSelection()?.removeAllRanges();
+
+    now.mockReturnValue(10_000); // bem depois, abre pelo teclado (Enter = click sem pointerdown)
+    fireEvent.click(menuButton());
+    await screen.findByRole("dialog", { name: "Acessibilidade" });
+    fireEvent.click(screen.getByRole("button", { name: "Ouvir" }));
+
+    expect(fake?.spoken.map((u) => u.text).join(" ")).toContain("Texto da página inteira.");
+    expect(screen.getByText("Lendo o conteúdo da página.")).toBeTruthy();
+    now.mockRestore();
   });
 
   it("tocar na página fora do painel descarta a seleção capturada na abertura", async () => {

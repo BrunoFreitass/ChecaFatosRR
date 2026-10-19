@@ -13,20 +13,38 @@ function currentSelection(): string {
   return window.getSelection()?.toString().trim() ?? "";
 }
 
+// A seleção guardada no toque só vale para o click que vem logo depois (toque e soltar). Um
+// toque sem click (arrastou para fora, cancelou) não vaza para uma abertura posterior.
+const POINTER_TO_CLICK_MS = 1500;
+
 export function A11yButton() {
   const [open, setOpen] = useState(false);
-  const { pathname } = useLocation();
-  // Seleção capturada ao abrir o painel, presa à página em que foi feita: trocar de página a
-  // descarta sozinha (o "Ouvir" nunca lê texto de outra página).
-  const [captured, setCaptured] = useState({ text: "", path: pathname });
+  // Seleção capturada ao abrir o painel (o "Ouvir" a lê se não houver seleção viva).
+  const [captured, setCaptured] = useState("");
+  // Qualquer navegação (outra página, voltar, só a query) descarta a seleção capturada: o
+  // "Ouvir" nunca lê texto de outra página. location.key é por entrada do histórico (voltar
+  // restaura a mesma) e fica "default" em entradas criadas fora do router, então compara chave,
+  // caminho e query com os da última renderização (ajuste de estado no render, sem efeito).
+  const location = useLocation();
+  const locationKey = `${location.key}|${location.pathname}|${location.search}`;
+  const [seenKey, setSeenKey] = useState(locationKey);
+  if (seenKey !== locationKey) {
+    setSeenKey(locationKey);
+    setCaptured("");
+  }
   // No celular, o toque no botão desfaz a seleção antes do click: o pointerdown a guarda antes.
-  const pointerSelection = useRef("");
+  const pointerSelection = useRef({ text: "", at: 0 });
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const selection = captured.path === pathname ? captured.text : "";
+
+  function takePointerSelection(): string {
+    const { text, at } = pointerSelection.current;
+    pointerSelection.current = { text: "", at: 0 };
+    return performance.now() - at <= POINTER_TO_CLICK_MS ? text : "";
+  }
 
   function clearSelection() {
-    pointerSelection.current = "";
-    setCaptured({ text: "", path: pathname });
+    pointerSelection.current = { text: "", at: 0 };
+    setCaptured("");
   }
 
   function handleToggle() {
@@ -34,8 +52,8 @@ export function A11yButton() {
       close();
       return;
     }
-    setCaptured({ text: currentSelection() || pointerSelection.current, path: pathname });
-    pointerSelection.current = "";
+    const pointerText = takePointerSelection();
+    setCaptured(currentSelection() || pointerText);
     setOpen(true);
   }
 
@@ -53,8 +71,8 @@ export function A11yButton() {
       const target = event.target;
       if (!(target instanceof Node)) return;
       if (document.getElementById(A11Y_PANEL_ID)?.contains(target) || buttonRef.current?.contains(target)) return;
-      pointerSelection.current = "";
-      setCaptured((prev) => (prev.text ? { ...prev, text: "" } : prev));
+      pointerSelection.current = { text: "", at: 0 };
+      setCaptured("");
     }
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
@@ -70,7 +88,7 @@ export function A11yButton() {
         aria-expanded={open}
         aria-controls={open ? A11Y_PANEL_ID : undefined}
         onPointerDown={() => {
-          if (!open) pointerSelection.current = currentSelection();
+          if (!open) pointerSelection.current = { text: currentSelection(), at: performance.now() };
         }}
         onClick={handleToggle}
         className="fixed bottom-3 left-3 z-50 inline-flex size-12 items-center justify-center rounded-full border-2 border-white bg-brand-700 text-white shadow-lg hover:bg-brand-800 focus-visible:outline-4 focus-visible:outline-offset-2 focus-visible:outline-slate-900"
@@ -84,7 +102,7 @@ export function A11yButton() {
       </button>
       {open && (
         <Suspense fallback={null}>
-          <A11yPanel id={A11Y_PANEL_ID} onClose={close} capturedSelection={selection} />
+          <A11yPanel id={A11Y_PANEL_ID} onClose={close} capturedSelection={captured} />
         </Suspense>
       )}
     </>,

@@ -351,7 +351,6 @@ test("pausar animações: o mapa rola até o detalhe sem animação", async ({ p
   expect(last).toMatchObject({ behavior: "auto" });
 });
 
-
 test("alto contraste e inverter cores se excluem: a página nunca fica branca", async ({ page }) => {
   await mockApi(page);
   await page.goto("/");
@@ -453,8 +452,12 @@ test("Ouvir: a seleção não fica presa — reabrir sem seleção e trocar de p
     dispatchEvent(new PopStateEvent("popstate"));
   });
   await expect(page).toHaveURL(/\/privacidade$/);
+  const privacyTitle = (await page.locator("main h1").innerText()).trim();
+  expect(privacyTitle).not.toBe(title);
   await clearSpoken();
   await dialog.getByRole("button", { name: "Ouvir" }).click();
   await expect(dialog.getByText("Lendo o conteúdo da página.")).toBeVisible();
+  // Lê a página nova inteira (com o título dela), não o trecho guardado da página anterior.
+  expect(await spoken()).toContain(privacyTitle);
   expect(await spoken()).not.toBe(title);
 });
