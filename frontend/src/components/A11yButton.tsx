@@ -25,8 +25,8 @@ export function A11yButton() {
   // "Ouvir" nunca lê texto de outra página. location.key é por entrada do histórico (voltar
   // restaura a mesma) e fica "default" em entradas criadas fora do router, então compara chave,
   // caminho e query com os da última renderização (ajuste de estado no render, sem efeito).
-  const location = useLocation();
-  const locationKey = `${location.key}|${location.pathname}|${location.search}`;
+  const loc = useLocation();
+  const locationKey = `${loc.key}|${loc.pathname}|${loc.search}`;
   const [seenKey, setSeenKey] = useState(locationKey);
   if (seenKey !== locationKey) {
     setSeenKey(locationKey);

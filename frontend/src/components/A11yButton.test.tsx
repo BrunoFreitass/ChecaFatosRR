@@ -388,19 +388,22 @@ describe("Painel: Ouvir", () => {
     const fake = install(["pt-BR"]);
     document.body.insertAdjacentHTML("beforeend", PAGE);
     const now = vi.spyOn(performance, "now").mockReturnValue(1000);
-    select("trecho");
-    renderButton();
-    fireEvent.pointerDown(menuButton()); // arrastou para fora: não houve click
-    window.getSelection()?.removeAllRanges();
+    try {
+      select("trecho");
+      renderButton();
+      fireEvent.pointerDown(menuButton()); // arrastou para fora: não houve click
+      window.getSelection()?.removeAllRanges();
 
-    now.mockReturnValue(10_000); // bem depois, abre pelo teclado (Enter = click sem pointerdown)
-    fireEvent.click(menuButton());
-    await screen.findByRole("dialog", { name: "Acessibilidade" });
-    fireEvent.click(screen.getByRole("button", { name: "Ouvir" }));
+      now.mockReturnValue(10_000); // bem depois, abre pelo teclado (Enter = click sem pointerdown)
+      fireEvent.click(menuButton());
+      await screen.findByRole("dialog", { name: "Acessibilidade" });
+      fireEvent.click(screen.getByRole("button", { name: "Ouvir" }));
 
-    expect(fake?.spoken.map((u) => u.text).join(" ")).toContain("Texto da página inteira.");
-    expect(screen.getByText("Lendo o conteúdo da página.")).toBeTruthy();
-    now.mockRestore();
+      expect(fake?.spoken.map((u) => u.text).join(" ")).toContain("Texto da página inteira.");
+      expect(screen.getByText("Lendo o conteúdo da página.")).toBeTruthy();
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it("tocar na página fora do painel descarta a seleção capturada na abertura", async () => {
