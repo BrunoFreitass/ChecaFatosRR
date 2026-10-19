@@ -31,7 +31,7 @@ def test_candidate_names_and_tse_do_not_count_as_shared_subject() -> None:
 
 
 def test_shared_keys_match_by_prefix_and_numbers_only_exactly() -> None:
-    assert shared_keys(content_keys("votou no turno"), content_keys("votou turnos")) == 2
+    assert shared_keys(content_keys("votou no dia"), content_keys("votou dias")) == 2
     # Palavra curta só igual (prefixo curto casaria palavras sem relação: pix/pixel).
     assert shared_keys(content_keys("pix hoje"), content_keys("pixel hoje")) == 1
     assert shared_keys(content_keys("dia 4"), content_keys("dia 45")) == 1  # 4 ≠ 45
@@ -69,6 +69,11 @@ def test_very_different_wording_stays_conservative_whatsapp() -> None:
     # A mensagem e a checagem dizem a mesma coisa com palavras diferentes ("vota" é a única em
     # comum): a checagem não sustenta veredito sozinha e fica em "relacionadas".
     assert not is_relevant(AOS_FATOS_DIA_4, content_keys(WHATSAPP))
+
+
+def test_simple_plural_and_the_election_year_and_round() -> None:
+    assert shared_keys(content_keys("votos anulados"), content_keys("voto anulado")) == 2
+    assert content_keys("Em 2026, no segundo turno") == []
 
 
 def test_empty_inputs_are_never_relevant() -> None:

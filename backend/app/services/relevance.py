@@ -32,7 +32,7 @@ _IGNORED = frozenset(
     urgente atencao video videos foto fotos imagem imagens post posts publicacao mensagem texto
     noticia conteudo oculto
     lula flavio bolsonaro jair janja tse stf pt pl moraes
-    eleicao eleicoes eleitoral urna urnas brasil presidente candidato governo
+    eleicao eleicoes eleitoral urna urnas brasil presidente candidato governo turno
     """.split()
 )
 
@@ -54,6 +54,12 @@ def content_keys(*texts: str | None) -> list[str]:
             key = _plain(word)
             if len(key) < 2 and not key.isdigit():
                 continue
+            if key.isdigit() and len(key) == 4 and 2020 <= int(key) <= 2030:
+                continue  # o ano da eleição aparece em quase toda notícia
+            if key in _IGNORED:
+                continue
+            if len(key) >= 4 and key.endswith("s") and not key.isdigit():
+                key = key[:-1]  # plural simples: votos/voto, fatos/fato
             if key in _IGNORED or key in seen:
                 continue
             seen.add(key)

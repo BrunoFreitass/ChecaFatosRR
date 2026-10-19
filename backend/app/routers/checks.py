@@ -189,10 +189,13 @@ def _keys(result: dict[str, Any]) -> list[str] | None:
     return [k for k in raw if isinstance(k, str)] if isinstance(raw, list) else None
 
 
-def _or_fallback(keys: list[str] | None, title: str | None, texto: str | None) -> list[str]:
+def _or_fallback(keys: list[str] | None, title: str | None, texto: str | None) -> list[str] | None:
     """Antigas (sem palavras-chave gravadas): título e texto. "Últimas" só lista links, e link
-    não tem texto: página e lista usam o mesmo critério."""
-    return keys if keys is not None else content_keys(title, texto)
+    não tem texto: página e lista usam o mesmo critério. None = antiga sem palavra-chave
+    nenhuma: sem informação, a salvaguarda não se aplica."""
+    if keys is not None:
+        return keys
+    return content_keys(title, texto) or None
 
 
 def to_out(check: StoredCheck, settings: CheckSettings, *, cached: bool = False) -> CheckOut:
@@ -202,11 +205,15 @@ def to_out(check: StoredCheck, settings: CheckSettings, *, cached: bool = False)
     # Regras de hoje também na leitura: corrige checagens salvas antes delas ("verdadeiro" sem
     # agência; checagem citada de outro assunto sustentando "Verdadeiro" ou "Falso" < 70%), sem
     # mexer no banco. Palavras-chave gravadas (desde 19/10) ou, nas antigas, título/texto.
+    keys = _or_fallback(_keys(result), check.title, check.texto)
     enforced = enforce_relevance(
         veredito=check.veredito,
         confianca=check.confianca,
         result={**result, "busca_agencias": busca_agencias},
-        keys=_or_fallback(_keys(result), check.title, check.texto),
+        keys=keys,
+        # Antiga sem palavra-chave nenhuma no título/texto: sem informação para julgar o
+        # assunto, a salvaguarda não se aplica (só a lista vazia GRAVADA é "tudo irrelevante").
+        skip=keys is None,
         kind=check.kind,
         domain=check.domain,
         title=check.title,
@@ -339,7 +346,7 @@ def _summary(item: CheckSummary) -> CheckSummaryOut:
     """Item de "Últimas" com a mesma regra da página (salvaguarda de relevância)."""
     keys = _or_fallback(None if item.keywords is None else list(item.keywords), item.title, None)
     cited = [{"titulo": t, "veredito": r} for t, r in item.agency_pairs]
-    same, _ = split_relevant(cited, keys)
+    same, _ = split_relevant(cited, keys) if keys is not None else (cited, [])
     veredito, _reason = relevant_verdict(item.veredito, item.confianca, same)
     return CheckSummaryOut(
         id=item.public_id,

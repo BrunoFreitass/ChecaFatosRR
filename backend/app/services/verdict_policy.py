@@ -171,10 +171,10 @@ FALSE_WITHOUT_AGENCY_MIN = 70
 
 
 def split_relevant(
-    cited: list[dict[str, Any]], keys: list[str]
+    cited: list[dict[str, Any]], keys: list[str] | None
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """(do mesmo assunto, de outro assunto), pelo título de cada checagem."""
-    flags = [is_relevant(str(c.get("titulo") or ""), keys) for c in cited]
+    flags = [is_relevant(str(c.get("titulo") or ""), keys or []) for c in cited]
     same = [c for c, ok in zip(cited, flags, strict=True) if ok]
     other = [c for c, ok in zip(cited, flags, strict=True) if not ok]
     return same, other
@@ -205,18 +205,19 @@ def enforce_relevance(
     veredito: str,
     confianca: int,
     result: dict[str, Any],
-    keys: list[str],
+    keys: list[str] | None,
     kind: Literal["link", "texto"],
     domain: str | None,
     title: str | None,
     agencies_only: bool = False,
+    skip: bool = False,
 ) -> Enforced:
     """Aplica a salvaguarda ao resultado (ao gravar e na leitura; idempotente): as citadas de
     outro assunto vão para "relacionadas"; "Verdadeiro" sem citada relevante que confirme vira
     texto neutro; "Falso" abaixo de 70% sem citada relevante vira "Ainda sem checagem"."""
     cited = [c for c in result.get("checagens_agencias") or [] if isinstance(c, dict)]
     related = [c for c in result.get("checagens_relacionadas") or [] if isinstance(c, dict)]
-    same, other = split_relevant(cited, keys)
+    same, other = (cited, []) if skip else split_relevant(cited, keys)
     urls = {u for c in other if (u := c.get("url"))}
     out = {
         **result,

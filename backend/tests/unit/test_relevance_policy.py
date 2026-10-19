@@ -126,6 +126,15 @@ def test_related_without_url_are_kept() -> None:
     assert len(out.checagens_relacionadas) == 2
 
 
+def test_old_check_with_no_keyword_at_all_is_left_as_is() -> None:
+    # Antiga, título só de palavras ignoradas e sem palavras-chave gravadas: sem informação para
+    # julgar o assunto, nada muda (só a lista vazia GRAVADA é "tudo de outro assunto").
+    check = replace(stored("falso", 55, [OTHER]), title="Lula e Bolsonaro no TSE")
+    out = to_out(check, SETTINGS)
+    assert out.veredito == "falso"
+    assert [c.url for c in out.checagens_agencias] == [OTHER["url"]]
+
+
 def test_misleading_and_out_of_context_are_not_touched() -> None:
     for veredito in ("enganoso", "fora_de_contexto"):
         out = to_out(stored(veredito, 45, [OTHER]), SETTINGS)
