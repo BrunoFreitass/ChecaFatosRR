@@ -200,7 +200,12 @@ def test_social_media_suggests_pasting_text_without_downloading(api: TestClient,
 
 def test_link_check(api: TestClient, env: Env) -> None:
     env.factcheck.results = [
-        AgencyCheck("Aos Fatos", "Não houve adiamento", "Falso", "https://aosfatos.org/x")
+        AgencyCheck(
+            "Aos Fatos",
+            "Calendário do 2º turno em Roraima não foi adiado",
+            "Falso",
+            "https://aosfatos.org/x",
+        )
     ]
     _, headers = env.login()
 
@@ -978,13 +983,84 @@ def test_latest_reads_an_old_true_without_agency_as_awaiting_check(
 def test_old_true_with_a_corroborating_agency_is_kept(api: TestClient, env: Env) -> None:
     env.analyzer.veredito = "verdadeiro"
     env.factcheck.results = [
-        AgencyCheck("Aos Fatos", "Confirmado", "Verdadeiro", "https://aosfatos.org/v")
+        AgencyCheck(
+            "Aos Fatos",
+            "Confirmado: calendário do 2º turno mantido em Roraima",
+            "Verdadeiro",
+            "https://aosfatos.org/v",
+        )
     ]
     _, headers = env.login()
     created = api.post("/checks", json={"url": LINK}, headers=headers).json()
 
     assert api.get(f"/checks/{created['id']}").json()["veredito"] == "verdadeiro"
     assert api.get("/checks/latest").json()["items"][0]["veredito"] == "verdadeiro"
+
+
+OTHER_SUBJECT = AgencyCheck(
+    "AFP Checamos",
+    "Pausa na divulgação de resultados não comprova fraude eleitoral",
+    "Falso",
+    "https://checamos.afp.com/pausa",
+)
+
+
+def test_unrelated_check_does_not_back_a_low_confidence_false_when_saving(
+    api: TestClient, env: Env
+) -> None:
+    # Salvaguarda de relevância (19/10): a IA "citou" uma checagem de outro assunto.
+    env.analyzer.veredito, env.analyzer.confianca = "falso", 55
+    env.factcheck.results = [OTHER_SUBJECT]
+    _, headers = env.login()
+
+    body = api.post("/checks", json={"url": LINK}, headers=headers).json()
+
+    assert body["veredito"] == "nao_verificavel"
+    assert body["checagens_agencias"] == []
+    assert [c["url"] for c in body["checagens_relacionadas"]] == [OTHER_SUBJECT.url]
+    assert env.checks.saved[-1].veredito == "nao_verificavel"
+    assert env.checks.saved[-1].result["palavras_chave"]
+    assert api.get("/checks/latest").json()["items"][0]["veredito"] == "nao_verificavel"
+
+
+def test_unrelated_confirming_check_does_not_back_a_true_when_saving(
+    api: TestClient, env: Env
+) -> None:
+    env.analyzer.veredito = "verdadeiro"
+    env.factcheck.results = [replace(OTHER_SUBJECT, veredito="Verdadeiro")]
+    _, headers = env.login()
+
+    body = api.post("/checks", json={"url": LINK}, headers=headers).json()
+
+    assert body["veredito"] == "nao_verificavel"
+    assert body["rebaixado_sem_agencia"] is True
+    assert body["resumo"] != "A votação não foi adiada."  # texto neutro, não o da IA
+
+
+def test_high_confidence_false_without_a_relevant_check_stays(api: TestClient, env: Env) -> None:
+    env.analyzer.veredito, env.analyzer.confianca = "falso", 85
+    env.factcheck.results = [OTHER_SUBJECT]
+    _, headers = env.login()
+
+    body = api.post("/checks", json={"url": LINK}, headers=headers).json()
+
+    assert body["veredito"] == "falso"
+    assert body["checagens_agencias"] == []
+
+
+def test_agencies_only_puts_unrelated_checks_in_related_when_saving(
+    api: TestClient, env: Env
+) -> None:
+    env.analyzer.error = GeminiRateLimitedError("rpm")
+    env.factcheck.results = [OTHER_SUBJECT]
+    _, headers = env.login()
+
+    body = api.post("/checks", json={"url": LINK}, headers=headers).json()
+
+    assert body["modo"] == "agencias"
+    assert body["checagens_agencias"] == []
+    assert [c["url"] for c in body["checagens_relacionadas"]] == [OTHER_SUBJECT.url]
+    assert "não encontramos checagens" in body["resumo"]
 
 
 def test_related_agency_checks_are_returned_separately(api: TestClient, env: Env) -> None:

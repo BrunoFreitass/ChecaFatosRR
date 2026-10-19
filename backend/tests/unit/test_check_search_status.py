@@ -132,7 +132,7 @@ def test_pasted_text_true_with_failed_search_gets_only_the_failure_sentence() ->
 def test_failed_status_with_agencies_present_is_not_rewritten() -> None:
     agency = {
         "agencia": "Lupa",
-        "titulo": "t",
+        "titulo": "Votação adiada em Roraima",
         "veredito": "Falso",
         "url": "https://lupa.uol.com.br/x",
     }
@@ -143,6 +143,7 @@ def test_failed_status_with_agencies_present_is_not_rewritten() -> None:
                 "busca_agencias": "falhou",
                 "checagens_agencias": [agency],
                 "resumo": "Texto gravado.",
+                "palavras_chave": ["votacao", "adiada", "roraima"],
             }
         ),
         veredito="nao_verificavel",

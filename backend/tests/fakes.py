@@ -182,6 +182,18 @@ def _agency_ratings(result: dict[str, object]) -> tuple[str, ...]:
     return tuple(a["veredito"] for a in agencies if isinstance(a, dict) and "veredito" in a)
 
 
+def _agency_pairs(result: dict[str, object]) -> tuple[tuple[str, str], ...]:
+    # Como o SQL: (título, classificação) juntos por item; chave ausente vira "".
+    agencies = result.get("checagens_agencias")
+    if not isinstance(agencies, list):
+        return ()
+    return tuple(
+        (str(a.get("titulo") or ""), str(a.get("veredito") or ""))
+        for a in agencies
+        if isinstance(a, dict)
+    )
+
+
 def _agency_count(result: dict[str, object]) -> int:
     # Igual ao SQL de latest(): só lista conta; null ou objeto viram 0.
     agencies = result.get("checagens_agencias")
@@ -401,6 +413,13 @@ class FakeCheckRepository:
                 created_at=r.check.created_at,
                 agency_checks=_agency_count(r.check.result),
                 agency_ratings=_agency_ratings(r.check.result),
+                confianca=r.check.confianca,
+                agency_pairs=_agency_pairs(r.check.result),
+                keywords=(
+                    tuple(k for k in r.check.result["palavras_chave"] if isinstance(k, str))
+                    if isinstance(r.check.result.get("palavras_chave"), list)
+                    else None
+                ),
             )
             for r in rows[:limit]
         ]

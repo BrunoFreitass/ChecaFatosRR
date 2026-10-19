@@ -566,6 +566,54 @@ async def test_successful_agency_search_keeps_the_24h_cache(session: AsyncSessio
     assert (await repo.find_previous(started.subject, 24)) is not None
 
 
+async def test_latest_returns_what_the_relevance_rule_needs(session: AsyncSession) -> None:
+    # "Últimas" mostra o mesmo veredito da página: precisa da confiança, dos títulos e das
+    # classificações das checagens citadas e das palavras-chave gravadas.
+    repo = SqlCheckRepository(session)
+    user_id = await new_user(session)
+    started = await repo.begin_check(user_id, link(), LIMITS)
+    assert isinstance(started, Started)
+    cited = [
+        {
+            "agencia": "AFP",
+            "titulo": "Pausa na divulgação",
+            "veredito": "Falso",
+            "url": "https://a.b/1",
+        },
+        {"agencia": "Lupa", "veredito": "Enganoso", "url": "https://a.b/2"},  # sem título
+        "item que não é objeto",
+        {"agencia": "UOL", "titulo": "Terceira", "veredito": "Falso", "url": "https://a.b/3"},
+    ]
+    stored = await repo.save_result(
+        NewCheck(
+            prompt_version=VERSION,
+            subject=started.subject,
+            user_id=user_id,
+            veredito="falso",
+            confianca=55,
+            result={
+                "resumo": "r",
+                "checagens_agencias": cited,
+                "palavras_chave": ["urna", "fraude"],
+            },
+            model="m",
+            listed=True,
+            title="Título",
+            claim_token=started.claim_token,
+        )
+    )
+
+    item = next(i for i in await repo.latest(None, 1000) if i.public_id == stored.public_id)
+    assert item.confianca == 55
+    # Pares alinhados mesmo com item sem título e item que não é objeto.
+    assert item.agency_pairs == (
+        ("Pausa na divulgação", "Falso"),
+        ("", "Enganoso"),
+        ("Terceira", "Falso"),
+    )
+    assert item.keywords == ("urna", "fraude")
+
+
 async def test_latest_has_one_item_per_link(session: AsyncSession) -> None:
     repo = SqlCheckRepository(session)
     user_id = await new_user(session)
