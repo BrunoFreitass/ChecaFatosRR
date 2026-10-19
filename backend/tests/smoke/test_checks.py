@@ -1181,6 +1181,24 @@ def test_ai_mode_records_and_shows_that_the_agency_search_failed(api: TestClient
     assert page["busca_agencias"] == "falhou"
 
 
+def test_quota_429_from_the_real_client_is_recorded_as_a_failed_search(
+    api: TestClient, env: Env
+) -> None:
+    # O cliente HTTP de verdade (rede simulada): 429 de cota não pode virar "não encontramos".
+    import httpx
+
+    from app.services.factcheck import HttpFactCheckClient
+
+    transport = httpx.MockTransport(lambda _: httpx.Response(429, json={"error": {"code": 429}}))
+    env.factcheck = HttpFactCheckClient("chave-de-teste", transport=transport)  # type: ignore[assignment]
+    _, headers = env.login()
+
+    body = api.post("/checks", json={"url": LINK}, headers=headers).json()
+
+    assert body["busca_agencias"] == "falhou"
+    assert env.checks.saved[-1].result["busca_agencias"] == "falhou"
+
+
 def test_ai_mode_records_a_successful_agency_search(api: TestClient, env: Env) -> None:
     _, headers = env.login()
 
