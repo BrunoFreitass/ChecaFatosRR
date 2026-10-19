@@ -415,7 +415,7 @@ Plano: `.claude/plans/etapa-2-checagem.plan.md`. Mudanças em relação a este p
   - **ruff vermelho** (14 erros e 2 arquivos sem formatação).
 - **Identidade visual nova da página:** fica para depois de 25/10 (decisão de 19/10).
 - **Busca própria nas agências brasileiras (pós-eleição / FAPERR):** ingestão dos feeds RSS das agências brasileiras (Lupa, Aos Fatos, AFP Checamos, Estadão Verifica, Comprova, UOL Confere, Fato ou Fake etc.) com busca local no Postgres (full-text em português e/ou `pg_trgm`), exibindo **só título + agência + link** (sem copiar o texto da checagem). Motivo (diagnóstico de 19/10, 20 chamadas reais à Google Fact Check Tools API): a API funciona e cobre Aos Fatos, AFP Checamos, Estadão e UOL, mas a **Lupa não apareceu em nenhuma das 20 respostas**; e a cobertura depende de a agência publicar ClaimReview. Cuidados: termos de uso de cada feed, frequência de coleta, migration com alerta e marcador no `/health/ready`.
-- **Gemini com Google Search (grounding):** avaliar como etapa futura. Hoje não está no nível gratuito para os modelos Flash 3.x e os termos de uso proíbem guardar/modificar o resultado com grounding (conflita com o cache de 24 h, as páginas públicas e a nossa pós-validação) — ver §12.
+- **Gemini com Google Search (grounding):** avaliar como etapa futura. Hoje não está no nível gratuito para os modelos Flash 3.x e os termos de uso proíbem guardar/modificar o resultado com grounding (conflita com o cache de 24 h, as páginas públicas e a nossa pós-validação; análise de 09/10/2026).
 - A latência de fundo continua: a API está na Virgínia (Render) e o banco em São Paulo (Supabase), e cada transação custa ~0,7 s. Isso só muda colocando os dois na mesma região, avaliado depois da eleição.
 
 
