@@ -1,6 +1,7 @@
 import { Link, useLocation } from "react-router";
 
 import { CheckForm } from "../components/CheckForm.tsx";
+import { HowItWorks } from "../components/HowItWorks.tsx";
 import { TseBanner } from "../components/TseBanner.tsx";
 
 export function Home() {
@@ -26,6 +27,7 @@ export function Home() {
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
         <CheckForm />
       </div>
+      <HowItWorks />
       <p className="text-slate-700">
         <Link to="/ultimas" className="font-semibold text-brand-700 underline">
           Ver as últimas checagens
