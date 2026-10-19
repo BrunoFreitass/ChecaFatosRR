@@ -15,7 +15,16 @@ from app.services.factcheck import AgencyCheck
 from app.services.relevance import is_relevant
 from app.services.url_guard import URL_IN_TEXT, is_social_host
 
-__all__ = ["corroborates", "is_open_platform", "neutral_summary", "read_verdict"]
+__all__ = [
+    "Enforced",
+    "corroborates",
+    "enforce_relevance",
+    "is_open_platform",
+    "neutral_summary",
+    "read_verdict",
+    "relevant_verdict",
+    "split_relevant",
+]
 
 # Lista FECHADA de rótulos (normalizados): "Verdadeiro, mas...", "Partly true", "Not true"
 # ou "Fato ou Fake" não confirmam.
@@ -165,8 +174,9 @@ def split_relevant(
     cited: list[dict[str, Any]], keys: list[str]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """(do mesmo assunto, de outro assunto), pelo título de cada checagem."""
-    same = [c for c in cited if is_relevant(str(c.get("titulo") or ""), keys)]
-    other = [c for c in cited if c not in same]
+    flags = [is_relevant(str(c.get("titulo") or ""), keys) for c in cited]
+    same = [c for c, ok in zip(cited, flags, strict=True) if ok]
+    other = [c for c, ok in zip(cited, flags, strict=True) if not ok]
     return same, other
 
 
@@ -207,18 +217,21 @@ def enforce_relevance(
     cited = [c for c in result.get("checagens_agencias") or [] if isinstance(c, dict)]
     related = [c for c in result.get("checagens_relacionadas") or [] if isinstance(c, dict)]
     same, other = split_relevant(cited, keys)
-    urls = {c.get("url") for c in other}
+    urls = {u for c in other if (u := c.get("url"))}
     out = {
         **result,
         "checagens_agencias": same,
-        "checagens_relacionadas": other + [c for c in related if c.get("url") not in urls],
+        "checagens_relacionadas": other
+        + [c for c in related if not (c.get("url") and c.get("url") in urls)],
     }
     if agencies_only:
         if not same and out.get("resumo") == AGENCIES_ONLY_FOUND:
             out["resumo"] = AGENCIES_ONLY_NONE  # as encontradas são de outro assunto
         return Enforced(veredito=veredito, result=out, reason=None)
     final, reason = relevant_verdict(veredito, confianca, same)
-    if reason == "verdadeiro":
+    if reason is not None:
+        # "Ainda sem checagem" com o texto neutro (nos dois casos): o resumo da IA afirmava o
+        # veredito que a regra não sustenta.
         origin = out.get("origem_confirmada")
         out["resumo"] = neutral_summary(
             kind,
@@ -228,6 +241,7 @@ def enforce_relevance(
             agency_checks=bool(same),
             search_failed=out.get("busca_agencias") == "falhou",
         )
+    if reason == "verdadeiro":
         out["rebaixado_sem_agencia"] = True
     elif reason == "confianca":
         out["rebaixado_por_confianca"] = True

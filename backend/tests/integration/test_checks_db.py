@@ -580,12 +580,9 @@ async def test_latest_returns_what_the_relevance_rule_needs(session: AsyncSessio
             "veredito": "Falso",
             "url": "https://a.b/1",
         },
-        {
-            "agencia": "Lupa",
-            "titulo": "Outra checagem",
-            "veredito": "Enganoso",
-            "url": "https://a.b/2",
-        },
+        {"agencia": "Lupa", "veredito": "Enganoso", "url": "https://a.b/2"},  # sem título
+        "item que não é objeto",
+        {"agencia": "UOL", "titulo": "Terceira", "veredito": "Falso", "url": "https://a.b/3"},
     ]
     stored = await repo.save_result(
         NewCheck(
@@ -608,8 +605,12 @@ async def test_latest_returns_what_the_relevance_rule_needs(session: AsyncSessio
 
     item = next(i for i in await repo.latest(None, 1000) if i.public_id == stored.public_id)
     assert item.confianca == 55
-    assert item.agency_titles == ("Pausa na divulgação", "Outra checagem")
-    assert item.agency_ratings == ("Falso", "Enganoso")
+    # Pares alinhados mesmo com item sem título e item que não é objeto.
+    assert item.agency_pairs == (
+        ("Pausa na divulgação", "Falso"),
+        ("", "Enganoso"),
+        ("Terceira", "Falso"),
+    )
     assert item.keywords == ("urna", "fraude")
 
 

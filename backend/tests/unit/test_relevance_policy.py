@@ -74,6 +74,9 @@ def test_old_false_40_to_69_backed_by_an_unrelated_check_becomes_awaiting() -> N
     assert out.checagens_agencias == []  # "Ainda sem checagem" na página
     assert [c.url for c in out.checagens_relacionadas] == [OTHER["url"]]
     assert out.rebaixado_por_confianca is True
+    # Texto neutro, não o resumo da IA que afirmava "falso".
+    assert out.resumo != "Texto da IA."
+    assert "Não encontramos checagens de agências" in out.resumo
 
 
 def test_false_40_to_69_with_a_relevant_check_stays() -> None:
@@ -101,6 +104,26 @@ def test_true_backed_only_by_an_unrelated_confirming_check_becomes_neutral() -> 
 def test_true_with_a_relevant_confirming_check_stays() -> None:
     out = to_out(stored("verdadeiro", 90, [SAME_TRUE]), SETTINGS)
     assert out.veredito == "verdadeiro"
+
+
+def test_true_with_failed_search_and_unrelated_check_says_the_search_failed() -> None:
+    out = to_out(stored("verdadeiro", 90, [OTHER_TRUE], busca_agencias="falhou"), SETTINGS)
+    assert out.veredito == "nao_verificavel"
+    assert "A busca nas agências de checagem falhou nesta análise." in out.resumo
+    assert "encontramos" not in out.resumo.lower()
+
+
+def test_saved_empty_keywords_are_not_replaced_by_the_title() -> None:
+    # Lista vazia gravada = nada relevante naquele momento; a leitura não troca de critério.
+    out = to_out(stored("falso", 55, [SAME], palavras_chave=[]), SETTINGS)
+    assert out.veredito == "nao_verificavel"
+
+
+def test_related_without_url_are_kept() -> None:
+    no_url = {**OTHER, "url": ""}
+    check = stored("falso", 85, [no_url], checagens_relacionadas=[{**OTHER, "url": ""}])
+    out = to_out(check, SETTINGS)
+    assert len(out.checagens_relacionadas) == 2
 
 
 def test_misleading_and_out_of_context_are_not_touched() -> None:
@@ -155,9 +178,9 @@ async def test_latest_list_shows_the_same_verdict_as_the_page() -> None:
         agency_checks=1,
         agency_ratings=("Falso",),
         confianca=55,
-        agency_titles=(OTHER["titulo"],),
+        agency_pairs=((OTHER["titulo"], "Falso"),),
     )
-    good = replace(old, public_id="m3nq8r2st5vw", agency_titles=(SAME["titulo"],))
+    good = replace(old, public_id="m3nq8r2st5vw", agency_pairs=((SAME["titulo"], "falso"),))
     out = await _latest(_LatestRepo([old, good]), None, 10)  # type: ignore[arg-type]
     assert [(i.veredito, i.total_agencias) for i in out.items] == [
         ("nao_verificavel", 0),

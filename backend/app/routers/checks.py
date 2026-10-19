@@ -182,9 +182,17 @@ def _search_status(result: dict[str, Any], agencies_only: bool) -> Literal["ok",
     return None
 
 
-def _keys(result: dict[str, Any]) -> list[str]:
+def _keys(result: dict[str, Any]) -> list[str] | None:
+    """Palavras-chave gravadas (desde 19/10). None = checagem antiga, sem o campo; lista vazia
+    gravada continua vazia (o critério é o do momento da checagem)."""
     raw = result.get("palavras_chave")
-    return [k for k in raw if isinstance(k, str)] if isinstance(raw, list) else []
+    return [k for k in raw if isinstance(k, str)] if isinstance(raw, list) else None
+
+
+def _or_fallback(keys: list[str] | None, title: str | None, texto: str | None) -> list[str]:
+    """Antigas (sem palavras-chave gravadas): título e texto. "Últimas" só lista links, e link
+    não tem texto: página e lista usam o mesmo critério."""
+    return keys if keys is not None else content_keys(title, texto)
 
 
 def to_out(check: StoredCheck, settings: CheckSettings, *, cached: bool = False) -> CheckOut:
@@ -198,7 +206,7 @@ def to_out(check: StoredCheck, settings: CheckSettings, *, cached: bool = False)
         veredito=check.veredito,
         confianca=check.confianca,
         result={**result, "busca_agencias": busca_agencias},
-        keys=_keys(result) or content_keys(check.title, check.texto),
+        keys=_or_fallback(_keys(result), check.title, check.texto),
         kind=check.kind,
         domain=check.domain,
         title=check.title,
@@ -329,11 +337,8 @@ async def _latest(
 
 def _summary(item: CheckSummary) -> CheckSummaryOut:
     """Item de "Últimas" com a mesma regra da página (salvaguarda de relevância)."""
-    keys = list(item.keywords) or content_keys(item.title)
-    cited = [
-        {"titulo": t, "veredito": r}
-        for t, r in zip(item.agency_titles, item.agency_ratings, strict=False)
-    ]
+    keys = _or_fallback(None if item.keywords is None else list(item.keywords), item.title, None)
+    cited = [{"titulo": t, "veredito": r} for t, r in item.agency_pairs]
     same, _ = split_relevant(cited, keys)
     veredito, _reason = relevant_verdict(item.veredito, item.confianca, same)
     return CheckSummaryOut(

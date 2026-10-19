@@ -101,8 +101,8 @@ class CheckSummary:
     # Salvaguarda de relevância (a lista mostra o mesmo veredito da página): confiança, títulos
     # das checagens citadas e as palavras-chave gravadas (antigas: vazio = usa o título).
     confianca: int = 0
-    agency_titles: tuple[str, ...] = ()
-    keywords: tuple[str, ...] = ()
+    agency_pairs: tuple[tuple[str, str], ...] = ()  # (título, classificação) por citada
+    keywords: tuple[str, ...] | None = None  # None = checagem antiga, sem o campo
 
 
 @dataclass(frozen=True)
@@ -327,6 +327,19 @@ on conflict (day, purpose) do update set calls = u.calls + 1
 where u.calls < :limit
 returning calls
 """
+
+
+def _pairs(raw: Any) -> tuple[tuple[str, str], ...]:
+    """(título, classificação) de cada checagem citada, vindos juntos do jsonb."""
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    if not isinstance(raw, list):
+        return ()
+    return tuple(
+        (p[0], p[1])
+        for p in raw
+        if isinstance(p, list) and len(p) == 2 and all(isinstance(x, str) for x in p)
+    )
 
 
 def _ratings(raw: Any) -> tuple[str, ...]:
@@ -776,11 +789,16 @@ class SqlCheckRepository:
             "then jsonb_path_query_array(c.result -> 'checagens_agencias', '$[*].veredito') "
             "else '[]'::jsonb end as agency_ratings, "
             "c.confianca, "
+            # Título e classificação JUNTOS por item: dois arrays separados desalinham quando um
+            # item não tem uma das chaves (o jsonpath pula o item).
             "case when jsonb_typeof(c.result -> 'checagens_agencias') = 'array' "
-            "then jsonb_path_query_array(c.result -> 'checagens_agencias', '$[*].titulo') "
-            "else '[]'::jsonb end as agency_titles, "
+            "then (select coalesce(jsonb_agg(jsonb_build_array("
+            "coalesce(e ->> 'titulo', ''), coalesce(e ->> 'veredito', ''))), '[]'::jsonb) "
+            "from jsonb_array_elements(c.result -> 'checagens_agencias') e "
+            "where jsonb_typeof(e) = 'object') "
+            "else '[]'::jsonb end as agency_pairs, "
             "case when jsonb_typeof(c.result -> 'palavras_chave') = 'array' "
-            "then c.result -> 'palavras_chave' else '[]'::jsonb end as keywords "
+            "then c.result -> 'palavras_chave' end as keywords "
             "from public.checks c join public.links l on l.id = c.link_id "
             "where c.listed "
             # Um item por link: só a checagem listada mais recente (nova versão do prompt não
@@ -801,8 +819,10 @@ class SqlCheckRepository:
                 **{
                     **row,
                     "agency_ratings": _ratings(row.get("agency_ratings")),
-                    "agency_titles": _ratings(row.get("agency_titles")),
-                    "keywords": _ratings(row.get("keywords")),
+                    "agency_pairs": _pairs(row.get("agency_pairs")),
+                    "keywords": None
+                    if row.get("keywords") is None
+                    else _ratings(row.get("keywords")),
                 }
             )
             for row in rows

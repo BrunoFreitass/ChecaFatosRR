@@ -21,17 +21,19 @@ AOS_FATOS_DIA_4 = "É falso que só eleitores de Flávio poderão votar no dia 4
 
 
 def test_keys_ignore_accents_case_and_empty_words() -> None:
-    assert content_keys("É FALSO que a Eleição foi fraudada") == ["eleicao", "fraudada"]
+    assert content_keys("É FALSO que a Votação foi fraudada") == ["votacao", "fraudada"]
 
 
 def test_candidate_names_and_tse_do_not_count_as_shared_subject() -> None:
     # Aparecem em quase toda alegação desta eleição: sozinhos não indicam o mesmo assunto.
     assert content_keys("Lula, Flávio Bolsonaro, Janja e o TSE") == []
+    assert content_keys("STF, PT, PL, Moraes, eleição, urna e presidente") == []
 
 
 def test_shared_keys_match_by_prefix_and_numbers_only_exactly() -> None:
     assert shared_keys(content_keys("votou no turno"), content_keys("votou turnos")) == 2
-    assert shared_keys(content_keys("vota hoje"), content_keys("votar hoje")) == 2
+    # Palavra curta só igual (prefixo curto casaria palavras sem relação: pix/pixel).
+    assert shared_keys(content_keys("pix hoje"), content_keys("pixel hoje")) == 1
     assert shared_keys(content_keys("dia 4"), content_keys("dia 45")) == 1  # 4 ≠ 45
     assert MIN_SHARED == 2
 

@@ -31,7 +31,8 @@ _IGNORED = frozenset(
     checamos checagem checa veja entenda resultado repassem repasse compartilhe compartilhem
     urgente atencao video videos foto fotos imagem imagens post posts publicacao mensagem texto
     noticia conteudo oculto
-    lula flavio bolsonaro jair janja tse
+    lula flavio bolsonaro jair janja tse stf pt pl moraes
+    eleicao eleicoes eleitoral urna urnas brasil presidente candidato governo
     """.split()
 )
 
@@ -63,10 +64,11 @@ def content_keys(*texts: str | None) -> list[str]:
 
 
 def _same(a: str, b: str) -> bool:
-    if a.isdigit() or b.isdigit():
+    """Mesmo prefixo de 5 letras (votou/votou, turno/turnos); palavra curta (pix, stf) e número
+    só iguais: prefixo curto casaria palavras sem relação."""
+    if a.isdigit() or b.isdigit() or len(a) < _PREFIX or len(b) < _PREFIX:
         return a == b
-    a5, b5 = a[:_PREFIX], b[:_PREFIX]
-    return a5.startswith(b5) or b5.startswith(a5)
+    return a[:_PREFIX] == b[:_PREFIX]
 
 
 def shared_keys(a: list[str], b: list[str]) -> int:
