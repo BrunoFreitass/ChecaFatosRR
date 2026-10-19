@@ -20,6 +20,7 @@ from app.legal import CURRENT_TERMS_VERSION
 from app.repositories.checks import (
     AGENCIES_ONLY_VERSION,
     CheckRepository,
+    CheckSummary,
     Limits,
     SqlCheckRepository,
     StoredCheck,
@@ -39,10 +40,13 @@ from app.services.fetcher import HttpPageFetcher
 from app.services.gemini import PROMPT_VERSION, GeminiAnalyzer, google_generate
 from app.services.model_limits import ModelLimits
 from app.services.read_cache import ReadCaches, get_read_caches
+from app.services.relevance import content_keys
 from app.services.verdict_policy import (
     AGENCIES_ONLY_SEARCH_FAILED,
+    enforce_relevance,
     neutral_summary,
-    read_verdict,
+    relevant_verdict,
+    split_relevant,
 )
 
 logger = logging.getLogger(__name__)
@@ -178,16 +182,32 @@ def _search_status(result: dict[str, Any], agencies_only: bool) -> Literal["ok",
     return None
 
 
+def _keys(result: dict[str, Any]) -> list[str]:
+    raw = result.get("palavras_chave")
+    return [k for k in raw if isinstance(k, str)] if isinstance(raw, list) else []
+
+
 def to_out(check: StoredCheck, settings: CheckSettings, *, cached: bool = False) -> CheckOut:
     result = check.result
     agencies_only = check.prompt_version == AGENCIES_ONLY_VERSION
     busca_agencias = _search_status(result, agencies_only)
-    agencies = [item for item in result.get("checagens_agencias") or [] if isinstance(item, dict)]
-    # Regras de hoje também na leitura: corrige checagens salvas antes delas (ex.: "verdadeiro"
-    # sem agência), sem mexer no banco.
-    veredito, downgraded = read_verdict(
-        check.veredito, [str(item.get("veredito", "")) for item in agencies]
+    # Regras de hoje também na leitura: corrige checagens salvas antes delas ("verdadeiro" sem
+    # agência; checagem citada de outro assunto sustentando "Verdadeiro" ou "Falso" < 70%), sem
+    # mexer no banco. Palavras-chave gravadas (desde 19/10) ou, nas antigas, título/texto.
+    enforced = enforce_relevance(
+        veredito=check.veredito,
+        confianca=check.confianca,
+        result={**result, "busca_agencias": busca_agencias},
+        keys=_keys(result) or content_keys(check.title, check.texto),
+        kind=check.kind,
+        domain=check.domain,
+        title=check.title,
+        agencies_only=agencies_only,
     )
+    result = enforced.result
+    veredito = enforced.veredito
+    downgraded = enforced.reason == "verdadeiro"
+    agencies = [item for item in result.get("checagens_agencias") or [] if isinstance(item, dict)]
     resumo = str(result.get("resumo", ""))
     # "Verdadeiro" já rebaixado pelo finalize (gravado como nao_verificavel com o texto neutro
     # "não encontramos"), mas com a busca nas agências FALHADA: refaz o texto neutro dizendo
@@ -198,7 +218,7 @@ def to_out(check: StoredCheck, settings: CheckSettings, *, cached: bool = False)
         and result.get("veredito_ia") == "verdadeiro"
         and not agencies
     )
-    if downgraded or rewritten_failed_search:
+    if rewritten_failed_search:
         # Checagens de antes de 11/10 não guardaram o domínio final (redirect): sem esse dado,
         # nada de "origem confirmada".
         origin = result.get("origem_confirmada")
@@ -302,18 +322,27 @@ async def _latest(
         _encode_cursor(items[-1].created_at, items[-1].public_id) if len(items) == limit else None
     )
     return LatestChecksOut(
-        items=[
-            CheckSummaryOut(
-                id=item.public_id,
-                domain=item.domain,
-                title=item.title,
-                veredito=read_verdict(item.veredito, item.agency_ratings)[0],  # type: ignore[arg-type]
-                created_at=item.created_at,
-                total_agencias=item.agency_checks,
-            )
-            for item in items
-        ],
+        items=[_summary(item) for item in items],
         next_cursor=next_cursor,
+    )
+
+
+def _summary(item: CheckSummary) -> CheckSummaryOut:
+    """Item de "Últimas" com a mesma regra da página (salvaguarda de relevância)."""
+    keys = list(item.keywords) or content_keys(item.title)
+    cited = [
+        {"titulo": t, "veredito": r}
+        for t, r in zip(item.agency_titles, item.agency_ratings, strict=False)
+    ]
+    same, _ = split_relevant(cited, keys)
+    veredito, _reason = relevant_verdict(item.veredito, item.confianca, same)
+    return CheckSummaryOut(
+        id=item.public_id,
+        domain=item.domain,
+        title=item.title,
+        veredito=veredito,  # type: ignore[arg-type]
+        created_at=item.created_at,
+        total_agencias=len(same),
     )
 
 

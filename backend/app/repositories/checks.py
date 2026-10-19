@@ -98,6 +98,11 @@ class CheckSummary:
     agency_checks: int = 0
     # Classificações dessas checagens: a leitura reaplica a regra do "verdadeiro".
     agency_ratings: tuple[str, ...] = ()
+    # Salvaguarda de relevância (a lista mostra o mesmo veredito da página): confiança, títulos
+    # das checagens citadas e as palavras-chave gravadas (antigas: vazio = usa o título).
+    confianca: int = 0
+    agency_titles: tuple[str, ...] = ()
+    keywords: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -769,7 +774,13 @@ class SqlCheckRepository:
             "as agency_checks, "
             "case when jsonb_typeof(c.result -> 'checagens_agencias') = 'array' "
             "then jsonb_path_query_array(c.result -> 'checagens_agencias', '$[*].veredito') "
-            "else '[]'::jsonb end as agency_ratings "
+            "else '[]'::jsonb end as agency_ratings, "
+            "c.confianca, "
+            "case when jsonb_typeof(c.result -> 'checagens_agencias') = 'array' "
+            "then jsonb_path_query_array(c.result -> 'checagens_agencias', '$[*].titulo') "
+            "else '[]'::jsonb end as agency_titles, "
+            "case when jsonb_typeof(c.result -> 'palavras_chave') = 'array' "
+            "then c.result -> 'palavras_chave' else '[]'::jsonb end as keywords "
             "from public.checks c join public.links l on l.id = c.link_id "
             "where c.listed "
             # Um item por link: só a checagem listada mais recente (nova versão do prompt não
@@ -786,6 +797,13 @@ class SqlCheckRepository:
         async with self._session.begin():
             rows = (await self._session.execute(text(sql), params)).mappings().all()
         return [
-            CheckSummary(**{**row, "agency_ratings": _ratings(row.get("agency_ratings"))})
+            CheckSummary(
+                **{
+                    **row,
+                    "agency_ratings": _ratings(row.get("agency_ratings")),
+                    "agency_titles": _ratings(row.get("agency_titles")),
+                    "keywords": _ratings(row.get("keywords")),
+                }
+            )
             for row in rows
         ]

@@ -41,6 +41,7 @@ from app.services.gemini import (
 )
 from app.services.gemini_quota import CombinedQuota
 from app.services.moderation.local_filter import check_text
+from app.services.relevance import content_keys
 from app.services.text_input import TextTooLongError, TextTooShortError, prepare_text
 from app.services.url_guard import (
     BlockedAddressError,
@@ -49,7 +50,7 @@ from app.services.url_guard import (
     is_social_media,
     normalize_url,
 )
-from app.services.verdict_policy import agencies_only_result, is_open_platform
+from app.services.verdict_policy import agencies_only_result, enforce_relevance, is_open_platform
 
 logger = logging.getLogger(__name__)
 
@@ -397,25 +398,41 @@ async def _analyze(
             reason,
         )
 
+    # Salvaguarda de relevância (19/10/2026), depois do finalize: checagem citada de OUTRO
+    # assunto vai para "relacionadas" e não sustenta "Verdadeiro" nem "Falso" abaixo de 70%. As
+    # palavras-chave ficam gravadas: a leitura reaplica a mesma regra com o mesmo critério.
+    keys = content_keys(data.title, data.content)
+    enforced = enforce_relevance(
+        veredito=result.veredito,
+        confianca=result.confianca,
+        # O título vai junto no result: é o desta checagem, mesmo se ela não for listada.
+        # O modelo também: o eval e o log mostram a qualidade por modelo do pool.
+        # Tokens (painel do admin): só no banco; a resposta pública escolhe os campos.
+        result={
+            **result.to_json(),
+            "title": data.title,
+            "model": result.model,
+            **({"tokens": result.tokens} if result.tokens else {}),
+            # Status REAL da busca nas agências, gravado agora: a página diz "a busca
+            # falhou" em vez de "não encontramos", e o cache dela é curto.
+            "busca_agencias": "falhou" if agencies_failed else "ok",
+            "palavras_chave": keys,
+        },
+        keys=keys,
+        kind=data.kind,
+        domain=data.source_domain,
+        title=data.title,
+    )
+    if enforced.reason is not None:
+        logger.info("relevance_downgrade", extra={"reason": enforced.reason})
     with timer.stage("db"):
         saved = await repo.save_result(
             NewCheck(
                 subject=started.subject,
                 user_id=user_id,
-                veredito=result.veredito,
+                veredito=enforced.veredito,
                 confianca=result.confianca,
-                # O título vai junto no result: é o desta checagem, mesmo se ela não for listada.
-                # O modelo também: o eval e o log mostram a qualidade por modelo do pool.
-                # Tokens (painel do admin): só no banco; a resposta pública escolhe os campos.
-                result={
-                    **result.to_json(),
-                    "title": data.title,
-                    "model": result.model,
-                    **({"tokens": result.tokens} if result.tokens else {}),
-                    # Status REAL da busca nas agências, gravado agora: a página diz "a busca
-                    # falhou" em vez de "não encontramos", e o cache dela é curto.
-                    "busca_agencias": "falhou" if agencies_failed else "ok",
-                },
+                result=enforced.result,
                 model=result.model or settings.model,
                 listed=listed,
                 title=data.title,
@@ -461,7 +478,10 @@ async def _agencies_only(
                     veredito="nao_verificavel",
                     confianca=0,
                     result=agencies_only_result(
-                        data.agency_checks, data.title, search_failed=job.search_failed
+                        data.agency_checks,
+                        data.title,
+                        search_failed=job.search_failed,
+                        keys=content_keys(data.title, data.content),
                     ),
                     model=AGENCIES_ONLY_VERSION,
                     listed=False,

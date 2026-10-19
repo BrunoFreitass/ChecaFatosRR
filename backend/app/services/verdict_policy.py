@@ -8,9 +8,11 @@ leitura corrige checagens salvas antes da regra, sem mexer no banco.
 
 import unicodedata
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from app.services.factcheck import AgencyCheck
+from app.services.relevance import is_relevant
 from app.services.url_guard import URL_IN_TEXT, is_social_host
 
 __all__ = ["corroborates", "is_open_platform", "neutral_summary", "read_verdict"]
@@ -119,11 +121,18 @@ AGENCIES_ONLY_NONE = (
 
 
 def agencies_only_result(
-    checks: list[AgencyCheck], title: str | None, *, search_failed: bool = False
+    checks: list[AgencyCheck],
+    title: str | None,
+    *,
+    search_failed: bool = False,
+    keys: list[str] | None = None,
 ) -> dict[str, Any]:
     """Resultado sem IA: só o que a Fact Check API trouxe, com texto neutro. Busca que
-    falhou não é "não encontramos" (o link fica público e seria enganoso)."""
-    if checks:
+    falhou não é "não encontramos" (o link fica público e seria enganoso). Com `keys`, as de
+    outro assunto vão para "relacionadas" (salvaguarda de relevância)."""
+    found = [c.as_json() for c in checks]
+    same, other = split_relevant(found, keys) if keys is not None else (found, [])
+    if same:
         resumo = AGENCIES_ONLY_FOUND
     elif search_failed:
         resumo = AGENCIES_ONLY_SEARCH_FAILED
@@ -135,8 +144,91 @@ def agencies_only_result(
         "busca_agencias": "falhou" if search_failed else "ok",
         "pontos_suspeitos": [],
         "contexto_faltante": None,
-        "checagens_agencias": [c.as_json() for c in checks],
-        "checagens_relacionadas": [],
+        "checagens_agencias": same,
+        "checagens_relacionadas": other,
         "fontes_sugeridas": [],
         "title": title,
+        **({"palavras_chave": keys} if keys is not None else {}),
     }
+
+
+# ---------------------------------------------------------------------------------------
+# Salvaguarda de relevância (19/10/2026): checagem de OUTRO assunto não sustenta veredito
+# ---------------------------------------------------------------------------------------
+
+# Mesmo piso do finalize (gemini.LOW_CONFIDENCE_WITHOUT_AGENCIES; um teste confere): "Falso"
+# abaixo disto só com checagem de agência citada e do mesmo assunto.
+FALSE_WITHOUT_AGENCY_MIN = 70
+
+
+def split_relevant(
+    cited: list[dict[str, Any]], keys: list[str]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(do mesmo assunto, de outro assunto), pelo título de cada checagem."""
+    same = [c for c in cited if is_relevant(str(c.get("titulo") or ""), keys)]
+    other = [c for c in cited if c not in same]
+    return same, other
+
+
+def relevant_verdict(
+    veredito: str, confianca: int, relevant: list[dict[str, Any]]
+) -> tuple[str, Literal["verdadeiro", "confianca"] | None]:
+    """Veredito com a salvaguarda e o motivo do rebaixamento (None = não rebaixou)."""
+    if veredito == "verdadeiro" and not any(
+        corroborates(str(c.get("veredito") or "")) for c in relevant
+    ):
+        return "nao_verificavel", "verdadeiro"
+    if veredito == "falso" and confianca < FALSE_WITHOUT_AGENCY_MIN and not relevant:
+        return "nao_verificavel", "confianca"
+    return veredito, None
+
+
+@dataclass(frozen=True)
+class Enforced:
+    veredito: str
+    result: dict[str, Any]
+    reason: Literal["verdadeiro", "confianca"] | None
+
+
+def enforce_relevance(
+    *,
+    veredito: str,
+    confianca: int,
+    result: dict[str, Any],
+    keys: list[str],
+    kind: Literal["link", "texto"],
+    domain: str | None,
+    title: str | None,
+    agencies_only: bool = False,
+) -> Enforced:
+    """Aplica a salvaguarda ao resultado (ao gravar e na leitura; idempotente): as citadas de
+    outro assunto vão para "relacionadas"; "Verdadeiro" sem citada relevante que confirme vira
+    texto neutro; "Falso" abaixo de 70% sem citada relevante vira "Ainda sem checagem"."""
+    cited = [c for c in result.get("checagens_agencias") or [] if isinstance(c, dict)]
+    related = [c for c in result.get("checagens_relacionadas") or [] if isinstance(c, dict)]
+    same, other = split_relevant(cited, keys)
+    urls = {c.get("url") for c in other}
+    out = {
+        **result,
+        "checagens_agencias": same,
+        "checagens_relacionadas": other + [c for c in related if c.get("url") not in urls],
+    }
+    if agencies_only:
+        if not same and out.get("resumo") == AGENCIES_ONLY_FOUND:
+            out["resumo"] = AGENCIES_ONLY_NONE  # as encontradas são de outro assunto
+        return Enforced(veredito=veredito, result=out, reason=None)
+    final, reason = relevant_verdict(veredito, confianca, same)
+    if reason == "verdadeiro":
+        origin = out.get("origem_confirmada")
+        out["resumo"] = neutral_summary(
+            kind,
+            origin if isinstance(origin, str) else domain,
+            title,
+            confirmed_origin=isinstance(origin, str),
+            agency_checks=bool(same),
+            search_failed=out.get("busca_agencias") == "falhou",
+        )
+        out["rebaixado_sem_agencia"] = True
+    elif reason == "confianca":
+        out["rebaixado_por_confianca"] = True
+    return Enforced(veredito=final, result=out, reason=reason)

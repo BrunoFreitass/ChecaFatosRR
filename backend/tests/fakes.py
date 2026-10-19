@@ -182,6 +182,13 @@ def _agency_ratings(result: dict[str, object]) -> tuple[str, ...]:
     return tuple(a["veredito"] for a in agencies if isinstance(a, dict) and "veredito" in a)
 
 
+def _agency_field(result: dict[str, object], name: str) -> tuple[str, ...]:
+    agencies = result.get("checagens_agencias")
+    if not isinstance(agencies, list):
+        return ()
+    return tuple(a[name] for a in agencies if isinstance(a, dict) and isinstance(a.get(name), str))
+
+
 def _agency_count(result: dict[str, object]) -> int:
     # Igual ao SQL de latest(): só lista conta; null ou objeto viram 0.
     agencies = result.get("checagens_agencias")
@@ -401,6 +408,11 @@ class FakeCheckRepository:
                 created_at=r.check.created_at,
                 agency_checks=_agency_count(r.check.result),
                 agency_ratings=_agency_ratings(r.check.result),
+                confianca=r.check.confianca,
+                agency_titles=_agency_field(r.check.result, "titulo"),
+                keywords=tuple(
+                    k for k in r.check.result.get("palavras_chave") or [] if isinstance(k, str)
+                ),
             )
             for r in rows[:limit]
         ]
