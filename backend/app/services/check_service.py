@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import date, datetime
+from typing import Any
 from uuid import UUID
 
 from app.config import DEFAULT_OPEN_PLATFORMS
@@ -30,7 +31,7 @@ from app.repositories.checks import (
     TextSubject,
 )
 from app.services.extractor import extract_page
-from app.services.factcheck import AgencyCheck, FactCheckClient, build_queries
+from app.services.factcheck import AgencyCheck, FactCheckClient, build_queries, same_page
 from app.services.fetcher import PageFetcher, PageUnreadableError
 from app.services.gemini import (
     AnalysisInput,
@@ -50,7 +51,12 @@ from app.services.url_guard import (
     is_social_media,
     normalize_url,
 )
-from app.services.verdict_policy import agencies_only_result, enforce_relevance, is_open_platform
+from app.services.verdict_policy import (
+    agencies_only_result,
+    agency_page_result,
+    enforce_relevance,
+    is_open_platform,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +133,8 @@ class CheckOutcome:
     check: StoredCheck
     cached: bool
     agencies_only: bool = False  # Gemini indisponível: só o que as agências publicaram
+    # O link é a própria checagem de uma agência (sem IA): no log, não é "Gemini fora".
+    agency_page: bool = False
 
 
 @dataclass(frozen=True)
@@ -214,7 +222,10 @@ async def run_check(
     model: str | None = None
     try:
         result = await _run_check(user_id, url, texto, repo, tools, settings, timer)
-        outcome = "agencias" if result.agencies_only else "cache" if result.cached else "nova"
+        if result.agency_page:
+            outcome = "checagem_de_agencia"
+        else:
+            outcome = "agencias" if result.agencies_only else "cache" if result.cached else "nova"
         if outcome == "nova":
             model = result.check.result.get("model")  # qual modelo do pool respondeu
         return result
@@ -359,6 +370,22 @@ async def _analyze(
         agency_checks, agencies_failed = await _search_agencies(tools, data)
         data = replace(data, agency_checks=agency_checks)
 
+    # O link enviado é a própria checagem de uma agência (23/10/2026): o título dela não é a
+    # alegação, e a IA via contradição com o rating. Sem IA e sem veredito nosso.
+    own = isinstance(parsed, LinkInput) and next(
+        (c for c in agency_checks if same_page(parsed.url.url, c.url)), None
+    )
+    if own:
+        return await _without_ai(
+            _AgenciesOnly(data, started, user_id, claim_token, published_at, agencies_failed),
+            repo,
+            settings,
+            timer,
+            agency_page_result(own, data.title, keys=content_keys(data.title, data.content)),
+            log=("agency_page_mode", {"agencia": own.agencia}),
+            agency_page=True,
+        )
+
     # A cota só é gasta depois que o conteúdo foi lido (link ilegível não gasta), e só quando
     # um modelo é de fato chamado: global + modelo numa transação (gemini_quota).
     quota = CombinedQuota(repo, "checagem", settings.daily_gemini_checks)
@@ -390,13 +417,22 @@ async def _analyze(
                 return CheckOutcome(check=previous, cached=True)
         except Exception:  # o fallback é um extra: se falhar, segue para o modo agências
             logger.exception("previous_analysis_lookup_failed")
-        return await _agencies_only(
-            _AgenciesOnly(data, started, user_id, claim_token, published_at, agencies_failed),
-            repo,
-            settings,
-            timer,
-            reason,
+        job = _AgenciesOnly(data, started, user_id, claim_token, published_at, agencies_failed)
+        result = agencies_only_result(
+            data.agency_checks,
+            data.title,
+            search_failed=agencies_failed,
+            keys=content_keys(data.title, data.content),
         )
+        log = (
+            "agencies_only_mode",
+            {
+                "reason": reason,
+                "agency_checks": len(data.agency_checks),
+                "search_failed": agencies_failed,
+            },
+        )
+        return await _without_ai(job, repo, settings, timer, result, log=log)
 
     # Salvaguarda de relevância (19/10/2026), depois do finalize: checagem citada de OUTRO
     # assunto vai para "relacionadas" e não sustenta "Verdadeiro" nem "Falso" abaixo de 70%. As
@@ -454,16 +490,20 @@ class _AgenciesOnly:
     search_failed: bool
 
 
-async def _agencies_only(
+async def _without_ai(
     job: _AgenciesOnly,
     repo: CheckRepository,
     settings: CheckSettings,
     timer: StageTimer,
-    reason: str,
+    result: dict[str, Any],
+    *,
+    log: tuple[str, dict[str, Any]],
+    agency_page: bool = False,
 ) -> CheckOutcome:
-    """Resultado sem IA (só o que a Fact Check API trouxe), salvo com a versão reservada:
-    tem link público, nunca vira cache e não é "Últimas". O pedido vira consulta: não conta
-    no limite de checagens com IA, mas conta no de consultas (Gemini fora não libera geral)."""
+    """Resultado sem IA (modo "só agências" ou o link que é a própria checagem de uma agência),
+    salvo com a versão reservada: tem link público, nunca vira cache e não é "Últimas". O
+    pedido vira consulta: não conta no limite de checagens com IA, mas conta no de consultas
+    (Gemini fora não libera geral)."""
     data, started = job.data, job.started
     try:
         with timer.stage("db"):
@@ -477,12 +517,7 @@ async def _agencies_only(
                     user_id=job.user_id,
                     veredito="nao_verificavel",
                     confianca=0,
-                    result=agencies_only_result(
-                        data.agency_checks,
-                        data.title,
-                        search_failed=job.search_failed,
-                        keys=content_keys(data.title, data.content),
-                    ),
+                    result=result,
                     model=AGENCIES_ONLY_VERSION,
                     listed=False,
                     title=data.title,
@@ -498,15 +533,8 @@ async def _agencies_only(
         # claim). shield: termina mesmo se a requisição foi cancelada.
         await asyncio.shield(repo.refund(started.request_id))
         raise
-    logger.info(
-        "agencies_only_mode",
-        extra={
-            "reason": reason,
-            "agency_checks": len(data.agency_checks),
-            "search_failed": job.search_failed,
-        },
-    )
-    return CheckOutcome(check=saved, cached=False, agencies_only=True)
+    logger.info(log[0], extra=log[1])
+    return CheckOutcome(check=saved, cached=False, agencies_only=True, agency_page=agency_page)
 
 
 async def _read_link(

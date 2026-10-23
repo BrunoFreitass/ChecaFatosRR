@@ -79,6 +79,14 @@ def _subject(title: str | None) -> str:
 
 
 SEARCH_FAILED_SENTENCE = "A busca nas agências de checagem falhou nesta análise."
+# "Não verificável" com checagens encontradas (23/10/2026): nunca sugerir que a agência "não
+# confirma" o conteúdo; as encontradas podem tratar de outra coisa. A frase antiga continua
+# gravada nas checagens de antes e é trocada na leitura.
+NO_EXACT_CHECK_SENTENCE = (
+    "Não encontramos checagem que trate exatamente deste conteúdo. "
+    "Veja as checagens relacionadas e as fontes oficiais."
+)
+OLD_NOT_CONFIRMED_SENTENCE = "As checagens de agências encontradas não confirmam o conteúdo."
 
 
 def neutral_summary(
@@ -97,7 +105,7 @@ def neutral_summary(
     search_failed: a busca nas agências falhou (não é "não encontramos").
     """
     if agency_checks:
-        ending: str | None = "As checagens de agências encontradas não confirmam o conteúdo."
+        ending: str | None = NO_EXACT_CHECK_SENTENCE
     elif search_failed:
         ending = SEARCH_FAILED_SENTENCE
     else:
@@ -155,6 +163,33 @@ def agencies_only_result(
         "contexto_faltante": None,
         "checagens_agencias": same,
         "checagens_relacionadas": other,
+        "fontes_sugeridas": [],
+        "title": title,
+        **({"palavras_chave": keys} if keys is not None else {}),
+    }
+
+
+# ---------------------------------------------------------------------------------------
+# Link que é a própria checagem de uma agência (23/10/2026)
+# ---------------------------------------------------------------------------------------
+
+AGENCY_PAGE_MODE = "checagem_de_agencia"
+
+
+def agency_page_result(
+    check: AgencyCheck, title: str | None, *, keys: list[str] | None = None
+) -> dict[str, Any]:
+    """Resultado sem IA e sem veredito próprio: o que a agência publicou nessa página. O título
+    da matéria não é a alegação (sem claimReviewed, a alegação fica vazia)."""
+    return {
+        "modo": AGENCY_PAGE_MODE,
+        "checagem_de_agencia": {**check.as_json(), "alegacao": check.alegacao},
+        "resumo": f"Este link é uma checagem publicada por {check.agencia}.",
+        "busca_agencias": "ok",
+        "pontos_suspeitos": [],
+        "contexto_faltante": None,
+        "checagens_agencias": [],
+        "checagens_relacionadas": [],
         "fontes_sugeridas": [],
         "title": title,
         **({"palavras_chave": keys} if keys is not None else {}),

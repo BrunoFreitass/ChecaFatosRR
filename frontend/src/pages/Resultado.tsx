@@ -19,7 +19,7 @@ import {
   verdictLabel,
   visibleSuspiciousPoints,
 } from "../lib/format.ts";
-import type { AgencyCheck, Check } from "../lib/types.ts";
+import type { AgencyCheck, AgencyPage, Check } from "../lib/types.ts";
 
 // Busca nas agências falhada: nunca "não encontramos" (a página é pública).
 const SEARCH_FAILED = "A busca nas agências de checagem falhou nesta análise. Tente novamente mais tarde.";
@@ -81,6 +81,62 @@ function AgencyList({ items }: { items: AgencyCheck[] }) {
         );
       })}
     </ul>
+  );
+}
+
+/**
+ * O link é a própria checagem de uma agência (23/10/2026): mostra o que ela publicou, sem
+ * veredito nem confiança nossos. O título da matéria nunca aparece como alegação.
+ */
+function AgencyPageResult({ check, page }: { check: Check; page: AgencyPage }) {
+  const href = safeHref(page.url);
+  const shareText = page.alegacao
+    ? `ChecaFatosRR: checagem de ${page.agencia} — alegação "${page.alegacao}" classificada como ${page.classificacao}`
+    : `ChecaFatosRR: checagem de ${page.agencia} — "${page.titulo}" classificada como ${page.classificacao}`;
+  return (
+    <article className="space-y-6">
+      <title>{`Checagem de ${page.agencia}: ${page.titulo} — ChecaFatosRR`}</title>
+      <header className="space-y-3">
+        <p className="inline-flex rounded-full bg-slate-200 px-4 py-2 text-lg font-semibold text-slate-900">
+          Checagem de agência
+        </p>
+        <h1 className="break-words text-2xl font-bold leading-tight sm:text-3xl">{page.titulo}</h1>
+      </header>
+      <section aria-labelledby="checagem-agencia" className="space-y-3">
+        <h2 id="checagem-agencia" className="sr-only">
+          Checagem da agência
+        </h2>
+        <p className="text-lg text-slate-800">Este link é uma checagem publicada por {page.agencia}.</p>
+        {page.alegacao ? (
+          <p className="break-words text-slate-800">Alegação verificada: {page.alegacao}</p>
+        ) : (
+          <p className="break-words text-slate-800">Título da checagem: {page.titulo}</p>
+        )}
+        <p className="font-semibold text-slate-900">Classificação da agência: {page.classificacao}</p>
+        {href && (
+          <a
+            href={href}
+            {...EXTERNAL}
+            className="inline-flex min-h-11 items-center justify-center rounded-lg bg-brand-700 px-4 font-semibold text-white hover:bg-brand-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700"
+          >
+            Ler a checagem completa
+          </a>
+        )}
+      </section>
+      <section aria-labelledby="compartilhar" className="space-y-2">
+        <h2 id="compartilhar" className="text-xl font-bold">
+          Compartilhe a checagem
+        </h2>
+        <ShareButtons text={shareText} url={window.location.href} />
+      </section>
+      <Comments checagem={check.id} title="Comentários" />
+      <p className="text-sm text-slate-600">
+        Consultado em {formatDateTime(check.created_at)} (horário de Boa Vista).{" "}
+        <Link to="/" className={LINK_CLASS}>
+          Checar outro conteúdo
+        </Link>
+      </p>
+    </article>
   );
 }
 
@@ -156,6 +212,9 @@ function ResultadoDaChecagem({ slug }: { slug: string }) {
   }
 
   const { check } = state;
+  if (check.modo === "checagem_de_agencia" && check.checagem_de_agencia) {
+    return <AgencyPageResult check={check} page={check.checagem_de_agencia} />;
+  }
   const related = check.checagens_relacionadas ?? [];
   const hosts = trustedHosts([...check.checagens_agencias, ...related].map((item) => item.url));
   // Gemini indisponível (sem cota ou no limite): só o que as agências publicaram, sem veredito.
@@ -176,7 +235,10 @@ function ResultadoDaChecagem({ slug }: { slug: string }) {
     : visibleSuspiciousPoints(check.pontos_suspeitos, awaiting);
   const subject =
     check.tipo === "link" ? check.title || check.domain || "Notícia" : "Mensagem encaminhada";
-  const shareText = `ChecaFatosRR: "${subject}" — ${label}`;
+  // Não verificável (com ou sem checagens encontradas): nunca soa como desmentido (23/10).
+  // No modo "só agências" o selo é "Análise automática indisponível agora" (não houve análise).
+  const notVerifiable = check.veredito === "nao_verificavel";
+  const shareText = `ChecaFatosRR: "${subject}" — ${notVerifiable && !agenciesOnly ? "ainda sem checagem conclusiva" : label}`;
   const originalHref = safeHref(check.url);
 
   return (
@@ -239,8 +301,8 @@ function ResultadoDaChecagem({ slug }: { slug: string }) {
         <p className="text-lg text-slate-800">
           <TextWithLinks text={check.resumo} hosts={hosts} />
         </p>
-        {/* A confiança é a do modelo no veredito dele: sem checagem, o número confunde. */}
-        {!awaiting && !agenciesOnly && (
+        {/* A confiança é a do modelo no veredito dele: sem veredito, o número confunde. */}
+        {!notVerifiable && !agenciesOnly && (
           <p className="text-sm text-slate-600">Confiança da análise: {check.confianca}%</p>
         )}
       </section>

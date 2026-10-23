@@ -8,6 +8,7 @@ import pytest
 
 from app.config import DEFAULT_OPEN_PLATFORMS, Settings
 from app.services.verdict_policy import (
+    NO_EXACT_CHECK_SENTENCE,
     corroborates,
     is_open_platform,
     neutral_summary,
@@ -91,8 +92,8 @@ def test_neutral_summary_when_cited_agency_checks_do_not_confirm() -> None:
     text = neutral_summary(
         "link", "g1.globo.com", "Título", confirmed_origin=True, agency_checks=True
     )
-    assert text.endswith("As checagens de agências encontradas não confirmam o conteúdo.")
-    assert "Não encontramos" not in text
+    assert text.endswith(NO_EXACT_CHECK_SENTENCE)
+    assert "não confirmam" not in text  # nunca sugere que a agência desmentiu (23/10)
 
 
 def test_neutral_summary_for_pasted_text_and_missing_domain() -> None:

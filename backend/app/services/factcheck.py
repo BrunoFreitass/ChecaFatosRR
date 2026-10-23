@@ -8,6 +8,7 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Protocol
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import httpx
 
@@ -30,6 +31,9 @@ class AgencyCheck:
     veredito: str
     url: str
     data: str | None = None
+    # A alegação verificada (claimReviewed). Fica fora do as_json: a forma gravada nas
+    # checagens com IA e o que vai ao prompt não mudam.
+    alegacao: str | None = None
 
     def as_json(self) -> dict[str, str | None]:
         """Forma gravada no resultado da checagem (e devolvida pela API)."""
@@ -179,8 +183,35 @@ def _parse_review(review: Any, claim: dict[str, Any]) -> AgencyCheck | None:
         veredito=veredito[:120],
         url=url,
         data=_text(review.get("reviewDate"))[:10] or None,
+        alegacao=_text(claim.get("text"))[:300] or None,
     )
 
 
 def _text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+def same_page(a: str | None, b: str | None) -> bool:
+    """O link enviado é a própria página da checagem? Compara sem esquema, sem "www.", sem barra
+    final, sem parâmetros utm_* e sem fragmento (23/10/2026, caso do Estadão Verifica)."""
+    first, second = _canonical(a), _canonical(b)
+    return first is not None and first == second
+
+
+def _canonical(url: str | None) -> str | None:
+    try:
+        parts = urlsplit((url or "").strip())
+    except ValueError:
+        return None
+    host = (parts.hostname or "").lower().removeprefix("www.")
+    if parts.scheme.lower() not in ("http", "https") or not host:
+        return None
+    query = urlencode(
+        [
+            (k, v)
+            for k, v in parse_qsl(parts.query, keep_blank_values=True)
+            if not k.lower().startswith("utm_")
+        ]
+    )
+    path = parts.path.rstrip("/")
+    return f"{host}{path}?{query}" if query else f"{host}{path}"

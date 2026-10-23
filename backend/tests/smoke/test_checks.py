@@ -1353,3 +1353,116 @@ def test_the_model_that_answered_is_recorded_and_logged(
     assert env.checks.saved[0].model == "gemini-3.6-flash"
     assert env.checks.saved[0].result["model"] == "gemini-3.6-flash"
     assert _timing(caplog).model == "gemini-3.6-flash"
+
+
+# ---------- link que é a própria checagem de uma agência (23/10/2026) ----------
+
+ESTADAO = "https://www.estadao.com.br/estadao-verifica/frude-transmissao-alteracao-votos-leicoes/"
+
+
+def _estadao_review(
+    alegacao: str | None = "Transmissão dos dados permitiu alterar votos",
+) -> AgencyCheck:
+    return AgencyCheck(
+        agencia="Estadão",
+        titulo="É falso que transmissão de dados permitiu alterar votos",
+        veredito="Falso",
+        url=ESTADAO,
+        data="2026-10-22",
+        alegacao=alegacao,
+    )
+
+
+@pytest.mark.parametrize(
+    "submitted",
+    [
+        ESTADAO,
+        ESTADAO.replace("https://www.", "https://"),
+        ESTADAO.rstrip("/"),
+        ESTADAO + "?utm_source=whatsapp&utm_medium=social",
+        ESTADAO + "#comentarios",
+    ],
+)
+def test_link_that_is_the_agency_check_itself_skips_the_ai(
+    api: TestClient, env: Env, submitted: str
+) -> None:
+    env.factcheck.results = [_estadao_review()]
+    _, headers = env.login()
+
+    response = api.post("/checks", json={"url": submitted}, headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["modo"] == "checagem_de_agencia"
+    assert body["checagem_de_agencia"] == {
+        "agencia": "Estadão",
+        "url": ESTADAO,
+        "classificacao": "Falso",
+        "alegacao": "Transmissão dos dados permitiu alterar votos",
+        "titulo": "É falso que transmissão de dados permitiu alterar votos",
+    }
+    assert body["checagens_agencias"] == []
+    # Gemini não é chamado e a cota não é gasta; o pedido vira consulta (como o modo agências).
+    assert env.analyzer.inputs == []
+    assert env.checks.gemini_used == 0
+    assert [hit for _, hit in env.checks.requests.values()] == [True]
+    assert env.checks.claimed == {}
+    assert env.checks.saved[0].listed is False
+    # A página pública mostra o mesmo.
+    page = api.get(f"/checks/{body['id']}").json()
+    assert page["modo"] == "checagem_de_agencia"
+    assert page["checagem_de_agencia"] == body["checagem_de_agencia"]
+
+
+def test_agency_page_is_logged_apart_from_gemini_outages(
+    api: TestClient, env: Env, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="app.services.check_service")
+    env.factcheck.results = [_estadao_review()]
+    _, headers = env.login()
+
+    api.post("/checks", json={"url": ESTADAO}, headers=headers)
+
+    assert _timing(caplog).outcome == "checagem_de_agencia"
+    assert not [r for r in caplog.records if r.getMessage() == "agencies_only_mode"]
+
+
+def test_agency_check_without_claim_reviewed_shows_only_the_title(
+    api: TestClient, env: Env
+) -> None:
+    env.factcheck.results = [_estadao_review(alegacao=None)]
+    _, headers = env.login()
+
+    body = api.post("/checks", json={"url": ESTADAO}, headers=headers).json()
+
+    assert body["modo"] == "checagem_de_agencia"
+    assert body["checagem_de_agencia"]["alegacao"] is None
+    assert body["checagem_de_agencia"]["titulo"] == (
+        "É falso que transmissão de dados permitiu alterar votos"
+    )
+    assert env.analyzer.inputs == []
+
+
+def test_link_different_from_the_agency_check_keeps_the_ai_flow(api: TestClient, env: Env) -> None:
+    env.factcheck.results = [_estadao_review()]
+    _, headers = env.login()
+
+    body = api.post(
+        "/checks",
+        json={"url": "https://www.estadao.com.br/estadao-verifica/outra-checagem/"},
+        headers=headers,
+    ).json()
+
+    assert body["modo"] == "ia"
+    assert body.get("checagem_de_agencia") is None
+    assert len(env.analyzer.inputs) == 1
+
+
+def test_pasted_text_with_the_agency_link_keeps_the_ai_flow(api: TestClient, env: Env) -> None:
+    env.factcheck.results = [_estadao_review()]
+    _, headers = env.login()
+
+    body = api.post("/checks", json={"texto": f"{MSG} {ESTADAO}"}, headers=headers).json()
+
+    assert body["modo"] == "ia"
+    assert len(env.analyzer.inputs) == 1
