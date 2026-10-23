@@ -20,6 +20,7 @@ from app.services.gemini import (
     GeminiVerdict,
     finalize,
 )
+from app.services.verdict_policy import NO_EXACT_CHECK_SENTENCE
 
 TODAY = date(2026, 10, 10)
 RESUMO = "Reportagem do g1 sobre a primeira entrevista de Douglas Ruas como governador eleito."
@@ -123,7 +124,7 @@ def test_true_citing_a_non_confirming_agency_says_the_checks_do_not_confirm() ->
     result = finalize(verdict("verdadeiro", 95, misleading.url), link(misleading), TODAY)
 
     assert result.veredito == "nao_verificavel"
-    assert result.resumo.endswith("As checagens de agências encontradas não confirmam o conteúdo.")
+    assert result.resumo.endswith(NO_EXACT_CHECK_SENTENCE)
 
 
 def test_finalize_records_the_confirmed_origin_for_later_reads() -> None:

@@ -206,3 +206,86 @@ describe("comentários", () => {
     expect(screen.queryByText(/comentários de/)).toBeNull();
   });
 });
+
+function whatsappText(): string {
+  const href = screen.getByRole("link", { name: "Enviar no WhatsApp" }).getAttribute("href") ?? "";
+  return decodeURIComponent(href.replace("https://wa.me/?text=", ""));
+}
+
+const ESTADAO = "https://www.estadao.com.br/estadao-verifica/frude-transmissao-alteracao-votos-leicoes/";
+
+function agencyPage(alegacao: string | null): Check {
+  return check({
+    url: ESTADAO,
+    domain: "estadao.com.br",
+    title: "É falso que transmissão de dados permitiu alterar votos | Estadão",
+    veredito: "nao_verificavel",
+    confianca: 0,
+    resumo: "Este link é uma checagem publicada por Estadão.",
+    modo: "checagem_de_agencia",
+    checagem_de_agencia: {
+      agencia: "Estadão",
+      url: ESTADAO,
+      classificacao: "Falso",
+      alegacao,
+      titulo: "É falso que transmissão de dados permitiu alterar votos",
+    },
+  });
+}
+
+describe("link que é a própria checagem de uma agência (23/10)", () => {
+  it("mostra a agência, a alegação verificada e a classificação dela, sem veredito nem confiança nossos", () => {
+    renderResult(agencyPage("Transmissão dos dados permitiu alterar votos"));
+    expect(screen.getByText("Este link é uma checagem publicada por Estadão.")).toBeTruthy();
+    expect(screen.getByText("Alegação verificada: Transmissão dos dados permitiu alterar votos")).toBeTruthy();
+    expect(screen.getByText("Classificação da agência: Falso")).toBeTruthy();
+    const read = screen.getByRole("link", { name: "Ler a checagem completa" });
+    expect(read.getAttribute("href")).toBe(ESTADAO);
+    expect(screen.queryByText(/Confiança da análise/)).toBeNull();
+    expect(screen.queryByText("Não verificável")).toBeNull();
+    expect(screen.queryByText("Ainda sem checagem")).toBeNull();
+    expect(screen.queryByText(/Título da checagem/)).toBeNull();
+    expect(screen.queryByText(/Análise automatizada/)).toBeNull(); // não houve análise nossa
+  });
+
+  it("texto do WhatsApp cita a agência, a alegação e a classificação", () => {
+    renderResult(agencyPage("Transmissão dos dados permitiu alterar votos"));
+    expect(whatsappText()).toMatch(
+      /^ChecaFatosRR: checagem de Estadão — alegação "Transmissão dos dados permitiu alterar votos" classificada como Falso\n/,
+    );
+  });
+
+  it("sem claimReviewed: mostra o título como 'Título da checagem', nunca como alegação", () => {
+    renderResult(agencyPage(null));
+    expect(
+      screen.getByText("Título da checagem: É falso que transmissão de dados permitiu alterar votos"),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Alegação verificada/)).toBeNull();
+    expect(whatsappText()).not.toMatch(/alegação/);
+  });
+});
+
+describe("não verificável (23/10)", () => {
+  it("com checagens encontradas: sem confiança da análise", () => {
+    renderResult(check({ veredito: "nao_verificavel", confianca: 60, checagens_agencias: [AGENCY] }));
+    expect(screen.queryByText(/Confiança da análise/)).toBeNull();
+  });
+
+  it("texto do WhatsApp: ainda sem checagem conclusiva", () => {
+    renderResult(check({ veredito: "nao_verificavel", checagens_agencias: [AGENCY] }));
+    expect(whatsappText()).toMatch(/— ainda sem checagem conclusiva\n/);
+    cleanup();
+    renderResult(check());
+    expect(whatsappText()).toMatch(/— ainda sem checagem conclusiva\n/);
+  });
+
+  it("modo só agências mantém o selo dele no WhatsApp (não houve análise)", () => {
+    renderResult(check({ modo: "agencias", veredito: "nao_verificavel", confianca: 0 }));
+    expect(whatsappText()).toMatch(/— Análise automática indisponível agora$/m);
+  });
+
+  it("veredito com agência mantém o texto de sempre no WhatsApp", () => {
+    renderResult(check({ veredito: "falso", confianca: 85, checagens_agencias: [AGENCY] }));
+    expect(whatsappText()).toMatch(/— Falso\n/);
+  });
+});

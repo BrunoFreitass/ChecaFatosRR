@@ -29,13 +29,19 @@ from app.repositories.profiles import Profile, ProfileRepository
 from app.routers.profiles import get_profile_repository
 from app.schemas.checks import (
     AgencyCheckOut,
+    AgencyPageOut,
     CheckCreate,
     CheckOut,
     CheckSummaryOut,
     LatestChecksOut,
 )
 from app.services.check_service import CheckSettings, CheckTools, run_check
-from app.services.factcheck import AgencyCheck, FactCheckUnavailableError, HttpFactCheckClient
+from app.services.factcheck import (
+    AgencyCheck,
+    FactCheckUnavailableError,
+    HttpFactCheckClient,
+    same_page,
+)
 from app.services.fetcher import HttpPageFetcher
 from app.services.gemini import PROMPT_VERSION, GeminiAnalyzer, google_generate
 from app.services.model_limits import ModelLimits
@@ -43,6 +49,9 @@ from app.services.read_cache import ReadCaches, get_read_caches
 from app.services.relevance import content_keys
 from app.services.verdict_policy import (
     AGENCIES_ONLY_SEARCH_FAILED,
+    AGENCY_PAGE_MODE,
+    NO_EXACT_CHECK_SENTENCE,
+    OLD_NOT_CONFIRMED_SENTENCE,
     enforce_relevance,
     neutral_summary,
     relevant_verdict,
@@ -198,7 +207,67 @@ def _or_fallback(keys: list[str] | None, title: str | None, texto: str | None) -
     return content_keys(title, texto) or None
 
 
+def _agency_page(check: StoredCheck) -> AgencyPageOut | None:
+    """O link é a própria checagem de uma agência? Gravada assim desde 23/10; as de antes
+    (IA chamada, "não verificável") são reconhecidas pela URL entre as checagens gravadas."""
+    result = check.result
+    stored = result.get("checagem_de_agencia")
+    if result.get("modo") == AGENCY_PAGE_MODE and isinstance(stored, dict):
+        candidates = [stored]
+    elif check.kind == "link":
+        candidates = [
+            item
+            for key in ("checagens_agencias", "checagens_relacionadas")
+            for item in result.get(key) or []
+            if isinstance(item, dict) and same_page(check.url, item.get("url"))
+        ]
+    else:
+        return None
+    for item in candidates:
+        agencia, url = item.get("agencia"), item.get("url")
+        rating, titulo = item.get("veredito"), item.get("titulo")
+        if all(isinstance(v, str) and v for v in (agencia, url, rating, titulo)):
+            alegacao = item.get("alegacao")
+            return AgencyPageOut(
+                agencia=agencia,
+                url=url,
+                classificacao=rating,
+                alegacao=alegacao if isinstance(alegacao, str) and alegacao.strip() else None,
+                titulo=titulo,
+            )
+    return None
+
+
+def _agency_page_out(check: StoredCheck, page: AgencyPageOut, *, cached: bool) -> CheckOut:
+    """Sem veredito nem confiança nossos: só o que a agência publicou nessa página."""
+    return CheckOut(
+        id=check.public_id,
+        tipo=check.kind,
+        url=check.url,
+        domain=check.domain,
+        title=check.title,
+        published_at=check.published_at,
+        texto=check.texto,
+        veredito="nao_verificavel",
+        rebaixado_por_confianca=False,
+        confianca=0,
+        resumo=f"Este link é uma checagem publicada por {page.agencia}.",
+        pontos_suspeitos=[],
+        contexto_faltante=None,
+        checagens_agencias=[],
+        fontes_sugeridas=[],
+        created_at=check.created_at,
+        cache=cached,
+        modo=AGENCY_PAGE_MODE,
+        checagem_de_agencia=page,
+        busca_agencias="ok",
+    )
+
+
 def to_out(check: StoredCheck, settings: CheckSettings, *, cached: bool = False) -> CheckOut:
+    page = _agency_page(check)
+    if page is not None:
+        return _agency_page_out(check, page, cached=cached)
     result = check.result
     agencies_only = check.prompt_version == AGENCIES_ONLY_VERSION
     busca_agencias = _search_status(result, agencies_only)
@@ -245,6 +314,9 @@ def to_out(check: StoredCheck, settings: CheckSettings, *, cached: bool = False)
             agency_checks=bool(agencies),
             search_failed=busca_agencias == "falhou",
         )
+    if veredito == "nao_verificavel":
+        # Checagens de antes de 23/10: a frase "não confirmam" sugeria que a agência desmentia.
+        resumo = resumo.replace(OLD_NOT_CONFIRMED_SENTENCE, NO_EXACT_CHECK_SENTENCE)
     return CheckOut(
         id=check.public_id,
         tipo=check.kind,
