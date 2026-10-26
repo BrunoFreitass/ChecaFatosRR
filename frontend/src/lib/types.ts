@@ -30,7 +30,8 @@ export interface AgencyCheck {
 export interface AgencyPage {
   agencia: string;
   url: string;
-  classificacao: string;
+  /** Classificação da agência. null: link de agência conhecida fora do índice (nada inventado). */
+  classificacao: string | null;
   /** Alegação verificada (claimReviewed). null: só o título da checagem. */
   alegacao: string | null;
   titulo: string;
@@ -77,6 +78,10 @@ export interface CheckSummary {
   created_at: string;
   /** Checagens de agência encontradas (0 + nao_verificavel = "Ainda sem checagem"). */
   total_agencias?: number;
+  /** "checagem_de_agencia": selo "Checagem de <agência>" e a classificação dela. API antiga: ausente. */
+  modo?: "ia" | "checagem_de_agencia";
+  agencia?: string | null;
+  classificacao?: string | null;
 }
 
 export interface LatestChecks {

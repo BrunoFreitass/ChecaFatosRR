@@ -289,3 +289,39 @@ describe("não verificável (23/10)", () => {
     expect(whatsappText()).toMatch(/— Falso\n/);
   });
 });
+
+describe("link de agência conhecida sem ClaimReview (26/10)", () => {
+  it("diz que é de uma agência, sem classificação, alegação nem veredito", () => {
+    renderResult(
+      check({
+        url: "https://www.aosfatos.org/noticias/checagem-recente/",
+        domain: "aosfatos.org",
+        title: "Checagem recente | Aos Fatos",
+        veredito: "nao_verificavel",
+        confianca: 0,
+        resumo: "Este link é de uma agência de checagem (Aos Fatos). Leia a checagem completa no site da agência.",
+        modo: "checagem_de_agencia",
+        checagem_de_agencia: {
+          agencia: "Aos Fatos",
+          url: "https://www.aosfatos.org/noticias/checagem-recente/",
+          classificacao: null,
+          alegacao: null,
+          titulo: "Checagem recente | Aos Fatos",
+        },
+      }),
+    );
+    expect(
+      screen.getByText(
+        "Este link é de uma agência de checagem (Aos Fatos). Leia a checagem completa no site da agência.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Classificação da agência/)).toBeNull();
+    expect(screen.queryByText(/Alegação verificada/)).toBeNull();
+    expect(screen.queryByText(/Título da checagem/)).toBeNull();
+    expect(screen.queryByText(/Confiança da análise/)).toBeNull();
+    expect(screen.getByRole("link", { name: "Ler a checagem completa" }).getAttribute("href")).toBe(
+      "https://www.aosfatos.org/noticias/checagem-recente/",
+    );
+    expect(whatsappText()).not.toMatch(/classificada como/);
+  });
+});

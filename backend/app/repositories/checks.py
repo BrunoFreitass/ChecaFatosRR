@@ -103,6 +103,10 @@ class CheckSummary:
     confianca: int = 0
     agency_pairs: tuple[tuple[str, str], ...] = ()  # (título, classificação) por citada
     keywords: tuple[str, ...] | None = None  # None = checagem antiga, sem o campo
+    # Checagem de agência (26/10/2026): o link e o recorte do resultado que a página usa para
+    # reconhecê-la (modo, checagem_de_agencia, citadas e relacionadas).
+    url: str | None = None
+    agency_view: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -347,6 +351,13 @@ def _ratings(raw: Any) -> tuple[str, ...]:
     if isinstance(raw, str):
         raw = json.loads(raw)
     return tuple(r for r in raw if isinstance(r, str)) if isinstance(raw, list) else ()
+
+
+def _object(raw: Any) -> dict[str, Any]:
+    """Objeto jsonb (texto no asyncpg); qualquer outra coisa vira {} (não derruba a lista)."""
+    if isinstance(raw, str):
+        raw = json.loads(raw)
+    return raw if isinstance(raw, dict) else {}
 
 
 def _row_to_check(row: Any) -> StoredCheck:
@@ -798,14 +809,24 @@ class SqlCheckRepository:
             "where jsonb_typeof(e) = 'object') "
             "else '[]'::jsonb end as agency_pairs, "
             "case when jsonb_typeof(c.result -> 'palavras_chave') = 'array' "
-            "then c.result -> 'palavras_chave' end as keywords "
+            "then c.result -> 'palavras_chave' end as keywords, "
+            # Checagem de agência (26/10/2026): o recorte do resultado que a página usa para
+            # reconhecê-la, e o link (as antigas são reconhecidas pela URL igual à da checagem).
+            "l.url_normalized as url, "
+            "jsonb_build_object('modo', c.result -> 'modo', "
+            "'checagem_de_agencia', c.result -> 'checagem_de_agencia', "
+            "'checagens_agencias', c.result -> 'checagens_agencias', "
+            "'checagens_relacionadas', c.result -> 'checagens_relacionadas') as agency_view "
+            # Só links (join): mensagem colada nunca entra em "Últimas" (privacidade).
             "from public.checks c join public.links l on l.id = c.link_id "
-            "where c.listed "
-            # Um item por link: só a checagem listada mais recente (nova versão do prompt não
-            # duplica o link). Anti-join em vez de distinct on: percorre checks_listed_idx em
-            # ordem e para no limit; o índice checks_listed_link_idx atende o not exists.
+            # Entra: a listada OU a checagem de agência (gravada sem IA e sem listar; o link é
+            # a página pública da agência).
+            "where (c.listed or c.result ->> 'modo' = 'checagem_de_agencia') "
+            # Um item por link: só a checagem mais recente da lista (nova versão do prompt não
+            # duplica o link). Anti-join em vez de distinct on.
             "and not exists (select 1 from public.checks n where n.link_id = c.link_id "
-            "and n.listed and (n.created_at, n.public_id) > (c.created_at, c.public_id)) "
+            "and (n.listed or n.result ->> 'modo' = 'checagem_de_agencia') "
+            "and (n.created_at, n.public_id) > (c.created_at, c.public_id)) "
         )
         params: dict[str, Any] = {"limit": limit}
         if cursor is not None:
@@ -823,6 +844,7 @@ class SqlCheckRepository:
                     "keywords": None
                     if row.get("keywords") is None
                     else _ratings(row.get("keywords")),
+                    "agency_view": _object(row.get("agency_view")),
                 }
             )
             for row in rows

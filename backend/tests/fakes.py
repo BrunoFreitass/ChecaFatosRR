@@ -393,8 +393,14 @@ class FakeCheckRepository:
         return next((r.check for r in self.rows if r.check.public_id == public_id), None)
 
     async def latest(self, cursor: tuple[datetime, str] | None, limit: int) -> list[CheckSummary]:
+        # Como a consulta real: listada OU checagem de agência (gravada sem listar); só links.
         rows = sorted(
-            (r for r in self.rows if r.listed and r.ref.kind == "link"),
+            (
+                r
+                for r in self.rows
+                if r.ref.kind == "link"
+                and (r.listed or r.check.result.get("modo") == "checagem_de_agencia")
+            ),
             key=lambda r: (r.check.created_at, r.check.public_id),
             reverse=True,
         )
@@ -420,6 +426,16 @@ class FakeCheckRepository:
                     if isinstance(r.check.result.get("palavras_chave"), list)
                     else None
                 ),
+                url=r.check.url,
+                agency_view={
+                    key: r.check.result.get(key)
+                    for key in (
+                        "modo",
+                        "checagem_de_agencia",
+                        "checagens_agencias",
+                        "checagens_relacionadas",
+                    )
+                },
             )
             for r in rows[:limit]
         ]

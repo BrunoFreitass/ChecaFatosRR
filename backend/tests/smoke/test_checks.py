@@ -24,7 +24,7 @@ from app.routers.checks import (
 )
 from app.routers.profiles import get_profile_repository
 from app.services.check_service import CheckSettings, CheckTools
-from app.services.factcheck import AgencyCheck
+from app.services.factcheck import AgencyCheck, FactCheckUnavailableError
 from app.services.fetcher import PageUnreadableError
 from app.services.gemini import (
     GeminiContentBlockedError,
@@ -1407,7 +1407,8 @@ def test_link_that_is_the_agency_check_itself_skips_the_ai(
     assert env.checks.gemini_used == 0
     assert [hit for _, hit in env.checks.requests.values()] == [True]
     assert env.checks.claimed == {}
-    assert env.checks.saved[0].listed is False
+    # Desde 26/10 entra em "Últimas" pela regra de sempre (mesmo site, sem ofensa).
+    assert env.checks.saved[0].listed is True
     # A página pública mostra o mesmo.
     page = api.get(f"/checks/{body['id']}").json()
     assert page["modo"] == "checagem_de_agencia"
@@ -1447,9 +1448,10 @@ def test_link_different_from_the_agency_check_keeps_the_ai_flow(api: TestClient,
     env.factcheck.results = [_estadao_review()]
     _, headers = env.login()
 
+    # Site comum (desde 26/10, outra página de agência conhecida vira "link de uma agência").
     body = api.post(
         "/checks",
-        json={"url": "https://www.estadao.com.br/estadao-verifica/outra-checagem/"},
+        json={"url": "https://www.estadao.com.br/politica/outra-materia/"},
         headers=headers,
     ).json()
 
@@ -1466,3 +1468,232 @@ def test_pasted_text_with_the_agency_link_keeps_the_ai_flow(api: TestClient, env
 
     assert body["modo"] == "ia"
     assert len(env.analyzer.inputs) == 1
+
+
+# ---------- "Últimas" com checagens de agência (26/10/2026) ----------
+
+ESTADAO_PIX = (
+    "https://www.estadao.com.br/estadao-verifica/homem-video-nao-foi-preso-500-8-de-janeiro/"
+)
+AOS_FATOS_NOVA = "https://www.aosfatos.org/noticias/checagem-recente-fora-do-indice/"
+
+
+def _seed(
+    env: Env,
+    *,
+    url: str,
+    domain: str,
+    title: str | None,
+    veredito: str,
+    result: dict[str, Any],
+    listed: bool,
+    prompt_version: str,
+    minutes_ago: int = 0,
+) -> str:
+    """Grava uma checagem como ficou no banco (sem passar pelo fluxo de hoje)."""
+    public_id = new_public_id()
+    stored = StoredCheck(
+        public_id=public_id,
+        kind="link",
+        url=url,
+        domain=domain,
+        title=title,
+        published_at=None,
+        texto=None,
+        veredito=veredito,
+        confianca=60,
+        result=result,
+        created_at=datetime.now(UTC) - timedelta(minutes=minutes_ago),
+        prompt_version=prompt_version,
+    )
+    ref = SubjectRef("link", len(env.checks.rows) + 1000)
+    env.checks.rows.append(_FakeRow(ref, stored, listed, uuid4(), prompt_version))
+    return public_id
+
+
+def _latest(api: TestClient) -> dict[str, dict[str, Any]]:
+    return {item["id"]: item for item in api.get("/checks/latest").json()["items"]}
+
+
+def test_latest_lists_a_new_agency_check_with_the_agency_badge(api: TestClient, env: Env) -> None:
+    env.factcheck.results = [
+        AgencyCheck(
+            agencia="Estadão",
+            titulo="Homem que aparece em vídeo não foi preso por fazer Pix para 8 de ...",
+            veredito="Enganoso",
+            url=ESTADAO_PIX,
+            alegacao="Idoso que fez pix de R$ 500 é preso a pedido de Alexandre de Moraes",
+        )
+    ]
+    _, headers = env.login()
+    body = api.post("/checks", json={"url": ESTADAO_PIX}, headers=headers).json()
+    assert body["modo"] == "checagem_de_agencia"
+
+    item = _latest(api)[body["id"]]
+    assert item["modo"] == "checagem_de_agencia"
+    assert item["agencia"] == "Estadão"
+    assert item["classificacao"] == "Enganoso"
+    assert env.analyzer.inputs == []
+
+
+def test_latest_lists_old_agency_checks_saved_unlisted(api: TestClient, env: Env) -> None:
+    # Caso real ataxpy4sp8e4 (23/10): gravada pelo caminho sem IA, com listed = false.
+    pid = _seed(
+        env,
+        url=ESTADAO_PIX,
+        domain="estadao.com.br",
+        title=None,
+        veredito="nao_verificavel",
+        result={
+            "modo": "checagem_de_agencia",
+            "checagem_de_agencia": {
+                "agencia": "Estadão",
+                "titulo": "Homem que aparece em vídeo não foi preso por fazer Pix para 8 de ...",
+                "veredito": "Enganoso",
+                "url": ESTADAO_PIX,
+                "alegacao": "Idoso que fez pix de R$ 500 é preso a pedido de Alexandre de Moraes",
+            },
+        },
+        listed=False,
+        prompt_version="agencias",
+    )
+    item = _latest(api)[pid]
+    assert (item["modo"], item["agencia"], item["classificacao"]) == (
+        "checagem_de_agencia",
+        "Estadão",
+        "Enganoso",
+    )
+    assert item["title"]  # sem título do link: usa o da checagem
+
+
+def test_latest_recognises_an_old_ai_check_of_an_agency_page(api: TestClient, env: Env) -> None:
+    # Caso real sxyv5awc1grr (22/10): IA chamada, "não verificável", listada; a própria checagem
+    # citada. A página já mostra a checagem de agência; a lista passa a mostrar o mesmo.
+    review = {
+        "agencia": "Estadão",
+        "titulo": "Justiça Eleitoral tem sistema de segurança que impede fraude na ...",
+        "veredito": "Falso",
+        "url": ESTADAO,
+    }
+    pid = _seed(
+        env,
+        url=ESTADAO.rstrip("/"),
+        domain="estadao.com.br",
+        title="Justiça Eleitoral tem sistema de segurança | Estadão",
+        veredito="nao_verificavel",
+        result={"checagens_agencias": [review], "palavras_chave": ["justica", "eleitoral"]},
+        listed=True,
+        prompt_version=env.settings.limits.prompt_version,
+    )
+    item = _latest(api)[pid]
+    assert item["modo"] == "checagem_de_agencia"
+    assert (item["agencia"], item["classificacao"]) == ("Estadão", "Falso")
+    assert api.get(f"/checks/{pid}").json()["modo"] == "checagem_de_agencia"  # igual à página
+
+
+def test_known_agency_link_without_claim_review_is_shown_without_verdict(
+    api: TestClient, env: Env
+) -> None:
+    env.factcheck.results = []  # fora do índice do Google
+    _, headers = env.login()
+
+    body = api.post("/checks", json={"url": AOS_FATOS_NOVA}, headers=headers).json()
+
+    assert body["modo"] == "checagem_de_agencia"
+    page = body["checagem_de_agencia"]
+    assert page["agencia"] == "Aos Fatos"
+    assert page["classificacao"] is None  # nada inventado
+    assert page["alegacao"] is None
+    assert body["resumo"] == (
+        "Este link é de uma agência de checagem (Aos Fatos). "
+        "Leia a checagem completa no site da agência."
+    )
+    assert env.analyzer.inputs == []  # sem IA
+    assert env.checks.gemini_used == 0
+    item = _latest(api)[body["id"]]
+    assert (item["modo"], item["agencia"], item["classificacao"]) == (
+        "checagem_de_agencia",
+        "Aos Fatos",
+        None,
+    )
+
+
+def test_known_agency_link_with_claim_review_keeps_the_agency_rating(
+    api: TestClient, env: Env
+) -> None:
+    env.factcheck.results = [
+        AgencyCheck(agencia="Aos Fatos", titulo="T", veredito="falso", url=AOS_FATOS_NOVA)
+    ]
+    _, headers = env.login()
+    body = api.post("/checks", json={"url": AOS_FATOS_NOVA}, headers=headers).json()
+    assert body["checagem_de_agencia"]["classificacao"] == "falso"
+    assert body["resumo"] == "Este link é uma checagem publicada por Aos Fatos."
+
+
+def test_common_link_keeps_the_ai_flow_and_the_usual_list_item(api: TestClient, env: Env) -> None:
+    _, headers = env.login()
+    body = api.post("/checks", json={"url": LINK}, headers=headers).json()
+    assert body["modo"] == "ia"
+    assert len(env.analyzer.inputs) == 1
+    item = _latest(api)[body["id"]]
+    assert item["modo"] == "ia"
+    assert item["agencia"] is None and item["classificacao"] is None
+    assert item["veredito"] == body["veredito"]
+
+
+def test_pasted_text_never_appears_in_latest(api: TestClient, env: Env) -> None:
+    _, headers = env.login()
+    body = api.post("/checks", json={"texto": MSG}, headers=headers).json()
+    assert body["id"] not in _latest(api)
+
+
+def test_agency_link_with_an_offensive_title_stays_off_latest(api: TestClient, env: Env) -> None:
+    env.fetcher.html = article_html("Que porra de eleição")
+    env.factcheck.results = []
+    _, headers = env.login()
+    body = api.post("/checks", json={"url": AOS_FATOS_NOVA}, headers=headers).json()
+    assert body["modo"] == "checagem_de_agencia"  # a página continua acessível pelo link
+    assert env.checks.saved[0].listed is False
+    assert body["id"] not in _latest(api)
+
+
+def test_old_unlisted_agency_check_with_an_offensive_title_stays_off_latest(
+    api: TestClient, env: Env
+) -> None:
+    pid = _seed(
+        env,
+        url=ESTADAO_PIX,
+        domain="estadao.com.br",
+        title=None,
+        veredito="nao_verificavel",
+        result={
+            "modo": "checagem_de_agencia",
+            "checagem_de_agencia": {
+                "agencia": "Estadão",
+                "titulo": "Que porra de eleição",
+                "veredito": "Falso",
+                "url": ESTADAO_PIX,
+            },
+        },
+        listed=False,
+        prompt_version="agencias",
+    )
+    assert pid not in _latest(api)
+
+
+def test_agency_link_when_the_fact_check_search_failed_records_the_failure(
+    api: TestClient, env: Env
+) -> None:
+    env.factcheck.error = FactCheckUnavailableError()
+    _, headers = env.login()
+    body = api.post("/checks", json={"url": AOS_FATOS_NOVA}, headers=headers).json()
+    assert body["modo"] == "checagem_de_agencia"
+    assert body["checagem_de_agencia"]["classificacao"] is None
+    assert body["busca_agencias"] == "falhou"  # não se afirma que não havia checagem
+    assert env.analyzer.inputs == []
+
+
+def test_agency_home_page_is_not_an_agency_check(api: TestClient, env: Env) -> None:
+    _, headers = env.login()
+    body = api.post("/checks", json={"url": "https://www.aosfatos.org/"}, headers=headers).json()
+    assert body["modo"] == "ia"

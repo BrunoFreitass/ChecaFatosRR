@@ -184,8 +184,52 @@ def agency_page_result(
     return {
         "modo": AGENCY_PAGE_MODE,
         "checagem_de_agencia": {**check.as_json(), "alegacao": check.alegacao},
-        "resumo": f"Este link é uma checagem publicada por {check.agencia}.",
+        "resumo": agency_page_summary(check.agencia, classificacao=check.veredito),
         "busca_agencias": "ok",
+        "pontos_suspeitos": [],
+        "contexto_faltante": None,
+        "checagens_agencias": [],
+        "checagens_relacionadas": [],
+        "fontes_sugeridas": [],
+        "title": title,
+        **({"palavras_chave": keys} if keys is not None else {}),
+    }
+
+
+def agency_page_summary(agencia: str, *, classificacao: str | None) -> str:
+    """Texto da página: com a classificação da Fact Check, "checagem publicada por"; só pelo
+    site conhecido (sem ClaimReview), "link de uma agência" e nada além disso."""
+    if classificacao:
+        return f"Este link é uma checagem publicada por {agencia}."
+    return (
+        f"Este link é de uma agência de checagem ({agencia}). "
+        "Leia a checagem completa no site da agência."
+    )
+
+
+def agency_site_result(
+    agencia: str,
+    url: str,
+    title: str | None,
+    *,
+    keys: list[str] | None = None,
+    search_failed: bool = False,
+) -> dict[str, Any]:
+    """Link de agência conhecida sem ClaimReview na Fact Check (26/10/2026): sem IA, sem
+    veredito e sem classificação (nada inventado). Busca que falhou fica registrada como
+    falha: não se sabe se a checagem estava indexada."""
+    return {
+        "modo": AGENCY_PAGE_MODE,
+        "checagem_de_agencia": {
+            "agencia": agencia,
+            "titulo": title or "",
+            "veredito": None,
+            "url": url,
+            "data": None,
+            "alegacao": None,
+        },
+        "resumo": agency_page_summary(agencia, classificacao=None),
+        "busca_agencias": "falhou" if search_failed else "ok",
         "pontos_suspeitos": [],
         "contexto_faltante": None,
         "checagens_agencias": [],

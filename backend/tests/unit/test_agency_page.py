@@ -12,7 +12,7 @@ import pytest
 from app.repositories.checks import Limits, StoredCheck
 from app.routers.checks import to_out
 from app.services.check_service import CheckSettings
-from app.services.factcheck import parse_claims, same_page
+from app.services.factcheck import known_agency, parse_claims, same_page
 from app.services.verdict_policy import NO_EXACT_CHECK_SENTENCE, neutral_summary
 
 ESTADAO = "https://www.estadao.com.br/estadao-verifica/frude-transmissao-alteracao-votos-leicoes/"
@@ -190,3 +190,69 @@ def test_old_not_verifiable_summary_is_rewritten_on_read() -> None:
     out = to_out(check, SETTINGS)
     assert "não confirmam" not in out.resumo
     assert out.resumo.endswith(NO_EXACT_CHECK_SENTENCE)
+
+
+# ---------- lista fixa de agências (links fora do índice do Google, 26/10/2026) ----------
+
+
+@pytest.mark.parametrize(
+    ("url", "agencia"),
+    [
+        ("https://agencialupa.org/checagem/2026/10/26/x", "Agência Lupa"),
+        ("https://www.aosfatos.org/noticias/x/", "Aos Fatos"),
+        ("https://www.boatos.org/politica/x.html", "Boatos.org"),
+        ("https://www.e-farsas.com/x.html", "E-farsas"),
+        ("https://www.estadao.com.br/estadao-verifica/x/", "Estadão Verifica"),
+        ("https://g1.globo.com/fato-ou-fake/noticia/2026/10/26/x.ghtml", "Fato ou Fake (g1)"),
+        ("https://checamos.afp.com/doc.afp.com.X1", "AFP Checamos"),
+        ("https://projetocomprova.com.br/publicações/x/", "Projeto Comprova"),
+        ("http://AOSFATOS.org/noticias/x", "Aos Fatos"),
+    ],
+)
+def test_known_agency_sites(url: str, agencia: str) -> None:
+    assert known_agency(url) == agencia
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.estadao.com.br/politica/x/",  # Estadão fora do Verifica
+        "https://www.estadao.com.br/estadao-verificacao/x/",  # prefixo parecido não vale
+        "https://g1.globo.com/rr/roraima/noticia/x.ghtml",  # g1 fora do Fato ou Fake
+        "https://aosfatos.org.exemplo.com/x",  # domínio parecido
+        "https://naoaosfatos.org/x",
+        "https://g1.globo.com/",
+        "nao e url",
+        "",
+    ],
+)
+def test_other_sites_are_not_agencies(url: str) -> None:
+    assert known_agency(url) is None
+
+
+def test_rated_agency_page_without_a_title_is_refused() -> None:
+    # Com classificação, o título é obrigatório (a página e o WhatsApp o citam).
+    check = stored(
+        {
+            "modo": "checagem_de_agencia",
+            "checagem_de_agencia": {**REVIEW, "titulo": ""},
+        }
+    )
+    assert to_out(check, SETTINGS).modo != "checagem_de_agencia"
+
+
+def test_unrated_agency_site_page_may_have_no_title() -> None:
+    check = stored(
+        {
+            "modo": "checagem_de_agencia",
+            "checagem_de_agencia": {**REVIEW, "titulo": "", "veredito": None},
+        }
+    )
+    out = to_out(check, SETTINGS)
+    assert out.modo == "checagem_de_agencia"
+    assert out.checagem_de_agencia is not None
+    assert out.checagem_de_agencia.classificacao is None
+    assert out.resumo == (
+        "Este link é de uma agência de checagem (Estadão). "
+        "Leia a checagem completa no site da agência."
+    )

@@ -34,7 +34,9 @@ class AgencyPageOut(BaseModel):
 
     agencia: str
     url: str
-    classificacao: str
+    # Classificação da agência (textualRating). None: link de agência conhecida que a Fact
+    # Check ainda não indexou (26/10/2026): a página não inventa classificação.
+    classificacao: str | None
     # A alegação verificada (claimReviewed). None: a tela mostra só o "Título da checagem".
     alegacao: str | None
     titulo: str
@@ -84,6 +86,11 @@ class CheckSummaryOut(BaseModel):
     created_at: datetime
     # 0 com "nao_verificavel": a lista mostra o neutro "Ainda sem checagem".
     total_agencias: int = 0
+    # "checagem_de_agencia": selo "Checagem de <agência>" e a classificação dela (sem
+    # veredito nosso). A mesma regra da página da checagem.
+    modo: Literal["ia", "checagem_de_agencia"] = "ia"
+    agencia: str | None = None
+    classificacao: str | None = None
 
 
 class LatestChecksOut(BaseModel):
