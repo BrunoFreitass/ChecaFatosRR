@@ -1,0 +1,363 @@
+# Conjunto de avaliação do ChecaFatosRR (pós-eleição, fase "combate à desinformação").
+#
+# CANDIDATOS: nada aqui é gabarito ainda. Cada caso só entra na avaliação quando alguém
+# conferir na agência e preencher:
+#   resultado_esperado     verdadeiro | falso | enganoso | fora_de_contexto | nao_verificavel
+#                          | checagem_de_agencia (para link_agencia)
+#   agencia_esperada       opcional (ex.: Aos Fatos)
+#   url_checagem_esperada  opcional; com ela o relatório mede "checagem certa encontrada"
+#   fonte_do_gabarito      link (ou referência) que sustenta o gabarito
+#   rotulado_por           nome de quem conferiu (no lugar de PENDENTE)
+#   data                   dia da conferência (AAAA-MM-DD)
+#
+# Os comentários "candidato:" dizem de onde o caso veio (Fact Check API, 10 consultas em
+# 26/10/2026) para facilitar a conferência; NÃO são o gabarito. Política vigente da
+# plataforma: "verdadeiro" só com checagem de agência que corrobore; sem ela, o esperado
+# costuma ser nao_verificavel. Nunca invente URL: entrada "PREENCHER" = escolher o link.
+
+casos:
+  # ---------------------------------------------------------------- boato_checado (10)
+  # candidato: Estadão Verifica, "Falso" (também Projeto Comprova e UOL)
+  # https://www.estadao.com.br/estadao-verifica/desfile-naval-amazonas-defesa-invasao-venezuelana-roraima/
+  - id: boato-rr-maduro-fronteira
+    tipo: boato_checado
+    entrada: "Lula mandou as Forças Armadas para a fronteira porque sabe que o Maduro quer tomar Roraima. Olha o vídeo!"
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # candidato: UOL Confere, "Falso" (2024)
+  # https://noticias.uol.com.br/confere/ultimas-noticias/2024/11/11/brasil-nao-negociou-roraima-com-a-venezuela-e-teoria-conspiratoria.htm
+  - id: boato-rr-acordo-territorio
+    tipo: boato_checado
+    entrada: "Acordo secreto deu território de Roraima para o Nicolás Maduro, presidente da Venezuela."
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # candidato: Estadão Verifica, "Falso"
+  # https://www.estadao.com.br/estadao-verifica/yanomamis-desnutricao-venezuelanos-brasileiros-maduro-lula/
+  - id: boato-rr-yanomami-venezuelanos
+    tipo: boato_checado
+    entrada: "Os Yanomamis em situação de desnutrição são venezuelanos, não brasileiros."
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # candidato: Aos Fatos, "falso" (2023)
+  # https://www.aosfatos.org/noticias/falso-garimpeiros-mianmar-nao-terra-yanomami-venezuela/
+  - id: boato-rr-garimpeiros-fuga
+    tipo: boato_checado
+    entrada: "Vídeo mostra garimpeiros fugindo para a Venezuela depois da operação na terra Yanomami."
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # candidato: Estadão Verifica, "Falso" (o caso real de 22/10, como texto)
+  # https://www.estadao.com.br/estadao-verifica/frude-transmissao-alteracao-votos-leicoes/
+  - id: boato-urna-transmissao-tre-tse
+    tipo: boato_checado
+    entrada: "Na hora de passar os votos do TRE para o TSE, os votos podem ser trocados. Por isso não dá para confiar na apuração."
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # candidato: AFP Checamos, "Falso" (2026-07-23); também UOL (Smartmatic)
+  # https://checamos.afp.com/doc.afp.com.C2WT29E
+  - id: boato-urnas-origem-venezuela
+    tipo: boato_checado
+    entrada: "As urnas eletrônicas brasileiras têm a mesma origem das urnas da Venezuela."
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # candidato: Estadão Verifica, "Falso"
+  # https://www.estadao.com.br/estadao-verifica/e-falso-que-vacinas-tenham-causado-mais-de-800-mil-mortes-nos-eua/
+  - id: boato-vacina-covid-mortes-eua
+    tipo: boato_checado
+    entrada: "As vacinas contra a covid-19 causaram mais de 800 mil mortes nos Estados Unidos."
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # candidato: Estadão Verifica, "Falso"; também Aos Fatos (2026-06-09)
+  # https://www.estadao.com.br/estadao-verifica/flavio-bolsonaro-acabar-com-pix-falso/
+  - id: boato-pix-acabar
+    tipo: boato_checado
+    entrada: "Flávio Bolsonaro disse que vai acabar com o Pix se for eleito."
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # candidato: AFP Checamos, "Falso" (2026-10-19); também Aos Fatos, UOL e Estadão
+  # https://checamos.afp.com/doc.afp.com.D3RQ9WF
+  - id: boato-bolsa-familia-encerrar
+    tipo: boato_checado
+    entrada: "O governo Lula avalia a possibilidade de encerrar o programa Bolsa Família."
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # candidato: AFP Checamos, "Falso" (2022-08-23); também UOL
+  # https://checamos.afp.com/doc.afp.com.32GY8UW
+  - id: boato-titulo-qrcode
+    tipo: boato_checado
+    entrada: "O QR code do título de eleitor vira voto para o Lula. Não deixem ninguém ler o código!"
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # -------------------------------------------------------------- fato_verdadeiro (5)
+  # Fatos estáveis; conferir se há checagem de agência que corrobore (a política exige
+  # para "verdadeiro"; sem ela, o esperado costuma ser nao_verificavel).
+  # candidato: AFP Checamos (2022-03-29) trata do voto facultativo depois dos 70 anos
+  - id: fato-voto-facultativo-70
+    tipo: fato_verdadeiro
+    entrada: "No Brasil, o voto é facultativo para quem tem mais de 70 anos."
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # candidato: UOL Confere (2022-09-06) trata do e-Título e do celular na cabine
+  - id: fato-etitulo-celular
+    tipo: fato_verdadeiro
+    entrada: "O eleitor pode usar o e-Título no celular para se identificar na seção, mas o celular é proibido dentro da cabine de votação."
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # candidato: Estadão Verifica trata do Pix "desenvolvido a partir de 2018"
+  - id: fato-pix-banco-central
+    tipo: fato_verdadeiro
+    entrada: "O Pix foi criado pelo Banco Central e começou a funcionar em novembro de 2020."
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # candidato: fato do calendário eleitoral (conferir no TSE)
+  - id: fato-segundo-turno-data
+    tipo: fato_verdadeiro
+    entrada: "O segundo turno da eleição para presidente de 2026 foi realizado no domingo, 25 de outubro."
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # candidato: fato geográfico de Roraima (conferir em IBGE ou fonte oficial)
+  - id: fato-rr-boa-vista-hemisferio-norte
+    tipo: fato_verdadeiro
+    entrada: "Boa Vista é a única capital brasileira localizada inteiramente ao norte da linha do Equador."
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # ----------------------------------------------------------------- link_agencia (5)
+  # Links que SÃO a própria checagem (o bug de 22/10). Conferir que a página abre.
+  # candidato: Estadão Verifica, "Falso" (o caso real)
+  - id: link-estadao-transmissao
+    tipo: link_agencia
+    entrada: https://www.estadao.com.br/estadao-verifica/frude-transmissao-alteracao-votos-leicoes/
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # candidato: Aos Fatos, "falso" (2026-10-09)
+  - id: link-aosfatos-bolsa-familia
+    tipo: link_agencia
+    entrada: https://www.aosfatos.org/noticias/governo-lula-extinguir-bolsa-familia/
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # candidato: AFP Checamos, "Falso" (2026-07-23)
+  - id: link-afp-urnas-venezuela
+    tipo: link_agencia
+    entrada: https://checamos.afp.com/doc.afp.com.C2WT29E
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # candidato: UOL Confere, "Falso" (2024), Roraima
+  - id: link-uol-rr-territorio
+    tipo: link_agencia
+    entrada: https://noticias.uol.com.br/confere/ultimas-noticias/2024/11/11/brasil-nao-negociou-roraima-com-a-venezuela-e-teoria-conspiratoria.htm
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # candidato: Projeto Comprova, "Falso" (2024-12-09), Roraima
+  - id: link-comprova-rr-desfile-naval
+    tipo: link_agencia
+    entrada: https://projetocomprova.com.br/publica%C3%A7%C3%B5es/video-mostra-desfile-naval-no-amazonas-nao-defesa-contra-invasao-venezuelana-em-roraima/
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # ------------------------------------------------------------- noticia_legitima (5)
+  # candidato: G1 (já usado no eval antigo, evals/casos_checagem.json)
+  - id: noticia-g1-ruas-entrevista
+    tipo: noticia_legitima
+    entrada: https://g1.globo.com/rj/rio-de-janeiro/eleicoes/2026/noticia/2026/10/10/douglas-ruas-entrevista-ao-rj2.ghtml
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # candidato: G1 (já usado no eval antigo)
+  - id: noticia-g1-tre-rj-retotalizacao
+    tipo: noticia_legitima
+    entrada: https://g1.globo.com/rj/rio-de-janeiro/eleicoes/2026/noticia/2026/10/10/tre-rj-retotaliza-votos-neste-sabado-e-deve-confirmar-vitoria-de-ruas-no-1o-turno-entenda.ghtml
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # PREENCHER: notícia de Roraima sobre o resultado do 2º turno no estado (G1 RR ou Folha BV)
+  - id: noticia-rr-resultado-2turno
+    tipo: noticia_legitima
+    entrada: PREENCHER
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # PREENCHER: notícia de Boa Vista sem relação com eleição (serviço público, clima, saúde)
+  - id: noticia-rr-boa-vista-servico
+    tipo: noticia_legitima
+    entrada: PREENCHER
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # PREENCHER: notícia nacional recente de economia (ex.: Agência Brasil ou Folha)
+  - id: noticia-nacional-economia
+    tipo: noticia_legitima
+    entrada: PREENCHER
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  # ----------------------------------------------------------- boato_sem_checagem (5)
+  # Textos FICTÍCIOS escritos para o teste, no estilo de corrente de WhatsApp (não repassar).
+  # Não foram consultados na Fact Check (as 10 consultas foram para os outros tipos):
+  # conferir que nenhuma agência checou antes de rotular.
+  - id: semchecagem-rr-ponte-macuxi
+    tipo: boato_sem_checagem
+    entrada: "URGENTE!!! A Ponte dos Macuxi vai ser interditada por 6 meses a partir de segunda-feira. Quem mora no Cauamé vai ficar ilhado. Repassem!"
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  - id: semchecagem-rr-agua-zona-oeste
+    tipo: boato_sem_checagem
+    entrada: "Atenção zona oeste de Boa Vista: a companhia de água vai cortar o abastecimento por 3 dias seguidos a partir de quarta. Encham os baldes e avisem os vizinhos."
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  - id: semchecagem-rr-pacaraima-fronteira
+    tipo: boato_sem_checagem
+    entrada: "A fronteira em Pacaraima vai ser fechada amanhã às 6h por ordem do governo federal. Quem estiver do lado de lá não volta mais. Compartilhe!"
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  - id: semchecagem-rr-ufrr-ponto-extra
+    tipo: boato_sem_checagem
+    entrada: "A reitoria da UFRR confirmou: quem comprovar que votou no 2º turno ganha 1 ponto extra em todas as disciplinas do semestre."
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
+
+  - id: semchecagem-nacional-multa-nao-votou
+    tipo: boato_sem_checagem
+    entrada: "Quem não votou no segundo turno vai ter o CPF bloqueado no Pix a partir de 1º de novembro. Regularize até sexta pelo link que vai chegar por SMS."
+    resultado_esperado: null
+    agencia_esperada: null
+    url_checagem_esperada: null
+    fonte_do_gabarito: null
+    rotulado_por: PENDENTE
+    data: null
