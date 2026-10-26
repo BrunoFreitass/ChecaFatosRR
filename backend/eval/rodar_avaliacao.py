@@ -13,6 +13,9 @@ cada caso ROTULADO e compara com o gabarito. Baseado no e2e_37.py da validação
 - Casos com rotulado_por PENDENTE são ignorados.
 - Relatório em eval/resultados/AAAA-MM-DD_<commit>.md e .json (gravado também se a execução
   for interrompida no meio: o que já foi pago em chamadas não se perde).
+- Antes de começar, lê no banco da produção (só leitura, a mesma fonte do painel admin:
+  gemini_model_usage no dia do Pacífico) quantas chamadas dos modelos já foram usadas hoje, e
+  aborta se o que resta da cota diária (RPD) for menor que o orçamento.
 
 Chamada real só com autorização do usuário: exige CHECAFATOS_EVAL_REAL=1 e o orçamento. As
 chaves vêm da configuração do app (CHECAFATOS_DOTENV=1), nunca impressas. ATENÇÃO: com a chave
@@ -40,6 +43,8 @@ from typing import Any, get_args
 from uuid import uuid4
 
 import yaml
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import AppError
 from app.routers.checks import to_out
@@ -695,6 +700,46 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+# ---------------------------------------------------------------------------------------
+# Cota de hoje (antes de rodar)
+# ---------------------------------------------------------------------------------------
+
+# Mesma fonte e mesmo dia do painel admin (repositories/painel.py, 'modelos'): o contador
+# diário por modelo da produção, no dia do Pacífico (o Google zera a cota à meia-noite de lá).
+_USO_HOJE = """
+select model, calls from public.gemini_model_usage
+where day = (now() at time zone 'America/Los_Angeles')::date and model = any(:models)
+"""
+
+
+async def uso_hoje(session: AsyncSession, modelos: Sequence[str]) -> dict[str, int]:
+    """Chamadas de hoje por modelo, como o painel mostra (modelo sem linha = 0). Só leitura."""
+    async with session.begin():
+        rows = (await session.execute(text(_USO_HOJE), {"models": list(modelos)})).all()
+    usados = dict.fromkeys(modelos, 0)
+    usados.update({row.model: int(row.calls) for row in rows})
+    return usados
+
+
+class CotaInsuficienteError(RuntimeError):
+    """O que resta da cota diária dos modelos é menor que o orçamento da rodada."""
+
+
+def conferir_cota(
+    modelos: Sequence[str], usados: Mapping[str, int], rpd: Mapping[str, int], orcamento: int
+) -> int:
+    """Restante de hoje nos modelos da cadeia (RPD menos as usadas no contador da produção). Modelo
+    sem RPD conhecido conta como 0 (na dúvida, não roda). Menor que o orçamento: aborta."""
+    restante = {m: max(0, rpd.get(m, 0) - usados.get(m, 0)) for m in modelos}
+    total = sum(restante.values())
+    if total < orcamento:
+        detalhe = ", ".join(f"{m}: {usados.get(m, 0)} de {rpd.get(m, 0)} usadas" for m in modelos)
+        raise CotaInsuficienteError(
+            f"restam {total} chamadas hoje ({detalhe}); o orçamento é {orcamento}"
+        )
+    return total
+
+
 def pior_caso_gemini(modelos: Sequence[str], rpd: Mapping[str, int] | None = None) -> int:
     """Uma tentativa por modelo (max_retries=0), e a cadeia pode rodar MAX_ATTEMPTS vezes.
     Modelo desligado (RPD 0) nunca é chamado: não entra na conta."""
@@ -735,6 +780,23 @@ def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover - chama
     if not settings.gemini_api_key:
         raise SystemExit("GEMINI_API_KEY ausente (rode com CHECAFATOS_DOTENV=1)")
     modelos = args.modelos or settings.gemini_models
+    rpd = {m: lim.rpd for m, lim in settings.model_limits.items()}
+
+    async def lida_no_banco() -> dict[str, int]:
+        from app.db import dispose_engine, session_scope
+
+        try:
+            async with session_scope() as session:
+                return await uso_hoje(session, modelos)
+        finally:
+            await dispose_engine()  # a avaliação em si não usa o banco
+
+    usados = asyncio.run(lida_no_banco())
+    try:
+        restante = conferir_cota(modelos, usados, rpd, args.orcamento)
+    except CotaInsuficienteError as exc:
+        raise SystemExit(f"Abortado antes de qualquer chamada: {exc}.") from exc
+    print(f"Cota de hoje (painel): {usados} · restam {restante} · orçamento {args.orcamento}")
     generate = google_generate(
         settings.gemini_api_key,
         modelos,
@@ -762,9 +824,7 @@ def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover - chama
                 tools,
                 get_check_settings(settings),
                 orcamento=args.orcamento,
-                max_por_caso=pior_caso_gemini(
-                    modelos, {m: lim.rpd for m, lim in settings.model_limits.items()}
-                ),
+                max_por_caso=pior_caso_gemini(modelos, rpd),
                 orcamento_factcheck=args.orcamento_factcheck,
                 intervalo=args.intervalo,
                 execucao=execucao,
