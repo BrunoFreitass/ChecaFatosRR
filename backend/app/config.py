@@ -164,6 +164,8 @@ class Settings(BaseSettings):
     # Banner da home (horário de Boa Vista): 16h de 25/10 (17h de Brasília) até o fim de 26/10.
     tse_banner_inicio: datetime = datetime(2026, 10, 25, 16, 0, tzinfo=_BOA_VISTA)
     tse_banner_fim: datetime = datetime(2026, 10, 27, 0, 0, tzinfo=_BOA_VISTA)
+    # Texto do banner: troca no painel do Render, sem deploy de código (só texto: o React escapa).
+    tse_banner_texto: str = "Acompanhe a apuração oficial do 2º turno — fonte: TSE"
 
     # Pool de conexões ao banco (processo persistente no Render). 0 = NullPool (o Supavisor
     # agrupa sozinho; testes e plano B Cloud Run). Compatível com transaction mode: sem
@@ -265,6 +267,14 @@ class Settings(BaseSettings):
     def _banner_has_timezone(cls, value: datetime) -> datetime:
         # Sem fuso no painel: horário de Boa Vista (o público do site).
         return value if value.tzinfo else value.replace(tzinfo=_BOA_VISTA)
+
+    @field_validator("tse_banner_texto")
+    @classmethod
+    def _banner_text_is_short(cls, value: str) -> str:
+        text = " ".join(value.split())
+        if not text or len(text) > 200:
+            raise ValueError("TSE_BANNER_TEXTO: de 1 a 200 caracteres")
+        return text
 
     @field_validator("gemini_model_limits")
     @classmethod

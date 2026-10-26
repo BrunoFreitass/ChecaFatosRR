@@ -136,15 +136,110 @@ describe("Apuracao", () => {
     api.apiFetch.mockResolvedValue(response(final));
     renderPage();
 
-    expect(await screen.findAllByText("Eleito")).toHaveLength(1);
+    expect(await screen.findAllByText("Eleito — segundo o TSE")).toHaveLength(1);
     expect(screen.queryByText("Não eleito")).toBeNull();
+  });
+
+  it("eleito pelo TSE: selo no card e linha no topo, sem cores de comemoração", async () => {
+    const elected = result({
+      secoes_pct: 99.81,
+      candidatos: [
+        { ...CANDIDATE_A, eleito: true, situacao: "Eleito" },
+        { ...CANDIDATE_B, situacao: "Não eleito" },
+      ],
+    });
+    api.apiFetch.mockResolvedValue(response(elected));
+    renderPage();
+
+    const badge = await screen.findByText("Eleito — segundo o TSE");
+    expect(badge.closest("li")?.textContent).toContain("CANDIDATO A");
+    const top = screen.getByText(
+      "CANDIDATO A (PA) eleito presidente, segundo o TSE · 99,81% das seções totalizadas",
+    );
+    expect(top).toBeTruthy();
+    for (const node of [badge, top]) {
+      expect(node.className).not.toMatch(/green|emerald|lime|yellow|amber|orange|confetti|animate/);
+    }
+  });
+
+  it("eleita: concordância vem da situação escrita pelo TSE", async () => {
+    const elected = result({
+      secoes_pct: 100,
+      candidatos: [{ ...CANDIDATE_A, eleito: true, situacao: "Eleita" }, CANDIDATE_B],
+    });
+    api.apiFetch.mockResolvedValue(response(elected));
+    renderPage();
+
+    expect(await screen.findByText("Eleita — segundo o TSE")).toBeTruthy();
+    expect(screen.getByText(/^CANDIDATO A \(PA\) eleita presidente, segundo o TSE · 100,00% das seções totalizadas$/)).toBeTruthy();
+  });
+
+  it("a linha do topo segue o Brasil, mesmo na aba Roraima", async () => {
+    const br = result({ candidatos: [{ ...CANDIDATE_A, eleito: true, situacao: "Eleito" }, CANDIDATE_B] });
+    const rr = result({ escopo: "rr", candidatos: [CANDIDATE_A, { ...CANDIDATE_B, pct: 60 }] });
+    api.apiFetch.mockResolvedValue(response(br, rr));
+    renderPage();
+    await screen.findByText(/eleito presidente, segundo o TSE/);
+    fireEvent.click(screen.getByRole("tab", { name: "Roraima" }));
+
+    expect(screen.getByText(/^CANDIDATO A \(PA\) eleito presidente, segundo o TSE/)).toBeTruthy();
+  });
+
+  it("eleito só no arquivo de uma UF não vira linha de presidente eleito", async () => {
+    const rr = result({ escopo: "rr", candidatos: [{ ...CANDIDATE_A, eleito: true, situacao: "Eleito" }, CANDIDATE_B] });
+    api.apiFetch.mockResolvedValue(response(result(), rr));
+    renderPage();
+    await screen.findByText("CANDIDATO A");
+
+    expect(screen.queryByText(/eleito presidente/)).toBeNull();
+  });
+
+  it("matematicamente eleito: o texto do TSE aparece inteiro, sem resumir", async () => {
+    const br = result({
+      secoes_pct: 99.81,
+      candidatos: [{ ...CANDIDATE_A, eleito: true, situacao: "Matematicamente eleito" }, CANDIDATE_B],
+    });
+    api.apiFetch.mockResolvedValue(response(br));
+    renderPage();
+
+    expect(await screen.findByText("Matematicamente eleito — segundo o TSE")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "CANDIDATO A (PA) matematicamente eleito presidente, segundo o TSE · 99,81% das seções totalizadas",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("sem percentual de seções: a linha do topo não mostra traço", async () => {
+    const br = result({ secoes_pct: null, candidatos: [{ ...CANDIDATE_A, eleito: true, situacao: "Eleito" }, CANDIDATE_B] });
+    api.apiFetch.mockResolvedValue(response(br));
+    renderPage();
+
+    expect(await screen.findByText("CANDIDATO A (PA) eleito presidente, segundo o TSE")).toBeTruthy();
+  });
+
+  it("a linha do topo fica numa região viva (leitor de tela anuncia)", async () => {
+    const br = result({ candidatos: [{ ...CANDIDATE_A, eleito: true, situacao: "Eleito" }, CANDIDATE_B] });
+    api.apiFetch.mockResolvedValue(response(br));
+    renderPage();
+
+    const top = await screen.findByText(/eleito presidente, segundo o TSE/);
+    expect(top.closest("[aria-live]")?.getAttribute("aria-live")).toBe("polite");
+  });
+
+  it("candidato sem partido: a linha do topo não mostra parênteses vazios", async () => {
+    const br = result({ candidatos: [{ ...CANDIDATE_A, partido: null, eleito: true, situacao: "Eleito" }, CANDIDATE_B] });
+    api.apiFetch.mockResolvedValue(response(br));
+    renderPage();
+
+    expect(await screen.findByText(/^CANDIDATO A eleito presidente, segundo o TSE · /)).toBeTruthy();
   });
 
   it("parcial não tem eleito nem destaque de vencedor", async () => {
     api.apiFetch.mockResolvedValue(response(result()));
     renderPage();
     await screen.findByText("CANDIDATO A");
-    expect(screen.queryByText("Eleito")).toBeNull();
+    expect(screen.queryByText(/Eleit[oa]/)).toBeNull();
     expect(screen.queryByText(/vencendo|liderando|projeção/i)).toBeNull();
   });
 

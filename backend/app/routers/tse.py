@@ -21,7 +21,6 @@ from app.services.tse.service import ScopeResult, TseCache, read_results, refres
 router = APIRouter(tags=["tse"])
 
 OFFICIAL_LINK = "https://resultados.tse.jus.br/"
-BANNER_TEXT = "Acompanhe a apuração oficial do 2º turno — fonte: TSE"
 # Navegador e Cloudflare podem reaproveitar por 15 s; o ETag faz a revalidação custar ~0 byte.
 RESULT_CACHE = "public, max-age=15"
 # O mapa muda devagar (cada UF no máximo a cada 2 min): cache público de 30 s.
@@ -121,7 +120,7 @@ async def status(
     shown = settings.tse_banner_inicio <= now < settings.tse_banner_fim
     body = {
         "banner": shown,
-        "texto": BANNER_TEXT,
+        "texto": settings.tse_banner_texto,
         "apuracao": settings.tse_enabled,
         "mapa": settings.tse_enabled and settings.tse_mapa_enabled,
     }
