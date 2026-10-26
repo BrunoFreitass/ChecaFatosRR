@@ -15,6 +15,8 @@ from app.services.fetcher import PageUnreadableError
 from app.services.gemini import GeminiQuotaExhaustedError, GeminiUnavailableError
 from eval.rodar_avaliacao import (
     CASOS_PADRAO,
+    ESPERADOS,
+    HERE,
     PENDENTE,
     TIPOS,
     Caso,
@@ -22,10 +24,12 @@ from eval.rodar_avaliacao import (
     Resultado,
     avaliar,
     carregar_casos,
+    filtrar,
     gravar_relatorio,
     kappa,
     linhas_vermelhas,
     metricas,
+    outro_assunto_sustenta,
     parse_args,
     pior_caso_gemini,
     rotulados,
@@ -613,3 +617,141 @@ async def test_a_second_report_on_the_same_day_does_not_overwrite_the_first(
     assert first[0].name == "2026-10-27_abc1234.md"
     assert second[0].name == "2026-10-27_abc1234-2.md"
     assert second[1].name == "2026-10-27_abc1234-2.json"
+
+
+# ---------- ajustes de 26/10: outro assunto, só IA, consumo, subconjunto, README ----------
+
+OFF_TOPIC_TRUE = {"titulo": "Vacina da dengue foi aprovada pela Anvisa", "veredito": "Verdadeiro"}
+ON_TOPIC_TRUE = {
+    "titulo": "Eleição não foi adiada para novembro, confirma o TSE",
+    "veredito": "Verdadeiro",
+}
+OFF_TOPIC_FALSE = {"titulo": "Vacina da dengue causa cegueira", "veredito": "Falso"}
+KEYS = ["eleicao", "adiada", "novembro"]
+
+
+@pytest.mark.parametrize(
+    ("veredito", "confianca", "citadas", "esperado"),
+    [
+        # "Verdadeiro" só de pé por causa da checagem de outro assunto: viola o #43.
+        ("verdadeiro", 90, [OFF_TOPIC_TRUE], True),
+        # Com a do mesmo assunto confirmando, a de outro assunto não é o que sustenta.
+        ("verdadeiro", 90, [ON_TOPIC_TRUE, OFF_TOPIC_TRUE], False),
+        # "Falso" < 70% só com checagem de outro assunto: viola.
+        ("falso", 60, [OFF_TOPIC_FALSE], True),
+        # "Falso" >= 70% não depende de checagem: não viola.
+        ("falso", 90, [OFF_TOPIC_FALSE], False),
+        ("nao_verificavel", 0, [OFF_TOPIC_TRUE], False),
+        ("verdadeiro", 90, [], False),
+    ],
+)
+def test_off_topic_check_sustaining_the_verdict_uses_the_43_rule(
+    veredito: str, confianca: int, citadas: list[dict[str, str]], esperado: bool
+) -> None:
+    assert outro_assunto_sustenta(veredito, confianca, citadas, KEYS) is esperado
+
+
+def test_off_topic_sustaining_is_a_red_line() -> None:
+    c = caso("b")
+    r = Resultado(
+        **{**resultado(c, "falso").__dict__, "outro_assunto_sustenta": True},
+    )
+    assert linhas_vermelhas(c, r) == ["agencia_de_outro_assunto_sustentando"]
+
+
+async def test_the_platform_does_not_let_an_off_topic_check_sustain_true() -> None:
+    # De ponta a ponta: a IA diz "verdadeiro" citando checagem de outro assunto; a salvaguarda
+    # da plataforma rebaixa, e a avaliação não acusa linha vermelha (deve ser 0).
+    factcheck = FakeFactCheck()
+    factcheck.results = [
+        AgencyCheck(
+            agencia="Lupa",
+            titulo="Vacina da dengue foi aprovada pela Anvisa",
+            veredito="Verdadeiro",
+            url="https://lupa.uol.com.br/x",
+        )
+    ]
+    analyzer = ScriptedAnalyzer([("ok", "verdadeiro", "m1")])
+    execucao, _ = await run([caso("a", esperado="nao_verificavel")], analyzer, factcheck=factcheck)
+    (r,) = execucao.resultados
+    assert r.obtido == "nao_verificavel"
+    assert r.outro_assunto_sustenta is False
+    assert metricas([caso("a", esperado="nao_verificavel")], [r])["linhas_vermelhas"] == []
+
+
+def test_ai_only_verdict_is_a_metric_with_the_list_of_cases() -> None:
+    casos = [caso("a"), caso("b"), caso("c", esperado="nao_verificavel")]
+    res = [
+        resultado(casos[0], "falso"),  # sem agência citada: só IA
+        resultado(casos[1], "falso", citadas=("https://agencia.org/1",)),
+        resultado(casos[2], "nao_verificavel"),  # não verificável não é veredito da IA
+    ]
+    m = metricas(casos, res)
+    assert m["veredito_so_da_ia"] == {"total": 1, "casos": ["a"]}
+    assert m["linhas_vermelhas"] == []  # métrica, não linha vermelha
+
+
+async def test_report_shows_model_gemini_calls_and_fact_check_queries_separately(
+    tmp_path: Path,
+) -> None:
+    analyzer = ScriptedAnalyzer([("ok", "falso", "gemini-3.7-flash")])
+    casos = [caso("a")]
+    execucao, _ = await run(casos, analyzer)
+    md, js = gravar_relatorio(
+        casos,
+        execucao,
+        pasta=tmp_path,
+        commit="abc1234",
+        dia="2026-10-27",
+        orcamento=30,
+        modelos=("gemini-3.7-flash",),
+    )
+    consumo = json.loads(js.read_text(encoding="utf-8"))["consumo"]
+    assert consumo == {
+        "modelos_configurados": ["gemini-3.7-flash"],
+        "modelo_que_respondeu": {"gemini-3.7-flash": 1},
+        "chamadas_gemini": 1,
+        "orcamento_gemini": 30,
+        "consultas_factcheck": execucao.consultas_factcheck,
+    }
+    text = md.read_text(encoding="utf-8")
+    assert "- Modelo usado: gemini-3.7-flash" in text
+    assert "- Chamadas ao Gemini gastas: 1 de 30" in text
+    assert f"- Consultas à Fact Check gastas: {execucao.consultas_factcheck}" in text
+    assert "Veredito só da IA, sem agência citada" in text
+
+
+def test_subset_by_type_and_id() -> None:
+    casos = [caso("a"), caso("b", tipo="link_agencia", entrada=ESTADAO), caso("c")]
+    assert [c.id for c in filtrar(casos, tipos=["link_agencia"])] == ["b"]
+    assert [c.id for c in filtrar(casos, ids=["c", "a"])] == ["a", "c"]  # ordem do arquivo
+    assert [c.id for c in filtrar(casos, tipos=["boato_checado"], ids=["a", "b"])] == ["a"]
+    assert filtrar(casos) == casos
+    with pytest.raises(ValueError, match="tipo desconhecido"):
+        filtrar(casos, tipos=["boato"])
+    with pytest.raises(ValueError, match="id desconhecido"):
+        filtrar(casos, ids=["zzz"])
+
+
+def test_subset_arguments() -> None:
+    args = parse_args(["--orcamento", "30", "--tipos", "boato_checado, link_agencia", "--ids", "a"])
+    assert args.tipos == ("boato_checado", "link_agencia")
+    assert args.ids == ("a",)
+    assert parse_args(["--orcamento", "30"]).tipos == ()
+
+
+def test_the_repository_cases_can_be_split_by_type_into_two_nights_of_15() -> None:
+    casos = carregar_casos(CASOS_PADRAO)
+    first = filtrar(casos, tipos=["boato_checado", "link_agencia"])
+    second = filtrar(casos, tipos=["fato_verdadeiro", "noticia_legitima", "boato_sem_checagem"])
+    assert len(first) == len(second) == 15
+    assert {c.id for c in first}.isdisjoint({c.id for c in second})
+
+
+def test_readme_lists_the_exact_vocabulary_and_the_command() -> None:
+    readme = (HERE / "README.md").read_text(encoding="utf-8")
+    for value in sorted(ESPERADOS):
+        assert f"`{value}`" in readme
+    assert "--modelos gemini-3.7-flash" in readme
+    assert "--orcamento 30" in readme
+    assert "CHECAFATOS_EVAL_REAL=1" in readme

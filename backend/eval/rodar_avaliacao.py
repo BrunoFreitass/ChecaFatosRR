@@ -47,6 +47,8 @@ from app.schemas.checks import Veredito
 from app.services.check_service import CheckSettings, CheckTools, run_check
 from app.services.factcheck import AgencyCheck, same_page
 from app.services.gemini import MAX_ATTEMPTS
+from app.services.relevance import content_keys
+from app.services.verdict_policy import relevant_verdict, split_relevant
 from tests.fakes import FakeCheckRepository  # repositório em memória (o mesmo dos testes)
 
 HERE = Path(__file__).parent
@@ -65,6 +67,7 @@ AGENCY_PAGE = "checagem_de_agencia"
 ESPERADOS = frozenset(get_args(Veredito)) | {AGENCY_PAGE}
 # Vereditos que dizem "o conteúdo é desinformação": "verdadeiro" para eles é linha vermelha.
 BOATO = frozenset({"falso", "enganoso", "fora_de_contexto"})
+CATEGORICOS = BOATO | {"verdadeiro"}  # tudo menos "não verificável"
 # Falhas passageiras: sem resposta no teto da tentativa, 503 "high demand" e 504 do Google.
 # Status vazio por outro motivo (resposta vazia, bloqueio) NÃO é passageiro: "sem_status".
 FALHA_TRANSITORIA = frozenset({"timeout", "503", "504"})
@@ -107,6 +110,10 @@ class Resultado:
     modelo: str | None
     segundos: float
     erros_ia: tuple[tuple[str, str], ...]  # (modelo, "503" | "429" | "timeout" | "sem_status")
+    confianca: int | None = None
+    # Regra da salvaguarda do #43: o veredito exibido só se sustenta com checagem citada de
+    # OUTRO assunto (sem ela, "Verdadeiro"/"Falso" < 70% viraria "Ainda sem checagem").
+    outro_assunto_sustenta: bool = False
 
 
 @dataclass
@@ -170,6 +177,21 @@ def _pendente(caso: Caso) -> bool:
     return (caso.rotulado_por or "").upper() == PENDENTE
 
 
+def filtrar(
+    casos: Sequence[Caso], *, tipos: Sequence[str] = (), ids: Sequence[str] = ()
+) -> list[Caso]:
+    """Subconjunto (ex.: dividir a rodada em duas noites). Tipo ou id desconhecido é erro:
+    um erro de digitação não pode virar "rodou zero casos" em silêncio."""
+    desconhecidos = [t for t in tipos if t not in TIPOS]
+    if desconhecidos:
+        raise ValueError(f"tipo desconhecido: {', '.join(desconhecidos)}")
+    known = {c.id for c in casos}
+    faltando = [i for i in ids if i not in known]
+    if faltando:
+        raise ValueError(f"id desconhecido: {', '.join(faltando)}")
+    return [c for c in casos if (not tipos or c.tipo in tipos) and (not ids or c.id in ids)]
+
+
 def rotulados(casos: Sequence[Caso]) -> list[Caso]:
     """Só os casos com gabarito. Rotulado pela metade é erro (nunca entra pela metade)."""
     out = []
@@ -203,7 +225,9 @@ def linhas_vermelhas(caso: Caso, r: Resultado) -> list[str]:
     - falso_em_fato: "Falso" para fato verdadeiro ou notícia legítima;
     - verdadeiro_sem_agencia: "Verdadeiro" sem checagem de agência citada (política de 10/10);
     - link_de_agencia_nao_reconhecido: o link é a própria checagem e a página não mostra isso
-      (o bug de 22/10/2026). Reconhecer não depende da IA: vale também se ela falhou depois.
+      (o bug de 22/10/2026). Reconhecer não depende da IA: vale também se ela falhou depois;
+    - agencia_de_outro_assunto_sustentando: checagem citada de outro assunto sustenta o
+      veredito (a mesma regra da salvaguarda do #43, verdict_policy.relevant_verdict).
     """
     regras = []
     if (
@@ -223,7 +247,23 @@ def linhas_vermelhas(caso: Caso, r: Resultado) -> list[str]:
         regras.append("falso_em_fato")
     if r.obtido == "verdadeiro" and not r.urls_citadas:
         regras.append("verdadeiro_sem_agencia")
+    if r.outro_assunto_sustenta:
+        regras.append("agencia_de_outro_assunto_sustentando")
     return regras
+
+
+def outro_assunto_sustenta(
+    veredito: str, confianca: int, citadas: Sequence[Mapping[str, Any]], keys: list[str] | None
+) -> bool:
+    """O veredito só se sustenta graças às citadas de outro assunto? (Regra do #43: com as
+    do mesmo assunto não se sustenta, com todas as citadas, sim.)"""
+    cited = [dict(c) for c in citadas]
+    same, other = split_relevant(cited, keys)
+    if not other:
+        return False
+    _, without_other = relevant_verdict(veredito, confianca, same)
+    _, with_all = relevant_verdict(veredito, confianca, cited)
+    return without_other is not None and with_all is None
 
 
 def kappa(esperados: Sequence[str], obtidos: Sequence[str]) -> float | None:
@@ -266,8 +306,12 @@ def metricas(casos: Sequence[Caso], resultados: Sequence[Resultado]) -> dict[str
         for modelo, status in r.erros_ia:
             falhas.setdefault(modelo, Counter())[status] += 1
 
+    # Métrica (não linha vermelha): veredito categórico sem nenhuma checagem de agência citada.
+    so_ia = [r.caso_id for r in avaliados if r.obtido in CATEGORICOS and not r.urls_citadas]
+
     return {
         "linhas_vermelhas": vermelhas,
+        "veredito_so_da_ia": {"total": len(so_ia), "casos": so_ia},
         "checagem_certa": {
             "encontradas": encontradas,
             "total": len(com_url),
@@ -388,6 +432,8 @@ async def _um_caso(
     citadas: tuple[str, ...] = ()
     encontradas: tuple[str, ...] = ()
     modelo: str | None = None
+    confianca: int | None = None
+    sustenta = False
     if outcome is not None:
         out = to_out(outcome.check, configuracao)
         citadas = tuple(a.url for a in out.checagens_agencias)
@@ -398,8 +444,22 @@ async def _um_caso(
         elif outcome.agencies_only:
             status = "nao_avaliado"  # a IA não respondeu: sem veredito para comparar
         else:
-            obtido = out.veredito
+            obtido, confianca = out.veredito, out.confianca
             modelo = outcome.check.result.get("model")
+            # Palavras-chave como a salvaguarda usa: as gravadas na checagem (ou, sem elas,
+            # as do título e do texto).
+            stored = outcome.check.result.get("palavras_chave")
+            keys = (
+                [k for k in stored if isinstance(k, str)]
+                if isinstance(stored, list)
+                else content_keys(out.title, out.texto)
+            )
+            sustenta = outro_assunto_sustenta(
+                out.veredito,
+                out.confianca,
+                [a.model_dump() for a in out.checagens_agencias],
+                keys,
+            )
     resultado = Resultado(
         caso_id=caso.id,
         tipo=caso.tipo,
@@ -411,6 +471,8 @@ async def _um_caso(
         modelo=modelo,
         segundos=round(segundos, 2),
         erros_ia=erros_ia,
+        confianca=confianca,
+        outro_assunto_sustenta=sustenta,
     )
     return resultado, rotulos
 
@@ -480,21 +542,36 @@ def _pct(value: float | None) -> str:
 
 def _markdown(dados: dict[str, Any]) -> str:
     m = dados
+    c = m["consumo"]
     linhas = [
         f"# Avaliação — {m['data']} — commit `{m['commit']}`",
         "",
         f"- Casos rotulados: {m['casos_rotulados']} · pendentes ignorados: "
         f"{m['ignorados_pendentes']} · executados: {len(m['resultados'])}",
-        f"- Chamadas ao Gemini: {m['chamadas_gemini']} de {m['orcamento']}"
-        f" · consultas à Fact Check (teto): {m['consultas_factcheck']}"
-        f" · parada: {m['parada'] or 'nenhuma (todos os rotulados)'}",
+        f"- Parada: {m['parada'] or 'nenhuma (todos os rotulados)'}",
         f"- Situação dos casos: {m['contagem']}",
+        "",
+        "## Consumo",
+        "",
+        f"- Modelo usado: {', '.join(c['modelos_configurados']) or '—'}"
+        f" (respondeu: {c['modelo_que_respondeu'] or '—'})",
+        f"- Chamadas ao Gemini gastas: {c['chamadas_gemini']} de {c['orcamento_gemini']}",
+        f"- Consultas à Fact Check gastas: {c['consultas_factcheck']} (teto: consultas enviadas)",
         "",
         "## Linhas vermelhas (devem ser 0)",
         "",
     ]
     vermelhas = m["linhas_vermelhas"]
     linhas += [f"- `{v['caso']}`: {v['regra']}" for v in vermelhas] or ["Nenhuma."]
+    so_ia = m["veredito_so_da_ia"]
+    linhas += [
+        "",
+        "## Veredito só da IA, sem agência citada (métrica, não linha vermelha)",
+        "",
+        f"{so_ia['total']} caso(s)" + (": " + ", ".join(f"`{i}`" for i in so_ia["casos"]))
+        if so_ia["casos"]
+        else "0 casos.",
+    ]
     cc, conc, tempo = m["checagem_certa"], m["concordancia"], m["tempo"]
     kappa_txt = "—" if conc["kappa"] is None else f"{conc['kappa']:.2f}"
     linhas += [
@@ -550,13 +627,22 @@ def gravar_relatorio(
     commit: str,
     dia: str,
     orcamento: int,
+    modelos: Sequence[str] = (),
 ) -> tuple[Path, Path]:
+    respondeu = Counter(r.modelo for r in execucao.resultados if r.modelo)
     dados = {
         "commit": commit,
         "data": dia,
         "orcamento": orcamento,
         "chamadas_gemini": execucao.chamadas_gemini,
         "consultas_factcheck": execucao.consultas_factcheck,
+        "consumo": {
+            "modelos_configurados": list(modelos),
+            "modelo_que_respondeu": dict(sorted(respondeu.items())),
+            "chamadas_gemini": execucao.chamadas_gemini,
+            "orcamento_gemini": orcamento,
+            "consultas_factcheck": execucao.consultas_factcheck,
+        },
         "parada": execucao.parada,
         "casos_rotulados": len(rotulados(casos)),
         "ignorados_pendentes": execucao.ignorados_pendentes,
@@ -583,11 +669,15 @@ def _positivo(value: str) -> int:
     return number
 
 
-def _modelos(value: str) -> tuple[str, ...]:
+def _lista(value: str) -> tuple[str, ...]:
     names = tuple(dict.fromkeys(n.strip() for n in value.split(",") if n.strip()))
     if not names:
-        raise argparse.ArgumentTypeError("informe ao menos um modelo")
+        raise argparse.ArgumentTypeError("lista vazia")
     return names
+
+
+def _modelos(value: str) -> tuple[str, ...]:
+    return _lista(value)
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -598,6 +688,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--modelos", type=_modelos, help="cadeia separada por vírgula (padrão: a da produção)"
     )
+    parser.add_argument("--tipos", type=_lista, default=(), help="ex.: boato_checado,link_agencia")
+    parser.add_argument("--ids", type=_lista, default=(), help="ids separados por vírgula")
     parser.add_argument("--intervalo", type=float, default=INTERVALO_SEGUNDOS)
     parser.add_argument("--saida", type=Path, default=RESULTADOS)
     return parser.parse_args(argv)
@@ -661,7 +753,7 @@ def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover - chama
         factcheck=HttpFactCheckClient(key) if key else _NoFactCheck(),
         analyzer=GeminiAnalyzer(generate, budget_seconds=settings.gemini_budget_seconds),
     )
-    casos = carregar_casos(args.casos)
+    casos = filtrar(carregar_casos(args.casos), tipos=args.tipos, ids=args.ids)
     execucao = Execucao()
     try:
         asyncio.run(
@@ -689,6 +781,7 @@ def main(argv: Sequence[str] | None = None) -> None:  # pragma: no cover - chama
             commit=_commit(),
             dia=date.today().isoformat(),
             orcamento=args.orcamento,
+            modelos=modelos,
         )
         print(f"Relatório: {md}\n           {js}")
         print(
