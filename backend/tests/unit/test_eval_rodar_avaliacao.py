@@ -20,10 +20,12 @@ from eval.rodar_avaliacao import (
     PENDENTE,
     TIPOS,
     Caso,
+    CotaInsuficienteError,
     Execucao,
     Resultado,
     avaliar,
     carregar_casos,
+    conferir_cota,
     filtrar,
     gravar_relatorio,
     kappa,
@@ -740,18 +742,58 @@ def test_subset_arguments() -> None:
     assert parse_args(["--orcamento", "30"]).tipos == ()
 
 
-def test_the_repository_cases_can_be_split_by_type_into_two_nights_of_15() -> None:
+NOITES = (
+    ("boato_checado",),
+    ("link_agencia", "fato_verdadeiro"),
+    ("noticia_legitima", "boato_sem_checagem"),
+)
+
+
+def test_the_repository_cases_split_into_three_nights_of_10() -> None:
     casos = carregar_casos(CASOS_PADRAO)
-    first = filtrar(casos, tipos=["boato_checado", "link_agencia"])
-    second = filtrar(casos, tipos=["fato_verdadeiro", "noticia_legitima", "boato_sem_checagem"])
-    assert len(first) == len(second) == 15
-    assert {c.id for c in first}.isdisjoint({c.id for c in second})
+    nights = [filtrar(casos, tipos=tipos) for tipos in NOITES]
+    assert [len(n) for n in nights] == [10, 10, 10]
+    ids = [c.id for n in nights for c in n]
+    assert sorted(ids) == sorted(c.id for c in casos)  # as 3 noites cobrem tudo, sem repetir
 
 
-def test_readme_lists_the_exact_vocabulary_and_the_command() -> None:
+def test_readme_lists_the_exact_vocabulary_the_plan_and_the_commands() -> None:
     readme = (HERE / "README.md").read_text(encoding="utf-8")
     for value in sorted(ESPERADOS):
         assert f"`{value}`" in readme
-    assert "--modelos gemini-3.7-flash" in readme
-    assert "--orcamento 30" in readme
     assert "CHECAFATOS_EVAL_REAL=1" in readme
+    assert "entre 00:00 e 02:30 de Boa Vista" in readme
+    for tipos in NOITES:
+        command = (
+            "python -m eval.rodar_avaliacao --modelos gemini-3.7-flash --orcamento 18 "
+            f"--tipos {','.join(tipos)}"
+        )
+        assert command in readme
+    assert "--orcamento 30" not in readme  # o plano antigo (2 noites de 15) saiu
+
+
+# ---------- cota de hoje (mesma fonte do painel) ----------
+
+
+def test_quota_check_passes_when_what_is_left_covers_the_budget() -> None:
+    rpd = {"gemini-3.7-flash": 20}
+    assert conferir_cota(["gemini-3.7-flash"], {"gemini-3.7-flash": 2}, rpd, 18) == 18
+    assert conferir_cota(["gemini-3.7-flash"], {}, rpd, 18) == 20
+
+
+def test_quota_check_aborts_when_what_is_left_is_below_the_budget() -> None:
+    rpd = {"gemini-3.7-flash": 20}
+    with pytest.raises(CotaInsuficienteError, match=r"restam 17 .*3 de 20 usadas.*orçamento é 18"):
+        conferir_cota(["gemini-3.7-flash"], {"gemini-3.7-flash": 3}, rpd, 18)
+    with pytest.raises(CotaInsuficienteError, match="restam 0"):
+        conferir_cota(["gemini-3.7-flash"], {"gemini-3.7-flash": 25}, rpd, 1)  # nunca negativo
+
+
+def test_quota_check_treats_an_unknown_model_as_without_quota() -> None:
+    with pytest.raises(CotaInsuficienteError):
+        conferir_cota(["modelo-novo"], {}, {"gemini-3.7-flash": 20}, 1)
+
+
+def test_quota_check_sums_the_chain() -> None:
+    rpd = {"a": 20, "b": 20}
+    assert conferir_cota(["a", "b"], {"a": 15, "b": 5}, rpd, 18) == 20

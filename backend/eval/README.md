@@ -46,34 +46,49 @@ Tipos de caso (`tipo`): `boato_checado`, `fato_verdadeiro`, `link_agencia`, `not
 
 ## Como rodar
 
-Chamada real só com autorização. As travas são `CHECAFATOS_EVAL_REAL=1` e o orçamento obrigatório. As chaves vêm da configuração do app (`CHECAFATOS_DOTENV=1`) e nunca são impressas. A partir de `backend/`:
+Chamada real só com autorização. As travas são `CHECAFATOS_EVAL_REAL=1` e o orçamento obrigatório. As chaves vêm da configuração do app (`CHECAFATOS_DOTENV=1`) e nunca são impressas.
+
+### Cota: 20 chamadas por dia por modelo
+
+O painel admin mostra o limite diário de **20 chamadas** para `gemini-3.8-flash`, `gemini-3.7-flash` e `gemini-3.6-flash`. Por isso:
+
+- **Orçamento de 18 por noite**, só com o `gemini-3.7-flash`. Sobram 2 chamadas para a produção, que ainda tem o 3.8 e o 3.6 na cadeia.
+- **Janela: entre 00:00 e 02:30 de Boa Vista.** A cota zera à meia-noite do Pacífico, que hoje cai às 03:00 de Boa Vista. A partir de 01/11/2026, com o fim do horário de verão nos EUA, passa a cair às 04:00; a janela continua valendo.
+- **O script confere a cota antes de rodar.** Ele lê no banco da produção, só leitura e na mesma fonte do painel (`gemini_model_usage` no dia do Pacífico), quantas chamadas do modelo já foram usadas hoje. Se o restante (20 − usadas) for menor que o orçamento, ele **aborta antes de qualquer chamada**.
+
+### As 3 noites (10 casos cada)
+
+A partir de `backend/`:
 
 ```bash
-CHECAFATOS_EVAL_REAL=1 CHECAFATOS_DOTENV=1 python -m eval.rodar_avaliacao --modelos gemini-3.7-flash --orcamento 30
+# noite 1: boato_checado (10)
+CHECAFATOS_EVAL_REAL=1 CHECAFATOS_DOTENV=1 python -m eval.rodar_avaliacao --modelos gemini-3.7-flash --orcamento 18 --tipos boato_checado
+# noite 2: link_agencia (5) + fato_verdadeiro (5)
+CHECAFATOS_EVAL_REAL=1 CHECAFATOS_DOTENV=1 python -m eval.rodar_avaliacao --modelos gemini-3.7-flash --orcamento 18 --tipos link_agencia,fato_verdadeiro
+# noite 3: noticia_legitima (5) + boato_sem_checagem (5)
+CHECAFATOS_EVAL_REAL=1 CHECAFATOS_DOTENV=1 python -m eval.rodar_avaliacao --modelos gemini-3.7-flash --orcamento 18 --tipos noticia_legitima,boato_sem_checagem
 ```
 
-Rodada em 2 noites de 15 casos (com um modelo, o pior caso é 2 chamadas por checagem, então 15 casos cabem em 30):
+O que cabe em 18 chamadas:
 
-```bash
-# noite 1: boato_checado (10) + link_agencia (5)
-CHECAFATOS_EVAL_REAL=1 CHECAFATOS_DOTENV=1 python -m eval.rodar_avaliacao --modelos gemini-3.7-flash --orcamento 30 --tipos boato_checado,link_agencia
-# noite 2: fato_verdadeiro (5) + noticia_legitima (5) + boato_sem_checagem (5)
-CHECAFATOS_EVAL_REAL=1 CHECAFATOS_DOTENV=1 python -m eval.rodar_avaliacao --modelos gemini-3.7-flash --orcamento 30 --tipos fato_verdadeiro,noticia_legitima,boato_sem_checagem
-```
+- Cada caso só começa se couber o **pior caso** dele: 2 chamadas, porque o analisador refaz o pedido quando a resposta foge do formato.
+- Normalmente cada caso gasta 1 chamada, e os 10 cabem com folga.
+- Se muitos casos precisarem da 2ª chamada, o script para antes do fim (parada "orçamento"). Os casos que faltaram rodam numa noite seguinte com `--ids`.
+- Os links de agência reconhecidos não gastam nenhuma chamada.
 
 Outras opções:
 - `--ids a,b,c`: só esses casos.
 - `--orcamento-factcheck N`: teto de consultas à Fact Check.
 - `--intervalo 21`: segundos entre checagens.
 
-O script para:
+O script aborta antes de começar se a cota de hoje não comportar o orçamento. Durante a rodada, ele para:
 - quando o próximo caso não cabe no orçamento;
 - num 429;
 - em 2 falhas seguidas de timeout, 503 ou 504.
 
 Ele grava o relatório mesmo se a execução cair no meio.
 
-**Atenção:** a avaliação usa a mesma chave do Gemini da produção. As chamadas gastam a cota diária do Google sem o contador do banco da produção saber. Rode fora dos horários de pico.
+**Atenção:** a avaliação usa a mesma chave do Gemini da produção. As chamadas gastam a cota diária do Google sem o contador do banco da produção saber, porque a avaliação lê o contador mas não grava nele. Por isso a conferência é feita antes de rodar, e a rodada fica na madrugada.
 
 ## O relatório
 
