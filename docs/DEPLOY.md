@@ -273,6 +273,7 @@ painel (*Environment*) para mudar:
 | `TSE_REFRESH_SECONDS` | `30` | intervalo mínimo entre buscas no TSE |
 | `TSE_URL_TEMPLATE` | `https://resultados.tse.jus.br/oficial/ele2026/{eleicao}/dados/{escopo}/{escopo}-c{cargo:04d}-e{eleicao:06d}-u.json` | só muda se o TSE mudar o endereço; outro host é recusado no boot |
 | `TSE_BANNER_INICIO` / `TSE_BANNER_FIM` | `2026-10-25T16:00:00-04:00` / `2026-10-27T00:00:00-04:00` | janela do banner da home (horário de Boa Vista se vier sem fuso) |
+| `TSE_BANNER_TEXTO` | `Acompanhe a apuração oficial do 2º turno — fonte: TSE` | texto do banner da home, de 1 a 200 caracteres (só texto). Trocar no painel reinicia o serviço, sem deploy de código |
 | `TSE_MAPA_ENABLED` | `true` | `false` desliga o mapa por estado (`GET /tse/mapa` = 404, nenhuma busca por UF); a apuração continua |
 | `TSE_MAPA_REFRESH_SECONDS` | `120` | idade mínima de cada UF antes de buscar de novo (60–600) |
 | `TSE_MAPA_LOTE` | `9` | UFs buscadas por requisição ao mapa (1–27): com 1 visitante, as 27 em ~3 min |

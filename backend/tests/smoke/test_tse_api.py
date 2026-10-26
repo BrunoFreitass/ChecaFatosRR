@@ -13,7 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.repositories.tse import Snapshot
 from app.routers.tse import get_now, get_tse_client, get_tse_repos
 from app.services.tse.client import TseUnavailableError
@@ -177,6 +177,21 @@ def test_banner_window_comes_from_the_environment(
     now[0] = datetime(2026, 10, 20, 12, 30, tzinfo=UTC)  # 8h30 em Boa Vista
 
     assert api.get("/tse/status").json()["banner"] is True
+
+
+def test_banner_text_comes_from_the_environment(
+    api: TestClient, now: list[datetime], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TSE_BANNER_TEXTO", "Resultado oficial do 2º turno — fonte: TSE")
+    get_settings.cache_clear()
+
+    assert api.get("/tse/status").json()["texto"] == "Resultado oficial do 2º turno — fonte: TSE"
+
+
+@pytest.mark.parametrize("value", ["", "   ", "x" * 201])
+def test_banner_text_must_be_short_and_not_empty(value: str) -> None:
+    with pytest.raises(ValueError, match="TSE_BANNER_TEXTO"):
+        Settings(tse_banner_texto=value)
 
 
 def test_status_is_cacheable_for_a_minute(api: TestClient) -> None:

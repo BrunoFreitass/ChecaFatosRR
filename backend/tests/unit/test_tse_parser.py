@@ -110,6 +110,35 @@ def test_elected_only_when_the_tse_says_so(status: str) -> None:
     assert lula.eleito is False
 
 
+def test_mathematically_defined_without_a_situation_is_not_elected() -> None:
+    # Como o arquivo real de 25/10/2026 às 21h18 (99,81%): "md": "e" no topo, mas os dois
+    # candidatos com "e": "n" e "st": "". Nada de calcular por nossa conta: ninguém é eleito.
+    data = second_round("99,81")
+    data["md"] = "e"
+    result = parse_result(data)
+
+    assert not any(c.eleito for c in result.candidatos)
+
+
+def test_elected_flag_without_situation_is_not_enough() -> None:
+    # "e": "s" sozinho não basta (no 1º turno ele marca quem vai ao 2º): só a situação conta.
+    data = second_round("99,90")
+    for c in candidates(data):
+        c["e"] = "s"
+    assert not any(c.eleito for c in parse_result(data).candidatos)
+
+
+def test_missing_situation_fields_do_not_break_the_parser() -> None:
+    data = second_round("50,00", st_flavio="Eleito")
+    for c in candidates(data):
+        c.pop("st", None)
+        c.pop("e", None)
+    result = parse_result(data)
+
+    assert [c.situacao for c in result.candidatos] == ["", ""]
+    assert not any(c.eleito for c in result.candidatos)
+
+
 def test_zero_sections_before_the_count_starts() -> None:
     data = second_round("0,00")
     for c in candidates(data):

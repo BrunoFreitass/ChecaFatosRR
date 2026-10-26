@@ -174,6 +174,11 @@ export function Apuracao() {
             {active?.secoes_pct != null &&
               `${SCOPE_LABELS[scope]}: ${formatPct(active.secoes_pct)} das seções totalizadas`}
           </p>
+          {/* Presidente eleito: só pelo arquivo do Brasil (o de uma UF não elege ninguém). Região
+              viva sempre presente: o leitor de tela anuncia quando a linha aparece. */}
+          <div aria-live="polite">
+            <ElectedHeadline result={resultOf("br")} />
+          </div>
           <div role="tablist" aria-label="Abrangência" className="flex gap-2">
             {SCOPES.map((item) => (
               <button
@@ -227,6 +232,27 @@ export function Apuracao() {
   );
 }
 
+/**
+ * A situação como o TSE escreveu ("Eleito", "Eleita", "Matematicamente eleito"): nunca
+ * deduzida nem resumida por nós. Sem texto (só a marca), "Eleito".
+ */
+function situation(candidate: TseCandidate): string {
+  return candidate.situacao || "Eleito";
+}
+
+/** Linha do topo: só com o candidato que o TSE marcou como eleito no arquivo do Brasil. */
+function ElectedHeadline({ result }: { result: TseResult | null }) {
+  if (!result) return null;
+  const elected = result.candidatos.find((candidate) => candidate.eleito);
+  if (!elected) return null;
+  const name = elected.partido ? `${elected.nome} (${elected.partido})` : elected.nome;
+  const cargo = (result.cargo || "Presidente").toLowerCase();
+  const sections =
+    result.secoes_pct === null ? "" : ` · ${formatPct(result.secoes_pct)} das seções totalizadas`;
+  const text = `${name} ${situation(elected).toLowerCase()} ${cargo}, segundo o TSE${sections}`;
+  return <p className="rounded-lg border border-slate-300 bg-white p-3 text-lg font-semibold text-slate-900">{text}</p>;
+}
+
 function ScopePanel({ result }: { result: TseResult | null }) {
   if (result === null) {
     return <p className="rounded-lg bg-slate-100 p-4">Aguardando os primeiros resultados do TSE.</p>;
@@ -269,7 +295,7 @@ function CandidateRow({ candidate }: { candidate: TseCandidate }) {
           <span>{candidate.nome}</span>
           {candidate.eleito && (
             <span className="ml-2 rounded bg-slate-900 px-2 py-0.5 text-xs font-semibold text-white">
-              {candidate.situacao || "Eleito"}
+              {`${situation(candidate)} — segundo o TSE`}
             </span>
           )}
         </p>
