@@ -215,3 +215,37 @@ def _canonical(url: str | None) -> str | None:
     )
     path = parts.path.rstrip("/")
     return f"{host}{path}?{query}" if query else f"{host}{path}"
+
+
+# Agências de checagem conhecidas: (domínio, prefixo do caminho ou "" = o site todo, nome). Para
+# o link de uma checagem que ainda não está no índice da Fact Check (26/10/2026): a página diz
+# que é de uma agência, sem veredito e sem classificação inventada.
+KNOWN_AGENCIES: tuple[tuple[str, str, str], ...] = (
+    ("agencialupa.org", "", "Agência Lupa"),
+    ("aosfatos.org", "", "Aos Fatos"),
+    ("boatos.org", "", "Boatos.org"),
+    ("e-farsas.com", "", "E-farsas"),
+    ("estadao.com.br", "/estadao-verifica", "Estadão Verifica"),
+    ("g1.globo.com", "/fato-ou-fake", "Fato ou Fake (g1)"),
+    ("checamos.afp.com", "", "AFP Checamos"),
+    ("projetocomprova.com.br", "", "Projeto Comprova"),
+)
+
+
+def known_agency(url: str | None) -> str | None:
+    """Nome da agência se o link é de uma página de um site (ou seção) de checagem conhecido.
+    A home, o índice da seção e a busca (sem caminho além dele) não são uma checagem."""
+    try:
+        parts = urlsplit((url or "").strip())
+    except ValueError:
+        return None
+    host = (parts.hostname or "").lower().rstrip(".")
+    if parts.scheme.lower() not in ("http", "https") or not host:
+        return None
+    path = parts.path.rstrip("/")
+    for domain, prefix, name in KNOWN_AGENCIES:
+        same_host = host == domain or host.endswith("." + domain)
+        page = path[len(prefix) :] if path.startswith(prefix + "/") or not prefix else ""
+        if same_host and page.strip("/"):
+            return name
+    return None

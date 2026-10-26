@@ -94,10 +94,24 @@ export function Ultimas() {
                 to={`/checagem/${item.id}`}
                 className="block space-y-2 rounded-lg border border-slate-200 bg-white p-4 hover:border-brand-700 focus-visible:outline-2 focus-visible:outline-brand-700"
               >
-                <VerdictBadge
-                  verdict={item.veredito}
-                  awaitingCheck={isAwaitingCheck(item.veredito, item.total_agencias)}
-                />
+                {item.modo === "checagem_de_agencia" && item.agencia ? (
+                  // O link é a checagem de uma agência: o selo é dela, sem veredito nosso.
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span className="inline-flex items-center rounded-full bg-slate-200 px-2.5 py-1 text-sm font-bold text-slate-900">
+                      Checagem de {item.agencia}
+                    </span>
+                    {item.classificacao && (
+                      <span className="text-sm font-semibold text-slate-800">
+                        Classificação da agência: {item.classificacao}
+                      </span>
+                    )}
+                  </span>
+                ) : (
+                  <VerdictBadge
+                    verdict={item.veredito}
+                    awaitingCheck={isAwaitingCheck(item.veredito, item.total_agencias)}
+                  />
+                )}
                 <span className="block break-words font-semibold text-slate-900">
                   {item.title || item.domain}
                 </span>

@@ -90,29 +90,43 @@ function AgencyList({ items }: { items: AgencyCheck[] }) {
  */
 function AgencyPageResult({ check, page }: { check: Check; page: AgencyPage }) {
   const href = safeHref(page.url);
-  const shareText = page.alegacao
-    ? `ChecaFatosRR: checagem de ${page.agencia} — alegação "${page.alegacao}" classificada como ${page.classificacao}`
-    : `ChecaFatosRR: checagem de ${page.agencia} — "${page.titulo}" classificada como ${page.classificacao}`;
+  const heading = page.titulo || check.title || page.agencia;
+  // Sem classificação: link de agência conhecida que a Fact Check ainda não indexou (26/10).
+  // Só diz que é de uma agência: nada de alegação, título como alegação ou classificação.
+  const rated = page.classificacao !== null;
+  const shareText = !rated
+    ? `ChecaFatosRR: link de uma agência de checagem (${page.agencia})`
+    : page.alegacao
+      ? `ChecaFatosRR: checagem de ${page.agencia} — alegação "${page.alegacao}" classificada como ${page.classificacao}`
+      : `ChecaFatosRR: checagem de ${page.agencia} — "${page.titulo}" classificada como ${page.classificacao}`;
   return (
     <article className="space-y-6">
-      <title>{`Checagem de ${page.agencia}: ${page.titulo} — ChecaFatosRR`}</title>
+      <title>{`Checagem de ${page.agencia}: ${heading} — ChecaFatosRR`}</title>
       <header className="space-y-3">
         <p className="inline-flex rounded-full bg-slate-200 px-4 py-2 text-lg font-semibold text-slate-900">
           Checagem de agência
         </p>
-        <h1 className="break-words text-2xl font-bold leading-tight sm:text-3xl">{page.titulo}</h1>
+        <h1 className="break-words text-2xl font-bold leading-tight sm:text-3xl">{heading}</h1>
       </header>
       <section aria-labelledby="checagem-agencia" className="space-y-3">
         <h2 id="checagem-agencia" className="sr-only">
           Checagem da agência
         </h2>
-        <p className="text-lg text-slate-800">Este link é uma checagem publicada por {page.agencia}.</p>
-        {page.alegacao ? (
-          <p className="break-words text-slate-800">Alegação verificada: {page.alegacao}</p>
+        {rated ? (
+          <>
+            <p className="text-lg text-slate-800">Este link é uma checagem publicada por {page.agencia}.</p>
+            {page.alegacao ? (
+              <p className="break-words text-slate-800">Alegação verificada: {page.alegacao}</p>
+            ) : (
+              <p className="break-words text-slate-800">Título da checagem: {page.titulo}</p>
+            )}
+            <p className="font-semibold text-slate-900">Classificação da agência: {page.classificacao}</p>
+          </>
         ) : (
-          <p className="break-words text-slate-800">Título da checagem: {page.titulo}</p>
+          <p className="text-lg text-slate-800">
+            Este link é de uma agência de checagem ({page.agencia}). Leia a checagem completa no site da agência.
+          </p>
         )}
-        <p className="font-semibold text-slate-900">Classificação da agência: {page.classificacao}</p>
         {href && (
           <a
             href={href}

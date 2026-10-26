@@ -31,7 +31,13 @@ from app.repositories.checks import (
     TextSubject,
 )
 from app.services.extractor import extract_page
-from app.services.factcheck import AgencyCheck, FactCheckClient, build_queries, same_page
+from app.services.factcheck import (
+    AgencyCheck,
+    FactCheckClient,
+    build_queries,
+    known_agency,
+    same_page,
+)
 from app.services.fetcher import PageFetcher, PageUnreadableError
 from app.services.gemini import (
     AnalysisInput,
@@ -54,6 +60,7 @@ from app.services.url_guard import (
 from app.services.verdict_policy import (
     agencies_only_result,
     agency_page_result,
+    agency_site_result,
     enforce_relevance,
     is_open_platform,
 )
@@ -348,7 +355,7 @@ async def _analyze(
     timer: StageTimer,
 ) -> CheckOutcome:
     published_at: date | None = None
-    listed = False
+    listed = same_site = False
     if isinstance(parsed, LinkInput):
         read = await _read_link(parsed, tools, timer, settings.open_platforms)
         data, published_at = read.data, read.data.published_at
@@ -384,6 +391,29 @@ async def _analyze(
             agency_page_result(own, data.title, keys=content_keys(data.title, data.content)),
             log=("agency_page_mode", {"agencia": own.agencia}),
             agency_page=True,
+            listed=listed,
+        )
+
+    # Link de agência conhecida que a Fact Check ainda não indexou (26/10/2026): diz que é de
+    # uma agência, sem IA, sem veredito e sem classificação inventada. Só se a página veio do
+    # próprio site (redirect para outro domínio segue o fluxo normal).
+    agencia = isinstance(parsed, LinkInput) and same_site and known_agency(parsed.url.url)
+    if agencia and isinstance(parsed, LinkInput):
+        return await _without_ai(
+            _AgenciesOnly(data, started, user_id, claim_token, published_at, agencies_failed),
+            repo,
+            settings,
+            timer,
+            agency_site_result(
+                agencia,
+                parsed.url.url,
+                data.title,
+                keys=content_keys(data.title, data.content),
+                search_failed=agencies_failed,
+            ),
+            log=("agency_site_mode", {"agencia": agencia, "search_failed": agencies_failed}),
+            agency_page=True,
+            listed=listed,
         )
 
     # A cota só é gasta depois que o conteúdo foi lido (link ilegível não gasta), e só quando
@@ -499,11 +529,13 @@ async def _without_ai(
     *,
     log: tuple[str, dict[str, Any]],
     agency_page: bool = False,
+    listed: bool = False,
 ) -> CheckOutcome:
     """Resultado sem IA (modo "só agências" ou o link que é a própria checagem de uma agência),
-    salvo com a versão reservada: tem link público, nunca vira cache e não é "Últimas". O
-    pedido vira consulta: não conta no limite de checagens com IA, mas conta no de consultas
-    (Gemini fora não libera geral)."""
+    salvo com a versão reservada: tem link público e nunca vira cache. Fica de "Últimas", salvo
+    a checagem de agência (a consulta de "Últimas" a inclui pelo modo gravado). O pedido vira
+    consulta: não conta no limite de checagens com IA, mas conta no de consultas (Gemini fora
+    não libera geral)."""
     data, started = job.data, job.started
     try:
         with timer.stage("db"):
@@ -519,7 +551,9 @@ async def _without_ai(
                     confianca=0,
                     result=result,
                     model=AGENCIES_ONLY_VERSION,
-                    listed=False,
+                    # Checagem de agência: a regra de sempre (mesmo site, título e domínio sem
+                    # ofensa). O modo "só agências" nunca é listado.
+                    listed=listed and agency_page,
                     title=data.title,
                     published_at=job.published_at,
                     claim_token=job.claim_token,

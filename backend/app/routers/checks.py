@@ -3,7 +3,7 @@ import binascii
 import json
 import logging
 import re
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -45,6 +45,7 @@ from app.services.factcheck import (
 from app.services.fetcher import HttpPageFetcher
 from app.services.gemini import PROMPT_VERSION, GeminiAnalyzer, google_generate
 from app.services.model_limits import ModelLimits
+from app.services.moderation.local_filter import check_text
 from app.services.read_cache import ReadCaches, get_read_caches
 from app.services.relevance import content_keys
 from app.services.verdict_policy import (
@@ -52,6 +53,7 @@ from app.services.verdict_policy import (
     AGENCY_PAGE_MODE,
     NO_EXACT_CHECK_SENTENCE,
     OLD_NOT_CONFIRMED_SENTENCE,
+    agency_page_summary,
     enforce_relevance,
     neutral_summary,
     relevant_verdict,
@@ -207,34 +209,49 @@ def _or_fallback(keys: list[str] | None, title: str | None, texto: str | None) -
     return content_keys(title, texto) or None
 
 
-def _agency_page(check: StoredCheck) -> AgencyPageOut | None:
-    """O link é a própria checagem de uma agência? Gravada assim desde 23/10; as de antes
-    (IA chamada, "não verificável") são reconhecidas pela URL entre as checagens gravadas."""
-    result = check.result
+def _text(value: object) -> str | None:
+    return value.strip() or None if isinstance(value, str) else None
+
+
+def agency_page_from(kind: str, url: str | None, result: Mapping[str, Any]) -> AgencyPageOut | None:
+    """O link é a própria checagem de uma agência? A mesma regra na página e em "Últimas".
+
+    Gravada assim desde 23/10 (a classificação pode faltar: link de agência conhecida fora do
+    índice, 26/10). As de antes (IA chamada, "não verificável") são reconhecidas pela URL igual
+    à de uma checagem gravada (citada ou relacionada), sem reescrever o banco."""
     stored = result.get("checagem_de_agencia")
     if result.get("modo") == AGENCY_PAGE_MODE and isinstance(stored, dict):
-        candidates = [stored]
-    elif check.kind == "link":
-        candidates = [
-            item
-            for key in ("checagens_agencias", "checagens_relacionadas")
-            for item in result.get(key) or []
-            if isinstance(item, dict) and same_page(check.url, item.get("url"))
-        ]
-    else:
+        agencia, page_url = _text(stored.get("agencia")), _text(stored.get("url"))
+        rating, titulo = _text(stored.get("veredito")), _text(stored.get("titulo"))
+        # Com classificação, o título da checagem é obrigatório (a página e o WhatsApp o
+        # citam); sem ela (site fora do índice), o título pode faltar.
+        if not (agencia and page_url) or (rating and not titulo):
+            return None
+        return AgencyPageOut(
+            agencia=agencia,
+            url=page_url,
+            classificacao=rating,
+            alegacao=_text(stored.get("alegacao")),
+            titulo=titulo or "",
+        )
+    if kind != "link":
         return None
-    for item in candidates:
-        agencia, url = item.get("agencia"), item.get("url")
-        rating, titulo = item.get("veredito"), item.get("titulo")
-        if all(isinstance(v, str) and v for v in (agencia, url, rating, titulo)):
-            alegacao = item.get("alegacao")
-            return AgencyPageOut(
-                agencia=agencia,
-                url=url,
-                classificacao=rating,
-                alegacao=alegacao if isinstance(alegacao, str) and alegacao.strip() else None,
-                titulo=titulo,
+    for key in ("checagens_agencias", "checagens_relacionadas"):
+        items = result.get(key)
+        for item in items if isinstance(items, list) else []:
+            if not (isinstance(item, dict) and same_page(url, item.get("url"))):
+                continue
+            agencia, rating, titulo = (
+                _text(item.get(field)) for field in ("agencia", "veredito", "titulo")
             )
+            if agencia and rating and titulo:
+                return AgencyPageOut(
+                    agencia=agencia,
+                    url=str(item["url"]),
+                    classificacao=rating,
+                    alegacao=_text(item.get("alegacao")),
+                    titulo=titulo,
+                )
     return None
 
 
@@ -251,7 +268,7 @@ def _agency_page_out(check: StoredCheck, page: AgencyPageOut, *, cached: bool) -
         veredito="nao_verificavel",
         rebaixado_por_confianca=False,
         confianca=0,
-        resumo=f"Este link é uma checagem publicada por {page.agencia}.",
+        resumo=agency_page_summary(page.agencia, classificacao=page.classificacao),
         pontos_suspeitos=[],
         contexto_faltante=None,
         checagens_agencias=[],
@@ -260,12 +277,13 @@ def _agency_page_out(check: StoredCheck, page: AgencyPageOut, *, cached: bool) -
         cache=cached,
         modo=AGENCY_PAGE_MODE,
         checagem_de_agencia=page,
-        busca_agencias="ok",
+        # O status gravado (a busca pode ter falhado no link de agência fora do índice).
+        busca_agencias=_search_status(check.result, False) or "ok",
     )
 
 
 def to_out(check: StoredCheck, settings: CheckSettings, *, cached: bool = False) -> CheckOut:
-    page = _agency_page(check)
+    page = agency_page_from(check.kind, check.url, check.result)
     if page is not None:
         return _agency_page_out(check, page, cached=cached)
     result = check.result
@@ -408,14 +426,34 @@ async def _latest(
     next_cursor = (
         _encode_cursor(items[-1].created_at, items[-1].public_id) if len(items) == limit else None
     )
+    summaries = [_summary(item) for item in items]
     return LatestChecksOut(
-        items=[_summary(item) for item in items],
+        # Checagem de agência entra pelo modo gravado (as de antes de 26/10 foram gravadas sem
+        # listar): o mesmo filtro de título e domínio ofensivos que decide o "listed".
+        items=[s for s in summaries if s.modo != AGENCY_PAGE_MODE or _listable_summary(s)],
         next_cursor=next_cursor,
     )
 
 
+def _listable_summary(item: CheckSummaryOut) -> bool:
+    return not any(check_text(value).blocked for value in (item.title or "", item.domain) if value)
+
+
 def _summary(item: CheckSummary) -> CheckSummaryOut:
-    """Item de "Últimas" com a mesma regra da página (salvaguarda de relevância)."""
+    """Item de "Últimas" com as mesmas regras da página: checagem de agência (selo "Checagem de
+    <agência>" e a classificação dela) e salvaguarda de relevância."""
+    page = agency_page_from("link", item.url, item.agency_view)
+    if page is not None:
+        return CheckSummaryOut(
+            id=item.public_id,
+            domain=item.domain,
+            title=item.title or page.titulo or None,
+            veredito="nao_verificavel",
+            created_at=item.created_at,
+            modo=AGENCY_PAGE_MODE,
+            agencia=page.agencia,
+            classificacao=page.classificacao,
+        )
     keys = _or_fallback(None if item.keywords is None else list(item.keywords), item.title, None)
     cited = [{"titulo": t, "veredito": r} for t, r in item.agency_pairs]
     same, _ = split_relevant(cited, keys) if keys is not None else (cited, [])
